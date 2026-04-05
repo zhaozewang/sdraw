@@ -14,7 +14,22 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface WorkspaceBoardSummary {
+  id: string;
+  name: string;
+  updated_at: string;
+  path: string;
+  element_count: number;
+  image_count: number;
+  canvas: { width?: number; height?: number; background?: string };
+  thumbnail?: string | null;
+}
+
 export const api = {
+  // Workspace boards (from workspace/boards/)
+  listWorkspaceBoards: () =>
+    request<WorkspaceBoardSummary[]>('/boards/'),
+
   // Board file operations
   saveBoardToFile: (board: Board, path: string) =>
     request<{ path: string; board: Board }>('/boards/save', {
@@ -51,12 +66,6 @@ export const api = {
     request<{ path: string }>('/path/mkdir', {
       method: 'POST',
       body: JSON.stringify({ path }),
-    }),
-
-  browse: (path: string, showHidden?: boolean) =>
-    request<{ path: string; parent: string; entries: DirEntry[] }>('/path/browse', {
-      method: 'POST',
-      body: JSON.stringify({ path, show_hidden: showHidden ?? false }),
     }),
 
   browse: (path: string, showHidden?: boolean) =>

@@ -55,14 +55,21 @@ class WorkspaceService:
         summaries: list[dict[str, Any]] = []
         if not self.boards_dir.exists():
             return summaries
-        for p in sorted(self.boards_dir.glob("*.json")):
+        for p in sorted(self.boards_dir.glob("*.sdraw"), key=lambda f: f.stat().st_mtime, reverse=True):
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
+                elements = data.get("elements", [])
+                image_count = sum(1 for e in elements if e.get("type") == "image")
                 summaries.append(
                     {
                         "id": data.get("id", p.stem),
                         "name": data.get("name", "Untitled"),
                         "updated_at": data.get("updated_at", ""),
+                        "path": str(p),
+                        "element_count": len(elements),
+                        "image_count": image_count,
+                        "canvas": data.get("canvas", {}),
+                        "thumbnail": data.get("thumbnail"),
                     }
                 )
             except (json.JSONDecodeError, Exception) as exc:
@@ -71,7 +78,7 @@ class WorkspaceService:
 
     def load_board(self, board_id: str) -> Board | None:
         """Load a single board by ID. Returns None if not found."""
-        board_path = self.boards_dir / f"{board_id}.json"
+        board_path = self.boards_dir / f"{board_id}.sdraw"
         if not board_path.exists():
             return None
         try:
@@ -84,7 +91,7 @@ class WorkspaceService:
     def save_board(self, board: Board) -> Board:
         """Save a board to disk, updating the updated_at timestamp."""
         board.updated_at = datetime.now(timezone.utc).isoformat()
-        board_path = self.boards_dir / f"{board.id}.json"
+        board_path = self.boards_dir / f"{board.id}.sdraw"
         board_path.write_text(
             json.dumps(board.model_dump(), indent=2),
             encoding="utf-8",
@@ -99,7 +106,7 @@ class WorkspaceService:
 
     def delete_board(self, board_id: str) -> bool:
         """Remove a board file. Returns True if deleted, False if not found."""
-        board_path = self.boards_dir / f"{board_id}.json"
+        board_path = self.boards_dir / f"{board_id}.sdraw"
         if not board_path.exists():
             return False
         board_path.unlink()

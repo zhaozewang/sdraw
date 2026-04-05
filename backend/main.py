@@ -1,4 +1,4 @@
-"""SDraw backend - FastAPI application entry point."""
+"""sDraw backend - FastAPI application entry point."""
 
 import asyncio
 import json
@@ -39,15 +39,15 @@ async def lifespan(app: FastAPI):
     for root in workspace.config.watched_roots:
         watcher.watch(root)
 
-    logger.info("SDraw backend started (workspace: %s)", workspace.workspace_path)
+    logger.info("sDraw backend started (workspace: %s)", workspace.workspace_path)
     yield
 
     # Shutdown
     await watcher.stop()
-    logger.info("SDraw backend stopped")
+    logger.info("sDraw backend stopped")
 
 
-app = FastAPI(title="SDraw", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="sDraw", version="0.1.0", lifespan=lifespan)
 
 # CORS - allow all for local app
 app.add_middleware(
@@ -67,7 +67,7 @@ app.include_router(export.router)
 @app.get("/api/health", tags=["health"])
 async def health():
     """Health check endpoint."""
-    return {"status": "ok", "app": "SDraw", "version": "0.1.0"}
+    return {"status": "ok", "app": "sDraw", "version": "0.1.0"}
 
 
 @app.websocket("/ws/events")

@@ -75,10 +75,10 @@ body {
   z-index: 10;
 }
 
-/* Scrollbar styling */
+/* Scrollbar styling — thin, auto-hiding */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 3px;
+  height: 3px;
 }
 
 ::-webkit-scrollbar-track {
@@ -86,10 +86,25 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 3px;
+  background: transparent;
+  border-radius: 2px;
 }
 
-::-webkit-scrollbar-thumb:hover {
+*:hover > ::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+*::-webkit-scrollbar-thumb:active {
   background: #94a3b8;
+}
+
+/* Firefox thin scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover {
+  scrollbar-color: #cbd5e1 transparent;
 }

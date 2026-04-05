@@ -60,12 +60,15 @@ export interface BoardElement {
   points?: Array<{ x: number; y: number }>;
 }
 
+export type GridPattern = 'dots' | 'lines' | 'cross';
+
 export interface CanvasSettings {
   width: number;
   height: number;
   background: string;
   grid_enabled: boolean;
   grid_size: number;
+  grid_pattern: GridPattern;
   snap_enabled: boolean;
   snap_size: number;
 }
@@ -128,6 +131,7 @@ export const DEFAULT_CANVAS: CanvasSettings = {
   background: '#ffffff',
   grid_enabled: true,
   grid_size: 20,
+  grid_pattern: 'dots',
   snap_enabled: true,
   snap_size: 10,
 };

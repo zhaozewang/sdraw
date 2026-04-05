@@ -1,10 +1,10 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
-import type { FileInfo } from '@/types/board';
-import { Image, Type, Square, ArrowRight, FolderOpen, File, ChevronDown, ChevronRight, Layers } from 'lucide-react';
-import { getFileName } from '@/utils/helpers';
+import type { DirEntry, FileInfo } from '@/types/board';
+import { Image, Type, Square, ArrowRight, FolderOpen, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw } from 'lucide-react';
+import { getFileName, getLastDirectory, saveLastDirectory } from '@/utils/helpers';
 
 function InsertButton({ icon: Icon, label, onClick }: { icon: any; label: string; onClick: () => void }) {
   return (
@@ -18,44 +18,62 @@ function InsertButton({ icon: Icon, label, onClick }: { icon: any; label: string
   );
 }
 
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp', '.bmp', '.tiff']);
+
 function FolderBrowser() {
-  const [folderPath, setFolderPath] = useState('');
-  const [files, setFiles] = useState<FileInfo[]>([]);
+  const [currentPath, setCurrentPath] = useState('');
+  const [parentPath, setParentPath] = useState('');
+  const [entries, setEntries] = useState<DirEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(true);
   const addElement = useBoardStore(s => s.addElement);
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
 
-  const loadFolder = useCallback(async () => {
-    if (!folderPath.trim()) return;
+  const navigate = useCallback(async (path: string) => {
     setLoading(true);
     try {
-      const result = await api.listFiles(folderPath, ['.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp'], 'mtime');
-      setFiles(result);
-      // Register watch for this folder
-      try { await api.registerWatch(folderPath); } catch {}
-    } catch (err) {
-      setFiles([]);
+      const result = await api.browse(path);
+      setCurrentPath(result.path);
+      setParentPath(result.parent);
+      setEntries(result.entries);
+      saveLastDirectory(result.path);
+      // Auto-watch for live refresh
+      try { await api.registerWatch(result.path); } catch {}
+    } catch {
+      setEntries([]);
     }
     setLoading(false);
-  }, [folderPath]);
+  }, []);
 
-  const insertSingle = useCallback((file: FileInfo) => {
+  // Navigate to last directory on mount
+  useEffect(() => {
+    const last = getLastDirectory();
+    if (last) navigate(last);
+  }, [navigate]);
+
+  const dirs = entries.filter(e => e.is_dir);
+  const imageFiles = entries.filter(e => {
+    if (e.is_dir) return false;
+    const ext = e.name.substring(e.name.lastIndexOf('.')).toLowerCase();
+    return IMAGE_EXTS.has(ext);
+  });
+
+  const insertSingle = useCallback((entry: DirEntry) => {
     const el = addElement('image', {
-      source: { mode: 'exact', path: file.path, followLatest: false, autoRefresh: true },
-      width: Math.min(file.dimensions?.width || 400, 500),
-      height: Math.min(file.dimensions?.height || 300, 400),
+      source: { mode: 'exact', path: entry.path, followLatest: false, autoRefresh: true },
+      width: Math.min(entry.dimensions?.width || 400, 500),
+      height: Math.min(entry.dimensions?.height || 300, 400),
     });
     setSelectedIds([el.id]);
   }, [addElement, setSelectedIds]);
 
   const insertAll = useCallback(() => {
     const ids: string[] = [];
-    const cols = Math.ceil(Math.sqrt(files.length));
+    const cols = Math.ceil(Math.sqrt(imageFiles.length));
     const gap = 20;
     const w = 300;
     const h = 220;
-    files.forEach((file, i) => {
+    imageFiles.forEach((file, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
       const el = addElement('image', {
@@ -68,7 +86,7 @@ function FolderBrowser() {
       ids.push(el.id);
     });
     setSelectedIds(ids);
-  }, [files, addElement, setSelectedIds]);
+  }, [imageFiles, addElement, setSelectedIds]);
 
   return (
     <div className="border-t border-inspector-border">
@@ -80,57 +98,84 @@ function FolderBrowser() {
         Folder Browser
       </button>
       {expanded && (
-        <div className="px-3 py-2 space-y-2">
-          <div className="flex gap-1">
-            <input
-              type="text"
-              value={folderPath}
-              onChange={e => setFolderPath(e.target.value)}
-              placeholder="/path/to/plots"
-              className="flex-1 px-2 py-1 text-xs border border-gray-200 rounded bg-white focus:border-accent focus:outline-none font-mono"
-              onKeyDown={e => e.key === 'Enter' && loadFolder()}
-            />
+        <div className="px-2 py-2 space-y-1.5">
+          {/* Navigation buttons */}
+          <div className="flex items-center gap-0.5">
             <button
-              onClick={loadFolder}
-              className="px-2 py-1 text-xs bg-accent text-white rounded hover:bg-accent/90"
+              onClick={() => parentPath && parentPath !== currentPath && navigate(parentPath)}
+              disabled={!parentPath || parentPath === currentPath}
+              title="Go up"
+              className="p-1 rounded text-gray-500 hover:bg-gray-100 disabled:text-gray-300 disabled:cursor-not-allowed"
             >
-              Load
+              <ArrowLeft size={16} />
+            </button>
+            <button onClick={() => navigate('/')} title="Root" className="p-1 rounded text-gray-500 hover:bg-gray-100">
+              <Home size={16} />
+            </button>
+            <button onClick={() => currentPath && navigate(currentPath)} title="Refresh" className="p-1 rounded text-gray-500 hover:bg-gray-100">
+              <RefreshCw size={16} />
             </button>
           </div>
 
-          {loading && <div className="text-2xs text-gray-400">Loading...</div>}
+          {/* Current path */}
+          <div
+            className="px-1.5 py-1 text-2xs text-gray-500 bg-gray-50 rounded border border-gray-200 truncate font-mono cursor-pointer hover:border-gray-300"
+            title={currentPath}
+            onClick={() => {
+              const input = window.prompt('Navigate to path:', currentPath);
+              if (input) navigate(input);
+            }}
+          >
+            {currentPath || 'Click to navigate...'}
+          </div>
 
-          {files.length > 0 && (
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-2xs text-gray-400">{files.length} files</span>
-                <button
-                  onClick={insertAll}
-                  className="text-2xs text-accent hover:underline"
-                >
-                  Insert all as grid
-                </button>
-              </div>
-              <div className="max-h-48 overflow-y-auto space-y-0.5">
-                {files.map(file => (
+          {/* Directory listing */}
+          <div className="max-h-64 overflow-y-auto space-y-0">
+            {loading ? (
+              <div className="text-2xs text-gray-400 text-center py-2">Loading...</div>
+            ) : (
+              <>
+                {dirs.map(entry => (
                   <button
-                    key={file.path}
-                    onClick={() => insertSingle(file)}
-                    className="flex items-center gap-1.5 w-full px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 rounded truncate"
-                    title={file.path}
+                    key={entry.path}
+                    onClick={() => navigate(entry.path)}
+                    className="flex items-center gap-1.5 w-full px-1.5 py-1 text-xs text-gray-600 hover:bg-blue-50 rounded truncate"
+                    title={entry.path}
                   >
-                    <File size={12} className="text-gray-400 shrink-0" />
-                    <span className="truncate">{file.name}</span>
-                    {file.dimensions && (
+                    <Folder size={11} className="text-blue-400 shrink-0" />
+                    <span className="truncate">{entry.name}</span>
+                  </button>
+                ))}
+                {imageFiles.length > 0 && (
+                  <div className="flex items-center justify-between px-1.5 pt-1.5 pb-0.5">
+                    <span className="text-2xs text-gray-400">{imageFiles.length} image{imageFiles.length !== 1 ? 's' : ''}</span>
+                    <button onClick={insertAll} className="text-2xs text-accent hover:underline">
+                      Insert all
+                    </button>
+                  </div>
+                )}
+                {imageFiles.map(entry => (
+                  <button
+                    key={entry.path}
+                    onClick={() => insertSingle(entry)}
+                    className="flex items-center gap-1.5 w-full px-1.5 py-1 text-xs text-gray-600 hover:bg-green-50 rounded truncate"
+                    title={entry.path}
+                  >
+                    <File size={11} className="text-green-500 shrink-0" />
+                    <span className="truncate">{entry.name}</span>
+                    {entry.dimensions && (
                       <span className="text-2xs text-gray-400 ml-auto shrink-0">
-                        {file.dimensions.width}x{file.dimensions.height}
+                        {entry.dimensions.width}x{entry.dimensions.height}
                       </span>
                     )}
                   </button>
                 ))}
-              </div>
-            </div>
-          )}
+                {dirs.length === 0 && imageFiles.length === 0 && (
+                  <div className="text-2xs text-gray-400 text-center py-2">No folders or images here</div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -185,13 +230,68 @@ function LayersList() {
   );
 }
 
+function ResizeHandle({ side, onResize }: { side: 'right' | 'left'; onResize: (delta: number) => void }) {
+  const onResizeRef = useRef(onResize);
+  onResizeRef.current = onResize;
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    let lastX = e.clientX;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const delta = side === 'right' ? ev.clientX - lastX : lastX - ev.clientX;
+      lastX = ev.clientX;
+      onResizeRef.current(delta);
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [side]);
+
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      className="group relative shrink-0 cursor-col-resize"
+      style={{ width: 5 }}
+    >
+      <div className="absolute inset-y-0 -left-1 -right-1" />
+      <div className="absolute inset-y-0 left-1/2 w-px bg-inspector-border group-hover:w-0.5 group-hover:bg-blue-400 group-hover:-translate-x-[1px] transition-all" />
+    </div>
+  );
+}
+
 export function InsertPanel() {
   const showInsertPanel = useUIStore(s => s.showInsertPanel);
+  const toggleInsertPanel = useUIStore(s => s.toggleInsertPanel);
+  const insertPanelWidth = useUIStore(s => s.insertPanelWidth);
+  const setInsertPanelWidth = useUIStore(s => s.setInsertPanelWidth);
   const board = useBoardStore(s => s.board);
   const addElement = useBoardStore(s => s.addElement);
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
 
-  if (!showInsertPanel || !board) return null;
+  if (!board) return null;
+
+  // Collapsed state: show a thin strip with expand button
+  if (!showInsertPanel) {
+    return (
+      <button
+        onClick={toggleInsertPanel}
+        className="w-8 bg-inspector-bg border-r border-inspector-border flex flex-col items-center pt-2 shrink-0 hover:bg-gray-100 transition-colors"
+        title="Show Insert Panel"
+      >
+        <PanelLeftOpen size={16} className="text-gray-400" />
+      </button>
+    );
+  }
 
   const handleInsertImage = () => {
     const path = window.prompt('Enter image file path:');
@@ -236,39 +336,47 @@ export function InsertPanel() {
   };
 
   return (
-    <div className="w-52 bg-inspector-bg border-r border-inspector-border overflow-y-auto shrink-0">
-      <div className="text-xs font-semibold text-gray-700 px-3 py-2 border-b border-inspector-border">
-        Insert
-      </div>
-
-      <div className="py-1">
-        <InsertButton icon={Image} label="Image from file" onClick={handleInsertImage} />
-        <InsertButton icon={FolderOpen} label="Images from folder" onClick={() => {}} />
-        <InsertButton icon={Type} label="Text box" onClick={handleInsertText} />
-        <InsertButton icon={Square} label="Rectangle" onClick={handleInsertRect} />
-        <InsertButton icon={ArrowRight} label="Arrow / Line" onClick={handleInsertArrow} />
-      </div>
-
-      {/* Figure label quick-insert */}
-      <div className="border-t border-inspector-border">
-        <div className="px-3 py-1.5 text-2xs font-semibold text-gray-500 uppercase tracking-wider">
-          Figure Labels
+    <div className="flex shrink-0">
+      <div className="bg-inspector-bg overflow-y-auto overflow-x-hidden flex flex-col" style={{ width: insertPanelWidth }}>
+        <div className="flex items-center justify-between px-3 py-2 border-b border-inspector-border">
+          <span className="text-xs font-semibold text-gray-700">Insert</span>
+          <button onClick={toggleInsertPanel} className="text-gray-400 hover:text-gray-600" title="Collapse panel">
+            <PanelLeftClose size={14} />
+          </button>
         </div>
-        <div className="px-3 py-1 flex flex-wrap gap-1">
-          {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(label => (
-            <button
-              key={label}
-              onClick={() => handleInsertFigureLabel(label)}
-              className="w-7 h-7 text-xs font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded flex items-center justify-center"
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
 
-      <FolderBrowser />
-      <LayersList />
+        <div className="py-1">
+          <InsertButton icon={Image} label="Image from file" onClick={handleInsertImage} />
+          <InsertButton icon={FolderOpen} label="Images from folder" onClick={() => {}} />
+          <InsertButton icon={Type} label="Text box" onClick={handleInsertText} />
+          <InsertButton icon={Square} label="Rectangle" onClick={handleInsertRect} />
+          <InsertButton icon={ArrowRight} label="Arrow / Line" onClick={handleInsertArrow} />
+        </div>
+
+        {/* Figure label quick-insert */}
+        <div className="border-t border-inspector-border">
+          <div className="px-3 py-1.5 text-2xs font-semibold text-gray-500 uppercase tracking-wider">
+            Figure Labels
+          </div>
+          <div className="px-3 py-1 flex flex-wrap gap-1">
+            {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(label => (
+              <button
+                key={label}
+                onClick={() => handleInsertFigureLabel(label)}
+                className="w-7 h-7 text-xs font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded flex items-center justify-center"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <FolderBrowser />
+        <LayersList />
+      </div>
+      <ResizeHandle side="right" onResize={(delta) => setInsertPanelWidth(insertPanelWidth + delta)} />
     </div>
   );
 }
+
+export { ResizeHandle };

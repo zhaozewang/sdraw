@@ -11,6 +11,8 @@ interface UIState {
   showInspector: boolean;
   showInsertPanel: boolean;
   insertPanelTab: PanelTab;
+  insertPanelWidth: number;
+  inspectorWidth: number;
 
   // Insert mode
   insertMode: InsertMode;
@@ -41,6 +43,8 @@ interface UIState {
   toggleInsertPanel: () => void;
   setInsertPanelTab: (tab: PanelTab) => void;
   setInsertMode: (mode: InsertMode) => void;
+  setInsertPanelWidth: (width: number) => void;
+  setInspectorWidth: (width: number) => void;
 
   setZoom: (zoom: number) => void;
 
@@ -60,6 +64,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   showInspector: true,
   showInsertPanel: true,
   insertPanelTab: 'insert',
+  insertPanelWidth: 220,
+  inspectorWidth: 240,
   insertMode: null,
   zoom: 1,
   showBoardDialog: false,
@@ -79,6 +85,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleInsertPanel: () => set(s => ({ showInsertPanel: !s.showInsertPanel })),
   setInsertPanelTab: (tab) => set({ insertPanelTab: tab }),
   setInsertMode: (mode) => set({ insertMode: mode }),
+  setInsertPanelWidth: (width) => set({ insertPanelWidth: Math.max(160, Math.min(400, width)) }),
+  setInspectorWidth: (width) => set({ inspectorWidth: Math.max(180, Math.min(400, width)) }),
 
   setZoom: (zoom) => set({ zoom: Math.max(0.1, Math.min(5, zoom)) }),
 

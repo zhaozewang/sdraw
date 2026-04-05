@@ -98,6 +98,63 @@ async def validate_path(body: ValidatePathRequest):
         }
 
 
+class BrowseRequest(BaseModel):
+    path: str
+    show_hidden: bool = False
+
+
+@router.post("/path/browse")
+async def browse_path(body: BrowseRequest):
+    """Browse a directory, returning entries (files and subdirectories)."""
+    dir_path = Path(body.path).resolve()
+    if not dir_path.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+
+    parent = str(dir_path.parent) if dir_path.parent != dir_path else None
+    entries = []
+    try:
+        for entry in sorted(dir_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+            if not body.show_hidden and entry.name.startswith("."):
+                continue
+            try:
+                stat = entry.stat()
+                item = {
+                    "name": entry.name,
+                    "path": str(entry),
+                    "is_dir": entry.is_dir(),
+                    "size": stat.st_size if entry.is_file() else 0,
+                    "modified_time": datetime.fromtimestamp(
+                        stat.st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                }
+                if entry.is_file():
+                    dims = _get_dimensions(entry)
+                    if dims:
+                        item["dimensions"] = dims
+                entries.append(item)
+            except OSError:
+                continue
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    return {"path": str(dir_path), "parent": parent, "entries": entries}
+
+
+class MkdirRequest(BaseModel):
+    path: str
+
+
+@router.post("/path/mkdir")
+async def make_directory(body: MkdirRequest):
+    """Create a directory (including parents)."""
+    try:
+        p = Path(body.path).resolve()
+        p.mkdir(parents=True, exist_ok=True)
+        return {"path": str(p)}
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 class ListFilesRequest(BaseModel):
     path: str
     extensions: Optional[list[str]] = None

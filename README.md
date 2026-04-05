@@ -1,11 +1,18 @@
 <p align="center">
-  <h1 align="center">SDraw</h1>
-  <p align="center">
-    A local-first plot board for arranging, annotating, and composing scientific figures.
-    <br />
-    <em>Think "draw.io for plots" &mdash; not a dashboard, not a notebook.</em>
-  </p>
+  <img src="assets/logo_title.png" alt="sDraw" width="280" />
 </p>
+<p align="center">
+  A local-first plot board for arranging, annotating, and composing scientific figures.
+  <br />
+  <em>Think "draw.io for plots" &mdash; not a dashboard, not a notebook.</em>
+</p>
+
+<div align="center">
+<table><tr><td>
+<sub>&nbsp;&#x1F534; &#x1F7E1; &#x1F7E2;&nbsp;&nbsp;&nbsp;&nbsp;sDraw &mdash; localhost:3000</sub><br/>
+<img src="assets/example.png" alt="sDraw screenshot showing six scientific plots arranged on a canvas with toolbar, insert panel, and property inspector" width="780" />
+</td></tr></table>
+</div>
 
 <p align="center">
   <a href="#features">Features</a> &bull;
@@ -28,7 +35,7 @@
 
 ---
 
-## Why SDraw?
+## Why sDraw?
 
 Researchers run experiments that produce plots into folders. They need to **arrange** those plots into coherent figures — drag, resize, align, label, group — and keep the layout **live** while re-running experiments. When the underlying image files change on disk, the displayed panels refresh automatically. No cloud, no accounts, no sync overhead.
 

@@ -312,7 +312,7 @@ def create_sample_board(plots):
         "app_version": "0.1.0"
     }
 
-    board_path = BOARDS_DIR / f"{board_id}.json"
+    board_path = BOARDS_DIR / f"{board_id}.sdraw"
     board_path.write_text(json.dumps(board, indent=2))
     print(f"Created board: {board_path}")
 

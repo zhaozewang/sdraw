@@ -1,10 +1,10 @@
 #!/bin/bash
-# Start both backend and frontend for SDraw
+# Start both backend and frontend for sDraw
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "=== SDraw - Plot Board ==="
+echo "=== sDraw - Plot Board ==="
 echo ""
 
 # Check Python venv

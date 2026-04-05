@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import {
@@ -15,7 +15,7 @@ import {
   Grid3x3,
   Magnet,
   Download,
-  FolderOpen,
+  Home,
   AlignStartVertical,
   AlignEndVertical,
   AlignStartHorizontal,
@@ -29,7 +29,39 @@ import {
   ArrowDownToLine,
   Columns,
   Rows,
+  PanelLeft,
+  PanelRight,
 } from 'lucide-react';
+
+function SavePromptDialog({ onSave, onDiscard, onCancel }: {
+  onSave: () => void;
+  onDiscard: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onCancel}>
+      <div className="bg-white rounded-lg shadow-xl w-[360px]" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-gray-200">
+          <h2 className="text-sm font-semibold text-gray-800">Unsaved Changes</h2>
+        </div>
+        <div className="px-4 py-4">
+          <p className="text-sm text-gray-600">You have unsaved changes. Would you like to save before leaving?</p>
+        </div>
+        <div className="px-4 py-3 border-t border-gray-100 flex justify-end gap-2">
+          <button onClick={onDiscard} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded">
+            Don't Save
+          </button>
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">
+            Cancel
+          </button>
+          <button onClick={onSave} className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600">
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function Toolbar() {
   const board = useBoardStore(s => s.board);
@@ -52,20 +84,39 @@ export function Toolbar() {
   const selectedIds = useUIStore(s => s.selectedIds);
   const zoom = useUIStore(s => s.zoom);
   const setZoom = useUIStore(s => s.setZoom);
-  const insertMode = useUIStore(s => s.insertMode);
-  const setInsertMode = useUIStore(s => s.setInsertMode);
   const closeBoard = useBoardStore(s => s.closeBoard);
   const setShowExportDialog = useUIStore(s => s.setShowExportDialog);
-  const setSelectedIds = useUIStore(s => s.setSelectedIds);
+
+  const showInsertPanel = useUIStore(s => s.showInsertPanel);
+  const toggleInsertPanel = useUIStore(s => s.toggleInsertPanel);
+  const showInspector = useUIStore(s => s.showInspector);
+  const toggleInspector = useUIStore(s => s.toggleInspector);
+
+  const [showSavePrompt, setShowSavePrompt] = useState(false);
 
   const hasSelection = selectedIds.length > 0;
   const multiSelect = selectedIds.length >= 2;
 
-  const showInsertPanel = useUIStore(s => s.showInsertPanel);
-  const toggleInsertPanel = useUIStore(s => s.toggleInsertPanel);
+  const handleGoHome = useCallback(() => {
+    if (useBoardStore.getState().isDirty) {
+      setShowSavePrompt(true);
+    } else {
+      closeBoard();
+    }
+  }, [closeBoard]);
+
+  const handleSaveAndLeave = useCallback(async () => {
+    await saveBoard();
+    setShowSavePrompt(false);
+    closeBoard();
+  }, [saveBoard, closeBoard]);
+
+  const handleDiscardAndLeave = useCallback(() => {
+    setShowSavePrompt(false);
+    closeBoard();
+  }, [closeBoard]);
 
   const handleShowFileBrowser = useCallback(() => {
-    // Ensure the insert panel (which contains the file browser) is visible
     if (!useUIStore.getState().showInsertPanel) {
       useUIStore.getState().toggleInsertPanel();
     }
@@ -82,18 +133,12 @@ export function Toolbar() {
   }, []);
 
   const handleInsertRect = useCallback(() => {
-    const el = useBoardStore.getState().addElement('rectangle', {
-      width: 200,
-      height: 150,
-    });
+    const el = useBoardStore.getState().addElement('rectangle', { width: 200, height: 150 });
     useUIStore.getState().setSelectedIds([el.id]);
   }, []);
 
   const handleInsertArrow = useCallback(() => {
-    const el = useBoardStore.getState().addElement('arrow', {
-      width: 200,
-      height: 4,
-    });
+    const el = useBoardStore.getState().addElement('arrow', { width: 200, height: 4 });
     useUIStore.getState().setSelectedIds([el.id]);
   }, []);
 
@@ -117,12 +162,13 @@ export function Toolbar() {
 
   if (!board) return null;
 
-  const ToolButton = ({ onClick, icon: Icon, title, active, disabled }: {
+  const ToolButton = ({ onClick, icon: Icon, title, active, disabled, className: extraClass }: {
     onClick: () => void;
     icon: any;
     title: string;
     active?: boolean;
     disabled?: boolean;
+    className?: string;
   }) => (
     <button
       onClick={onClick}
@@ -134,7 +180,7 @@ export function Toolbar() {
           : disabled
           ? 'text-gray-300 cursor-not-allowed'
           : 'text-gray-600 hover:bg-toolbar-hover hover:text-gray-900'
-      }`}
+      } ${extraClass || ''}`}
     >
       <Icon size={16} />
     </button>
@@ -143,94 +189,110 @@ export function Toolbar() {
   const Separator = () => <div className="w-px h-5 bg-toolbar-border mx-0.5" />;
 
   return (
-    <div className="h-10 bg-toolbar-bg border-b border-toolbar-border flex items-center px-2 gap-0.5 select-none shrink-0">
-      {/* Board actions */}
-      <ToolButton onClick={() => closeBoard()} icon={FolderOpen} title="Close Board" />
-      <ToolButton onClick={() => saveBoard()} icon={Save} title="Save (Cmd+S)" disabled={!isDirty} />
+    <>
+      <div className="h-10 bg-toolbar-bg border-b border-toolbar-border flex items-center px-2 gap-0.5 select-none shrink-0">
+        {/* Home */}
+        <ToolButton onClick={handleGoHome} icon={Home} title="Back to Home" />
 
-      <Separator />
+        <Separator />
 
-      {/* Undo/Redo */}
-      <ToolButton onClick={undo} icon={Undo2} title="Undo (Cmd+Z)" disabled={historyIndex <= 0} />
-      <ToolButton onClick={redo} icon={Redo2} title="Redo (Cmd+Shift+Z)" disabled={historyIndex >= historyLength - 1} />
+        {/* File actions */}
+        <ToolButton onClick={() => saveBoard()} icon={Save} title="Save (Cmd+S)" disabled={!isDirty} />
+        <ToolButton onClick={() => setShowExportDialog(true)} icon={Download} title="Export" />
 
-      <Separator />
+        <Separator />
 
-      {/* Insert tools */}
-      <ToolButton onClick={handleShowFileBrowser} icon={Image} title="Browse & Insert Image" active={showInsertPanel} />
-      <ToolButton onClick={handleInsertText} icon={Type} title="Insert Text" />
-      <ToolButton onClick={handleInsertRect} icon={Square} title="Insert Rectangle" />
-      <ToolButton onClick={handleInsertArrow} icon={ArrowRight} title="Insert Arrow" />
+        {/* Undo/Redo */}
+        <ToolButton onClick={undo} icon={Undo2} title="Undo (Cmd+Z)" disabled={historyIndex <= 0} />
+        <ToolButton onClick={redo} icon={Redo2} title="Redo (Cmd+Shift+Z)" disabled={historyIndex >= historyLength - 1} />
 
-      <Separator />
+        <Separator />
 
-      {/* Alignment (visible when multi-select) */}
-      {multiSelect && (
-        <>
-          <ToolButton onClick={() => alignElements(selectedIds, 'left')} icon={AlignStartVertical} title="Align Left" />
-          <ToolButton onClick={() => alignElements(selectedIds, 'centerH')} icon={AlignCenterVertical} title="Align Center H" />
-          <ToolButton onClick={() => alignElements(selectedIds, 'right')} icon={AlignEndVertical} title="Align Right" />
-          <ToolButton onClick={() => alignElements(selectedIds, 'top')} icon={AlignStartHorizontal} title="Align Top" />
-          <ToolButton onClick={() => alignElements(selectedIds, 'centerV')} icon={AlignCenterHorizontal} title="Align Center V" />
-          <ToolButton onClick={() => alignElements(selectedIds, 'bottom')} icon={AlignEndHorizontal} title="Align Bottom" />
-          {selectedIds.length >= 3 && (
-            <>
-              <ToolButton onClick={() => distributeElements(selectedIds, 'horizontal')} icon={Columns} title="Distribute Horizontally" />
-              <ToolButton onClick={() => distributeElements(selectedIds, 'vertical')} icon={Rows} title="Distribute Vertically" />
-            </>
-          )}
-          <Separator />
-        </>
+        {/* Insert tools */}
+        <ToolButton onClick={handleShowFileBrowser} icon={Image} title="Browse & Insert Image" active={showInsertPanel} />
+        <ToolButton onClick={handleInsertText} icon={Type} title="Insert Text" />
+        <ToolButton onClick={handleInsertRect} icon={Square} title="Insert Rectangle" />
+        <ToolButton onClick={handleInsertArrow} icon={ArrowRight} title="Insert Arrow" />
+
+        <Separator />
+
+        {/* Alignment (visible when multi-select) */}
+        {multiSelect && (
+          <>
+            <ToolButton onClick={() => alignElements(selectedIds, 'left')} icon={AlignStartVertical} title="Align Left" />
+            <ToolButton onClick={() => alignElements(selectedIds, 'centerH')} icon={AlignCenterVertical} title="Align Center H" />
+            <ToolButton onClick={() => alignElements(selectedIds, 'right')} icon={AlignEndVertical} title="Align Right" />
+            <ToolButton onClick={() => alignElements(selectedIds, 'top')} icon={AlignStartHorizontal} title="Align Top" />
+            <ToolButton onClick={() => alignElements(selectedIds, 'centerV')} icon={AlignCenterHorizontal} title="Align Center V" />
+            <ToolButton onClick={() => alignElements(selectedIds, 'bottom')} icon={AlignEndHorizontal} title="Align Bottom" />
+            {selectedIds.length >= 3 && (
+              <>
+                <ToolButton onClick={() => distributeElements(selectedIds, 'horizontal')} icon={Columns} title="Distribute Horizontally" />
+                <ToolButton onClick={() => distributeElements(selectedIds, 'vertical')} icon={Rows} title="Distribute Vertically" />
+              </>
+            )}
+            <Separator />
+          </>
+        )}
+
+        {/* Grouping & Z-order */}
+        {hasSelection && (
+          <>
+            <ToolButton onClick={handleGroup} icon={Group} title="Group (Cmd+G)" disabled={!multiSelect} />
+            <ToolButton onClick={handleUngroup} icon={Ungroup} title="Ungroup (Cmd+Shift+G)" />
+            <ToolButton onClick={() => toggleLock(selectedIds)} icon={Lock} title="Toggle Lock (Cmd+L)" />
+            <ToolButton onClick={() => bringToFront(selectedIds)} icon={ArrowUpToLine} title="Bring to Front" />
+            <ToolButton onClick={() => sendToBack(selectedIds)} icon={ArrowDownToLine} title="Send to Back" />
+            <Separator />
+          </>
+        )}
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* Panel toggles */}
+        <ToolButton onClick={toggleInsertPanel} icon={PanelLeft} title="Toggle Insert Panel" active={showInsertPanel} />
+        <ToolButton onClick={toggleInspector} icon={PanelRight} title="Toggle Properties" active={showInspector} />
+
+        <Separator />
+
+        {/* Canvas toggles */}
+        <ToolButton
+          onClick={() => updateCanvas({ grid_enabled: !board.canvas.grid_enabled })}
+          icon={Grid3x3}
+          title="Toggle Grid"
+          active={board.canvas.grid_enabled}
+        />
+        <ToolButton
+          onClick={() => updateCanvas({ snap_enabled: !board.canvas.snap_enabled })}
+          icon={Magnet}
+          title="Toggle Snap"
+          active={board.canvas.snap_enabled}
+        />
+
+        <Separator />
+
+        {/* Zoom */}
+        <ToolButton onClick={() => setZoom(zoom - 0.1)} icon={ZoomOut} title="Zoom Out" />
+        <span className="text-xs text-gray-500 w-12 text-center tabular-nums">
+          {Math.round(zoom * 100)}%
+        </span>
+        <ToolButton onClick={() => setZoom(zoom + 0.1)} icon={ZoomIn} title="Zoom In" />
+        <ToolButton onClick={() => setZoom(1)} icon={Maximize} title="Reset Zoom" />
+
+        {/* Dirty indicator */}
+        {isDirty && (
+          <div className="ml-1 w-2 h-2 rounded-full bg-amber-400" title="Unsaved changes" />
+        )}
+      </div>
+
+      {showSavePrompt && (
+        <SavePromptDialog
+          onSave={handleSaveAndLeave}
+          onDiscard={handleDiscardAndLeave}
+          onCancel={() => setShowSavePrompt(false)}
+        />
       )}
-
-      {/* Grouping & Z-order */}
-      {hasSelection && (
-        <>
-          <ToolButton onClick={handleGroup} icon={Group} title="Group (Cmd+G)" disabled={!multiSelect} />
-          <ToolButton onClick={handleUngroup} icon={Ungroup} title="Ungroup (Cmd+Shift+G)" />
-          <ToolButton onClick={() => toggleLock(selectedIds)} icon={Lock} title="Toggle Lock (Cmd+L)" />
-          <ToolButton onClick={() => bringToFront(selectedIds)} icon={ArrowUpToLine} title="Bring to Front" />
-          <ToolButton onClick={() => sendToBack(selectedIds)} icon={ArrowDownToLine} title="Send to Back" />
-          <Separator />
-        </>
-      )}
-
-      {/* Spacer */}
-      <div className="flex-1" />
-
-      {/* Canvas toggles */}
-      <ToolButton
-        onClick={() => updateCanvas({ grid_enabled: !board.canvas.grid_enabled })}
-        icon={Grid3x3}
-        title="Toggle Grid"
-        active={board.canvas.grid_enabled}
-      />
-      <ToolButton
-        onClick={() => updateCanvas({ snap_enabled: !board.canvas.snap_enabled })}
-        icon={Magnet}
-        title="Toggle Snap"
-        active={board.canvas.snap_enabled}
-      />
-
-      <Separator />
-
-      {/* Zoom */}
-      <ToolButton onClick={() => setZoom(zoom - 0.1)} icon={ZoomOut} title="Zoom Out" />
-      <span className="text-xs text-gray-500 w-12 text-center tabular-nums">
-        {Math.round(zoom * 100)}%
-      </span>
-      <ToolButton onClick={() => setZoom(zoom + 0.1)} icon={ZoomIn} title="Zoom In" />
-      <ToolButton onClick={() => setZoom(1)} icon={Maximize} title="Reset Zoom" />
-
-      <Separator />
-
-      {/* Export */}
-      <ToolButton onClick={() => setShowExportDialog(true)} icon={Download} title="Export" />
-
-      {/* Dirty indicator */}
-      {isDirty && (
-        <div className="ml-1 w-2 h-2 rounded-full bg-amber-400" title="Unsaved changes" />
-      )}
-    </div>
+    </>
   );
 }

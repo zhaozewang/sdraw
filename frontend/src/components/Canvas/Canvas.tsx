@@ -184,13 +184,24 @@ export function Canvas() {
         className="bg-canvas-bg"
         proOptions={{ hideAttribution: true }}
       >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={board.canvas.grid_size}
-          size={1}
-          color="#cbd5e1"
-          style={{ display: board.canvas.grid_enabled ? undefined : 'none' }}
-        />
+        {board.canvas.grid_enabled && (
+          <>
+            <Background
+              id="grid-minor"
+              variant={BackgroundVariant.Dots}
+              gap={board.canvas.grid_size}
+              size={3}
+              color="#d1d5db"
+            />
+            <Background
+              id="grid-major"
+              variant={BackgroundVariant.Dots}
+              gap={board.canvas.grid_size * 5}
+              size={6}
+              color="#9ca3af"
+            />
+          </>
+        )}
         <MiniMap
           position="bottom-right"
           style={{ width: 140, height: 90 }}

@@ -17,7 +17,9 @@ import { getLastDirectory, saveLastDirectory } from '@/utils/helpers';
 import {
   Folder, ArrowLeft, Home, HardDrive,
   FileText, RefreshCw, FolderPlus, Plus, X, Clock,
+  LayoutGrid, Image as ImageIcon, Layers, Trash2,
 } from 'lucide-react';
+import type { WorkspaceBoardSummary } from '@/api/client';
 
 // ---------------------------------------------------------------------------
 // Recent boards (persisted in localStorage)
@@ -110,7 +112,7 @@ function FileBrowserDialog({
   }, [newFolderName, currentPath, navigate]);
 
   const dirs = entries.filter(e => e.is_dir);
-  const jsonFiles = entries.filter(e => !e.is_dir && e.name.endsWith('.json'));
+  const jsonFiles = entries.filter(e => !e.is_dir && e.name.endsWith('.sdraw'));
 
   return (
     <div className="space-y-2">
@@ -192,7 +194,7 @@ function FileBrowserDialog({
           <div className="px-3 py-4 text-xs text-gray-400 text-center">Loading...</div>
         ) : dirs.length === 0 && jsonFiles.length === 0 ? (
           <div className="px-3 py-4 text-xs text-gray-400 text-center">
-            {mode === 'open' ? 'No folders or .json board files here' : 'Empty folder'}
+            {mode === 'open' ? 'No folders or .sdraw board files here' : 'Empty folder'}
           </div>
         ) : (
           <>
@@ -269,7 +271,7 @@ function NewBoardDialog({
 
   const safeFileName = useMemo(() => {
     const name = boardName.trim() || 'Untitled Board';
-    return name.replace(/[^a-zA-Z0-9_\- ]/g, '_') + '.json';
+    return name.replace(/[^a-zA-Z0-9_\- ]/g, '_') + '.sdraw';
   }, [boardName]);
 
   const handleSubmit = () => {
@@ -287,15 +289,18 @@ function NewBoardDialog({
         <div className="px-4 py-4 space-y-3">
           <div>
             <label className="text-xs font-medium text-gray-600 block mb-1">Board name</label>
-            <input
-              type="text"
-              value={boardName}
-              onChange={e => setBoardName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
-              placeholder="e.g. Figure 3 — Dose Response"
-              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-md focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
-              autoFocus
-            />
+            <div className="flex items-center gap-0">
+              <input
+                type="text"
+                value={boardName}
+                onChange={e => setBoardName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
+                placeholder="e.g. Figure 3 — Dose Response"
+                className="flex-1 min-w-0 px-3 py-2 text-sm border border-gray-200 rounded-l-md focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                autoFocus
+              />
+              <span className="px-2.5 py-2 text-sm text-gray-400 bg-gray-50 border border-l-0 border-gray-200 rounded-r-md select-none">.sdraw</span>
+            </div>
             <div className="mt-1 text-2xs text-gray-400 truncate">
               {folderPath}/{safeFileName}
             </div>
@@ -361,13 +366,144 @@ function NewBoardDialog({
   );
 }
 
+function BoardCard({ board, onClick, onDelete }: { board: WorkspaceBoardSummary; onClick: () => void; onDelete: () => void }) {
+  const timeAgo = useMemo(() => {
+    try {
+      const d = new Date(board.updated_at);
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+      const diffMin = Math.floor(diffMs / 60000);
+      if (diffMin < 1) return 'Just now';
+      if (diffMin < 60) return `${diffMin}m ago`;
+      const diffHr = Math.floor(diffMin / 60);
+      if (diffHr < 24) return `${diffHr}h ago`;
+      const diffDay = Math.floor(diffHr / 24);
+      if (diffDay < 30) return `${diffDay}d ago`;
+      return d.toLocaleDateString();
+    } catch { return ''; }
+  }, [board.updated_at]);
+
+  return (
+    <div
+      onClick={onClick}
+      className="group relative flex flex-col bg-white rounded-xl border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all duration-150 overflow-hidden text-left cursor-pointer"
+    >
+      {/* Delete button */}
+      <button
+        onClick={e => { e.stopPropagation(); onDelete(); }}
+        className="absolute top-2 right-2 z-10 p-1 rounded-md bg-white/80 text-gray-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all shadow-sm"
+        title="Delete board"
+      >
+        <Trash2 size={14} />
+      </button>
+      {/* Preview area */}
+      <div className="relative w-full aspect-[3/2] bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center overflow-hidden">
+        {board.thumbnail ? (
+          <img src={board.thumbnail} alt={board.name} className="w-full h-full object-cover" />
+        ) : board.image_count > 0 ? (
+          <div className="flex items-center gap-3 text-gray-300">
+            <LayoutGrid size={32} strokeWidth={1.5} />
+            <div className="text-left">
+              <div className="text-2xl font-semibold text-gray-400">{board.image_count}</div>
+              <div className="text-[10px] uppercase tracking-wider text-gray-400">panels</div>
+            </div>
+          </div>
+        ) : (
+          <div className="text-gray-300">
+            <Layers size={28} strokeWidth={1.5} />
+          </div>
+        )}
+        {/* Hover overlay */}
+        <div className="absolute inset-0 bg-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+      </div>
+      {/* Info */}
+      <div className="px-3 py-2.5 border-t border-gray-100 flex-1 flex flex-col gap-0.5">
+        <div className="text-sm font-medium text-gray-800 truncate">{board.name}</div>
+        <div className="flex items-center gap-2 text-[11px] text-gray-400">
+          <span>{board.element_count} element{board.element_count !== 1 ? 's' : ''}</span>
+          <span className="text-gray-200">|</span>
+          <span>{timeAgo}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreateBoardCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="group flex flex-col bg-white rounded-xl border-2 border-dashed border-gray-200 hover:border-blue-400 hover:bg-blue-50/30 transition-all duration-150 overflow-hidden text-left"
+    >
+      {/* Preview area — same aspect ratio as BoardCard */}
+      <div className="w-full aspect-[3/2] flex items-center justify-center">
+        <div className="w-12 h-12 rounded-full bg-gray-100 group-hover:bg-blue-100 flex items-center justify-center transition-colors">
+          <Plus size={24} className="text-gray-400 group-hover:text-blue-500 transition-colors" />
+        </div>
+      </div>
+      {/* Info — matches BoardCard's bottom section */}
+      <div className="px-3 py-2.5 border-t border-gray-100 flex-1 flex flex-col justify-center">
+        <div className="text-sm font-medium text-gray-500 group-hover:text-blue-600 transition-colors">New Board</div>
+        <div className="text-[11px] text-gray-300">Create a new figure board</div>
+      </div>
+    </button>
+  );
+}
+
+function DeleteBoardDialog({ boardName, onConfirm, onCancel }: {
+  boardName: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onCancel}>
+      <div className="bg-white rounded-lg shadow-xl w-[380px]" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-gray-200">
+          <h2 className="text-sm font-semibold text-gray-800">Delete Board</h2>
+        </div>
+        <div className="px-4 py-4 space-y-2">
+          <p className="text-sm text-gray-600">
+            Are you sure you want to delete <strong>{boardName}</strong>?
+          </p>
+          <p className="text-xs text-gray-400">
+            The board file and any associated auto-exports will be permanently removed. This cannot be undone.
+          </p>
+        </div>
+        <div className="px-4 py-3 border-t border-gray-100 flex justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">
+            Cancel
+          </button>
+          <button onClick={onConfirm} className="px-3 py-1.5 text-sm bg-red-500 text-white rounded hover:bg-red-600">
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WelcomeScreen() {
   const newBoard = useBoardStore(s => s.newBoard);
   const openBoard = useBoardStore(s => s.openBoard);
   const [error, setError] = useState('');
   const [recentBoards, setRecentBoards] = useState<RecentBoard[]>(getRecentBoards);
+  const [workspaceBoards, setWorkspaceBoards] = useState<WorkspaceBoardSummary[]>([]);
+  const [loadingBoards, setLoadingBoards] = useState(true);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [newBoardFolder, setNewBoardFolder] = useState('');
+  const [showFileBrowser, setShowFileBrowser] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ name: string; path: string } | null>(null);
+
+  const loadBoards = useCallback(() => {
+    setLoadingBoards(true);
+    api.listWorkspaceBoards()
+      .then(setWorkspaceBoards)
+      .catch(() => setWorkspaceBoards([]))
+      .finally(() => setLoadingBoards(false));
+  }, []);
+
+  // Load workspace boards on mount
+  useEffect(() => { loadBoards(); }, [loadBoards]);
 
   const handleCreate = useCallback(async (name: string, filePath: string, width: number, height: number) => {
     try {
@@ -386,6 +522,11 @@ function WelcomeScreen() {
       const board = useBoardStore.getState().board;
       addRecentBoard(board?.name || 'Untitled', filePath);
     } catch (err: any) {
+      // Auto-remove stale recent entry if file not found
+      if (err.message?.includes('404')) {
+        removeRecentBoard(filePath);
+        setRecentBoards(getRecentBoards());
+      }
       setError(err.message || 'Failed to open board');
     }
   }, [openBoard]);
@@ -395,79 +536,128 @@ function WelcomeScreen() {
     setRecentBoards(getRecentBoards());
   }, []);
 
-  const hasRecent = recentBoards.length > 0;
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    try {
+      setError('');
+      // Remove from recent boards first (always succeeds)
+      removeRecentBoard(deleteTarget.path);
+      setRecentBoards(getRecentBoards());
+      // Try to delete the file — ignore 404 (already gone)
+      try {
+        await api.deleteBoardFile(deleteTarget.path);
+      } catch {
+        // File may already be deleted, that's fine
+      }
+      setDeleteTarget(null);
+      // Refresh board list
+      api.listWorkspaceBoards()
+        .then(setWorkspaceBoards)
+        .catch(() => setWorkspaceBoards([]));
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete board');
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget]);
+
+  // Merge all boards into a single list: workspace boards first, then recent-only boards as cards
+  const allBoardCards = useMemo(() => {
+    const wsPathSet = new Set(workspaceBoards.map(b => b.path));
+    const recentOnly = recentBoards
+      .filter(b => !wsPathSet.has(b.path))
+      .map(b => ({
+        id: b.path,
+        name: b.name,
+        updated_at: b.openedAt,
+        path: b.path,
+        element_count: 0,
+        image_count: 0,
+        canvas: {},
+      } as WorkspaceBoardSummary));
+    return [...workspaceBoards, ...recentOnly];
+  }, [workspaceBoards, recentBoards]);
 
   return (
-    <div className="h-screen w-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100">
-      <div className="w-[720px] flex flex-col">
+    <div className="h-screen w-screen flex flex-col bg-gradient-to-br from-gray-50 to-gray-100 overflow-auto">
+      <div className="max-w-[960px] w-full mx-auto px-6 py-12 flex flex-col flex-1">
         {/* Header */}
-        <div className="text-center mb-6">
-          <h1 className="text-2xl font-semibold text-gray-800 mb-1">SDraw</h1>
+        <div className="flex flex-col items-center mb-8">
+          <img src="/logo_title.png" alt="sDraw" className="h-32 object-contain mb-3" />
           <p className="text-sm text-gray-500">Arrange and compose scientific figure panels</p>
         </div>
 
         {error && (
-          <div className="mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
+          <div className="mb-4 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
             {error}
           </div>
         )}
 
-        <div className="flex gap-4">
-          {/* Left: Recent boards */}
-          <div className="w-[280px] shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col">
-            <div className="px-4 py-2.5 border-b border-gray-100 flex items-center gap-1.5">
-              <Clock size={13} className="text-gray-400" />
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Recent Boards</span>
-            </div>
-            <div className="flex-1 overflow-y-auto" style={{ maxHeight: 400 }}>
-              {hasRecent ? recentBoards.map(board => (
-                <div
-                  key={board.path}
-                  className="flex items-center gap-2 px-3 py-2 hover:bg-blue-50 group cursor-pointer"
-                  onClick={() => handleOpen(board.path)}
-                >
-                  <FileText size={15} className="text-blue-400 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-gray-800 truncate">{board.name}</div>
-                    <div className="text-2xs text-gray-400 truncate" title={board.path}>
-                      {board.path}
-                    </div>
-                  </div>
-                  <button
-                    onClick={e => { e.stopPropagation(); handleRemoveRecent(board.path); }}
-                    className="text-gray-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-sm leading-none px-1"
-                    title="Remove from recent"
-                  >
-                    &times;
-                  </button>
-                </div>
-              )) : (
-                <div className="px-4 py-8 text-xs text-gray-400 text-center">
-                  No recent boards yet
-                </div>
-              )}
-            </div>
+        {/* Board grid */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Your Boards</h2>
+            <button
+              onClick={() => setShowFileBrowser(true)}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-blue-600 transition-colors"
+            >
+              <Folder size={13} />
+              Open from file...
+            </button>
           </div>
 
-          {/* Right: File browser (open or create) */}
-          <div className="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 p-3 flex flex-col">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Browse Files</span>
+          {loadingBoards ? (
+            <div className="text-sm text-gray-400 text-center py-12">Loading boards...</div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              {/* Create new card */}
+              <CreateBoardCard onClick={() => setShowFileBrowser(true)} />
+
+              {/* All boards */}
+              {allBoardCards.map(board => (
+                <BoardCard
+                  key={board.path}
+                  board={board}
+                  onClick={() => handleOpen(board.path)}
+                  onDelete={() => setDeleteTarget({ name: board.name, path: board.path })}
+                />
+              ))}
             </div>
-            <FileBrowserDialog
-              mode="open"
-              onPickFile={handleOpen}
-              onNewBoard={(folderPath) => { setNewBoardFolder(folderPath); setShowNewDialog(true); }}
-            />
-          </div>
+          )}
         </div>
       </div>
+
+      {/* File browser overlay — shown when + is clicked or "Open from file" */}
+      {showFileBrowser && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setShowFileBrowser(false)}>
+          <div className="bg-white rounded-lg shadow-xl w-[520px] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-800">Browse Files</h2>
+              <button onClick={() => setShowFileBrowser(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+            </div>
+            <div className="p-3 flex-1 overflow-auto">
+              <FileBrowserDialog
+                mode="open"
+                onPickFile={(path) => { setShowFileBrowser(false); handleOpen(path); }}
+                onNewBoard={(folderPath) => { setShowFileBrowser(false); setNewBoardFolder(folderPath); setShowNewDialog(true); }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {showNewDialog && (
         <NewBoardDialog
           folderPath={newBoardFolder}
           onClose={() => setShowNewDialog(false)}
           onCreate={(name, path, w, h) => { setShowNewDialog(false); handleCreate(name, path, w, h); }}
+        />
+      )}
+
+      {deleteTarget && (
+        <DeleteBoardDialog
+          boardName={deleteTarget.name}
+          onConfirm={handleConfirmDelete}
+          onCancel={() => setDeleteTarget(null)}
         />
       )}
     </div>
@@ -568,6 +758,36 @@ function Editor() {
 // ---------------------------------------------------------------------------
 function AppContent() {
   const board = useBoardStore(s => s.board);
+  const boardFilePath = useBoardStore(s => s.boardFilePath);
+  const openBoard = useBoardStore(s => s.openBoard);
+  const [initializing, setInitializing] = useState(true);
+
+  // On mount, check URL for board param
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const boardPath = params.get('board');
+    if (boardPath && !board) {
+      openBoard(boardPath).catch(() => {}).finally(() => setInitializing(false));
+    } else {
+      setInitializing(false);
+    }
+  }, []);
+
+  // Sync URL and page title when board changes
+  const boardName = useBoardStore(s => s.board?.name);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (boardFilePath) {
+      url.searchParams.set('board', boardFilePath);
+      document.title = `${boardName || 'Untitled'} | sDraw`;
+    } else {
+      url.searchParams.delete('board');
+      document.title = 'sDraw | Scientific Figure Board';
+    }
+    window.history.replaceState({}, '', url.toString());
+  }, [boardFilePath, boardName]);
+
+  if (initializing) return null;
   return board ? <Editor /> : <WelcomeScreen />;
 }
 

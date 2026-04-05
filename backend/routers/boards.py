@@ -1,5 +1,8 @@
 """Board CRUD API routes."""
 
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -58,3 +61,56 @@ async def delete_board(board_id: str, request: Request):
     if not deleted:
         raise HTTPException(status_code=404, detail="Board not found")
     return {"detail": "Board deleted", "id": board_id}
+
+
+# ---- File-path-based operations (used by the frontend) ----
+
+class SaveBoardToFileRequest(BaseModel):
+    board: dict
+    path: str
+
+
+@router.post("/save")
+async def save_board_to_file(body: SaveBoardToFileRequest):
+    """Save a board JSON to an arbitrary file path."""
+    try:
+        p = Path(body.path).resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(body.board, indent=2))
+        return {"path": str(p), "board": body.board}
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+class OpenBoardFromFileRequest(BaseModel):
+    path: str
+
+
+@router.post("/open")
+async def open_board_from_file(body: OpenBoardFromFileRequest):
+    """Load a board JSON from a file path."""
+    p = Path(body.path).resolve()
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Board file not found")
+    try:
+        data = json.loads(p.read_text())
+        return {"path": str(p), "board": data}
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+class DeleteBoardFileRequest(BaseModel):
+    path: str
+
+
+@router.post("/delete-file")
+async def delete_board_file(body: DeleteBoardFileRequest):
+    """Delete a board JSON file by path."""
+    p = Path(body.path).resolve()
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        p.unlink()
+        return {"deleted": str(p)}
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

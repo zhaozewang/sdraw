@@ -112,7 +112,29 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   saveBoard: async () => {
     const { board, boardFilePath } = get();
     if (!board || !boardFilePath) return;
-    const updated = { ...board, updated_at: new Date().toISOString() };
+
+    // Capture thumbnail from the canvas
+    let thumbnail: string | undefined;
+    try {
+      const { toPng } = await import('html-to-image');
+      const el = document.querySelector('.react-flow__viewport') as HTMLElement;
+      if (el) {
+        thumbnail = await toPng(el, {
+          pixelRatio: 0.3,
+          backgroundColor: board.canvas.background || '#ffffff',
+          width: el.scrollWidth,
+          height: el.scrollHeight,
+        });
+      }
+    } catch {
+      // Thumbnail capture is best-effort
+    }
+
+    const updated = {
+      ...board,
+      updated_at: new Date().toISOString(),
+      thumbnail,
+    };
     await api.saveBoardToFile(updated, boardFilePath);
     set({ board: updated, isDirty: false });
   },
