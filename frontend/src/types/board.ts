@@ -163,7 +163,7 @@ export const DEFAULT_RECT_STYLE: ElementStyle = {
   strokeWidth: 2,
   strokeStyle: 'solid',
   fill: 'transparent',
-  borderRadius: 0,
+  borderRadius: 8,
   opacity: 1,
 };
 

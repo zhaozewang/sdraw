@@ -1,36 +1,24 @@
 <p align="center">
-  <img src="assets/logo_title.png" alt="sDraw" width="280" />
-</p>
-<p align="center">
-  A local-first plot board for arranging, annotating, and composing scientific figures.
-  <br />
-  <em>Think "draw.io for plots" &mdash; not a dashboard, not a notebook.</em>
-</p>
-
-<div align="center">
-<table><tr><td>
-<sub>&nbsp;&#x1F534; &#x1F7E1; &#x1F7E2;&nbsp;&nbsp;&nbsp;&nbsp;sDraw &mdash; localhost:3000</sub><br/>
-<img src="assets/example.png" alt="sDraw screenshot showing six scientific plots arranged on a canvas with toolbar, insert panel, and property inspector" width="780" />
-</td></tr></table>
-</div>
-
-<p align="center">
-  <a href="#features">Features</a> &bull;
-  <a href="#quick-start">Quick Start</a> &bull;
-  <a href="#architecture">Architecture</a> &bull;
-  <a href="#keyboard-shortcuts">Shortcuts</a> &bull;
-  <a href="#contributing">Contributing</a> &bull;
-  <a href="#license">License</a>
+<img src="assets/logo_title.png" alt="sDraw" width="280" /><br/>
+A local-first plot board for arranging, annotating, and composing scientific figures.<br/>
+<em>Think "draw.io for plots" &mdash; not a dashboard, not a notebook.</em><br/><br/>
+<a href="#features">Features</a> &bull;
+<a href="#quick-start">Quick Start</a> &bull;
+<a href="#architecture">Architecture</a> &bull;
+<a href="#keyboard-shortcuts">Shortcuts</a> &bull;
+<a href="#contributing">Contributing</a> &bull;
+<a href="#license">License</a><br/><br/>
+<img src="https://img.shields.io/badge/react-18-61DAFB?logo=react&logoColor=white" alt="React 18" />
+<img src="https://img.shields.io/badge/typescript-5.6-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+<img src="https://img.shields.io/badge/vite-6-646CFF?logo=vite&logoColor=white" alt="Vite 6" />
+<img src="https://img.shields.io/badge/fastapi-0.104+-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+<img src="https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white" alt="Python 3.10+" />
+<img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" />
+<img src="https://img.shields.io/badge/local--first-no_cloud-orange" alt="Local First" />
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/react-18-61DAFB?logo=react&logoColor=white" alt="React 18" />
-  <img src="https://img.shields.io/badge/typescript-5.6-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/vite-6-646CFF?logo=vite&logoColor=white" alt="Vite 6" />
-  <img src="https://img.shields.io/badge/fastapi-0.104+-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white" alt="Python 3.10+" />
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" />
-  <img src="https://img.shields.io/badge/local--first-no_cloud-orange" alt="Local First" />
+  <img src="assets/example_framed.png" alt="sDraw — six scientific plots arranged on a canvas" width="780" />
 </p>
 
 ---

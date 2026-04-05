@@ -33,6 +33,16 @@ interface UIState {
   // Auto-save
   autoSaveEnabled: boolean;
 
+  // Flag to suppress Canvas position handling during endpoint drags
+  suppressPositionSync: boolean;
+  setSuppressPositionSync: (v: boolean) => void;
+
+  // Zoom callbacks (set by Canvas, called by Toolbar)
+  zoomTo: ((zoom: number) => void) | null;
+  fitView: (() => void) | null;
+  setZoomTo: (fn: ((zoom: number) => void) | null) => void;
+  setFitView: (fn: (() => void) | null) => void;
+
   // Actions
   setSelectedIds: (ids: string[]) => void;
   addToSelection: (id: string) => void;
@@ -75,6 +85,12 @@ export const useUIStore = create<UIState>((set, get) => ({
   watchedRoots: [],
   recentEvents: [],
   autoSaveEnabled: true,
+  suppressPositionSync: false,
+  setSuppressPositionSync: (v) => set({ suppressPositionSync: v }),
+  zoomTo: null,
+  fitView: null,
+  setZoomTo: (fn) => set({ zoomTo: fn }),
+  setFitView: (fn) => set({ fitView: fn }),
 
   setSelectedIds: (ids) => set({ selectedIds: ids }),
   addToSelection: (id) => set(s => ({ selectedIds: [...s.selectedIds, id] })),

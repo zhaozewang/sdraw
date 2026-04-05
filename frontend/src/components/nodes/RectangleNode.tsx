@@ -13,7 +13,14 @@ function RectangleNodeComponent({ id, data, selected }: NodeProps) {
 
   if (!element || element.type !== 'rectangle') return null;
 
-  const { style } = element;
+  const { style, metadata } = element;
+  const shape = metadata?.shape as string | undefined;
+
+  const clipPath = shape === 'diamond'
+    ? 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)'
+    : shape === 'triangle'
+    ? 'polygon(50% 0%, 100% 100%, 0% 100%)'
+    : undefined;
 
   return (
     <>
@@ -28,13 +35,26 @@ function RectangleNodeComponent({ id, data, selected }: NodeProps) {
         className="w-full h-full"
         style={{
           backgroundColor: style.fill || 'transparent',
-          borderColor: style.strokeColor || '#333333',
-          borderWidth: style.strokeWidth ?? 2,
+          borderColor: clipPath ? 'transparent' : (style.strokeColor || '#333333'),
+          borderWidth: clipPath ? 0 : (style.strokeWidth ?? 2),
           borderStyle: style.strokeStyle || 'solid',
-          borderRadius: style.borderRadius ?? 0,
+          borderRadius: clipPath ? 0 : (style.borderRadius ?? 0),
           opacity: style.opacity ?? 1,
+          clipPath,
         }}
       />
+      {/* Stroke overlay for clipped shapes */}
+      {clipPath && (
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <polygon
+            points={shape === 'diamond' ? '50,0 100,50 50,100 0,50' : '50,0 100,100 0,100'}
+            fill="none"
+            stroke={style.strokeColor || '#333333'}
+            strokeWidth={(style.strokeWidth ?? 2) * 2}
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+      )}
     </>
   );
 }

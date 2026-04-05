@@ -767,7 +767,16 @@ function AppContent() {
     const params = new URLSearchParams(window.location.search);
     const boardPath = params.get('board');
     if (boardPath && !board) {
-      openBoard(boardPath).catch(() => {}).finally(() => setInitializing(false));
+      // Timeout after 3s to avoid stuck loading
+      const timeout = setTimeout(() => setInitializing(false), 3000);
+      openBoard(boardPath)
+        .catch(() => {
+          // Clear bad URL param
+          const url = new URL(window.location.href);
+          url.searchParams.delete('board');
+          window.history.replaceState({}, '', url.toString());
+        })
+        .finally(() => { clearTimeout(timeout); setInitializing(false); });
     } else {
       setInitializing(false);
     }
@@ -787,7 +796,11 @@ function AppContent() {
     window.history.replaceState({}, '', url.toString());
   }, [boardFilePath, boardName]);
 
-  if (initializing) return null;
+  if (initializing) return (
+    <div className="h-screen w-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100">
+      <div className="text-sm text-gray-400">Loading...</div>
+    </div>
+  );
   return board ? <Editor /> : <WelcomeScreen />;
 }
 

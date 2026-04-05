@@ -3,7 +3,7 @@ import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import type { DirEntry, FileInfo } from '@/types/board';
-import { Image, Type, Square, ArrowRight, FolderOpen, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw } from 'lucide-react';
+import { Type, Square, ArrowRight, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw, Circle, RectangleHorizontal, Triangle, Diamond, Minus, Image as ImageIcon } from 'lucide-react';
 import { getFileName, getLastDirectory, saveLastDirectory } from '@/utils/helpers';
 
 function InsertButton({ icon: Icon, label, onClick }: { icon: any; label: string; onClick: () => void }) {
@@ -205,7 +205,7 @@ function LayersList() {
         <div className="max-h-64 overflow-y-auto">
           {sorted.map(el => {
             const isSelected = selectedIds.includes(el.id);
-            const icon = el.type === 'image' ? Image : el.type === 'text' ? Type : el.type === 'rectangle' ? Square : el.type === 'arrow' ? ArrowRight : Layers;
+            const icon = el.type === 'image' ? ImageIcon : el.type === 'text' ? Type : el.type === 'rectangle' ? Square : el.type === 'arrow' ? ArrowRight : Layers;
             const Icon = icon;
             const label = el.type === 'text' ? (el.text?.slice(0, 20) || 'Text') :
                           el.type === 'image' ? (el.source?.path ? getFileName(el.source.path) : 'Image') :
@@ -293,47 +293,20 @@ export function InsertPanel() {
     );
   }
 
-  const handleInsertImage = () => {
-    const path = window.prompt('Enter image file path:');
-    if (path) {
-      const el = addElement('image', {
-        source: { mode: 'exact', path, followLatest: false, autoRefresh: true },
-        width: 400,
-        height: 300,
-      });
-      setSelectedIds([el.id]);
-    }
-  };
-
-  const handleInsertText = () => {
-    const el = addElement('text', {
-      text: 'Label',
-      width: 100,
-      height: 32,
-      style: { fontSize: 16, fontWeight: 700, color: '#111111', background: 'transparent', padding: 4, textAlign: 'left' },
-    });
+  const insert = (type: string, overrides: any = {}) => {
+    const el = addElement(type as any, overrides);
     setSelectedIds([el.id]);
   };
 
-  const handleInsertFigureLabel = (label: string) => {
-    const el = addElement('text', {
-      text: label,
-      width: 36,
-      height: 36,
-      style: { fontSize: 24, fontWeight: 700, color: '#111111', background: 'transparent', padding: 2, textAlign: 'center' },
-    });
-    setSelectedIds([el.id]);
-  };
+  const handleInsertText = () => insert('text', {
+    text: 'Label', width: 100, height: 32,
+    style: { fontSize: 16, fontWeight: 700, color: '#111111', background: 'transparent', padding: 4, textAlign: 'left' },
+  });
 
-  const handleInsertRect = () => {
-    const el = addElement('rectangle', { width: 200, height: 150 });
-    setSelectedIds([el.id]);
-  };
-
-  const handleInsertArrow = () => {
-    const el = addElement('arrow', { width: 200, height: 4 });
-    setSelectedIds([el.id]);
-  };
+  const handleInsertFigureLabel = (label: string) => insert('text', {
+    text: label, width: 36, height: 36,
+    style: { fontSize: 24, fontWeight: 700, color: '#111111', background: 'transparent', padding: 2, textAlign: 'center' },
+  });
 
   return (
     <div className="flex shrink-0">
@@ -346,11 +319,13 @@ export function InsertPanel() {
         </div>
 
         <div className="py-1">
-          <InsertButton icon={Image} label="Image from file" onClick={handleInsertImage} />
-          <InsertButton icon={FolderOpen} label="Images from folder" onClick={() => {}} />
           <InsertButton icon={Type} label="Text box" onClick={handleInsertText} />
-          <InsertButton icon={Square} label="Rectangle" onClick={handleInsertRect} />
-          <InsertButton icon={ArrowRight} label="Arrow / Line" onClick={handleInsertArrow} />
+          <InsertButton icon={Square} label="Rectangle" onClick={() => insert('rectangle', { width: 200, height: 150 })} />
+          <InsertButton icon={Circle} label="Circle / Ellipse" onClick={() => insert('rectangle', { width: 150, height: 150, style: { borderRadius: 9999 } })} />
+          <InsertButton icon={Diamond} label="Diamond" onClick={() => insert('rectangle', { width: 150, height: 150, metadata: { shape: 'diamond' } })} />
+          <InsertButton icon={Triangle} label="Triangle" onClick={() => insert('rectangle', { width: 150, height: 130, metadata: { shape: 'triangle' } })} />
+          <InsertButton icon={Minus} label="Line" onClick={() => insert('arrow', { width: 200, height: 4, points: [{ x: 0, y: 2 }, { x: 200, y: 2 }], metadata: { arrowHead: false } })} />
+          <InsertButton icon={ArrowRight} label="Arrow" onClick={() => insert('arrow', { width: 200, height: 4, points: [{ x: 0, y: 2 }, { x: 200, y: 2 }], metadata: { arrowHead: true } })} />
         </div>
 
         {/* Figure label quick-insert */}
@@ -363,7 +338,7 @@ export function InsertPanel() {
               <button
                 key={label}
                 onClick={() => handleInsertFigureLabel(label)}
-                className="w-7 h-7 text-xs font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded flex items-center justify-center"
+                className="w-5 h-5 text-2xs font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded flex items-center justify-center"
               >
                 {label}
               </button>

@@ -59,22 +59,34 @@ function NumberInput({ value, onChange, min, max, step, className }: {
 }
 
 function ColorInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const isTransparent = !value || value === 'transparent';
   return (
     <div className="flex items-center gap-1 min-w-0">
       <div className="relative w-2.5 h-2.5 shrink-0 border border-gray-300 overflow-hidden cursor-pointer">
-        <div className="absolute inset-0" style={{ backgroundColor: value || 'transparent' }} />
+        {isTransparent ? (
+          <div className="absolute inset-0" style={{ background: 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 50% / 5px 5px' }} />
+        ) : (
+          <div className="absolute inset-0" style={{ backgroundColor: value }} />
+        )}
         <input
           type="color"
-          value={value || '#000000'}
+          value={value && value !== 'transparent' ? value : '#000000'}
           onChange={e => onChange(e.target.value)}
           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
         />
       </div>
+      <button
+        onClick={() => onChange(isTransparent ? '#ffffff' : 'transparent')}
+        className={`shrink-0 px-1 py-px text-2xs rounded border ${isTransparent ? 'border-accent text-accent bg-accent/5' : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}
+        title={isTransparent ? 'Set to white' : 'Set to transparent'}
+      >
+        {isTransparent ? '∅' : '∅'}
+      </button>
       <input
         type="text"
         value={value || ''}
         onChange={e => onChange(e.target.value)}
-        className="flex-1 min-w-[40px] px-1 py-px text-2xs border border-gray-200 rounded bg-white focus:border-accent focus:outline-none font-mono"
+        className="flex-1 min-w-[30px] px-1 py-px text-2xs border border-gray-200 rounded bg-white focus:border-accent focus:outline-none font-mono"
         placeholder="transparent"
       />
     </div>

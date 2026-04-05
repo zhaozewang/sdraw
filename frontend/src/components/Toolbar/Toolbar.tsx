@@ -191,10 +191,27 @@ export function Toolbar() {
   return (
     <>
       <div className="h-10 bg-toolbar-bg border-b border-toolbar-border flex items-center px-2 gap-0.5 select-none shrink-0">
-        {/* Home */}
-        <ToolButton onClick={handleGoHome} icon={Home} title="Back to Home" />
+        {/* Logo + Home */}
+        <button
+          onClick={handleGoHome}
+          title="Back to Home"
+          className="p-1 rounded text-gray-600 hover:bg-toolbar-hover transition-colors shrink-0"
+        >
+          <img src="/logo_title_zoomed_in.png" alt="sDraw" style={{ height: 50, paddingTop: 8, paddingBottom: 14 }} className="object-contain" />
+        </button>
 
-        <Separator />
+
+        {/* Board name (editable) */}
+        <div className="flex items-center mx-1">
+          <input
+            type="text"
+            value={board.name}
+            onChange={e => useBoardStore.getState().setBoardName(e.target.value)}
+            className="text-xs text-gray-700 bg-transparent border border-gray-200 rounded px-1.5 py-0.5 hover:border-gray-300 focus:border-accent focus:outline-none w-28 min-w-[50px] truncate"
+            title={`${board.name}.sdraw`}
+          />
+          <span className="text-2xs text-gray-400 shrink-0 ml-0.5">.sdraw</span>
+        </div>
 
         {/* File actions */}
         <ToolButton onClick={() => saveBoard()} icon={Save} title="Save (Cmd+S)" disabled={!isDirty} />
@@ -273,12 +290,21 @@ export function Toolbar() {
         <Separator />
 
         {/* Zoom */}
-        <ToolButton onClick={() => setZoom(zoom - 0.1)} icon={ZoomOut} title="Zoom Out" />
+        <ToolButton onClick={() => {
+          const fn = useUIStore.getState().zoomTo;
+          if (fn) fn(zoom - 0.1);
+        }} icon={ZoomOut} title="Zoom Out" />
         <span className="text-xs text-gray-500 w-12 text-center tabular-nums">
           {Math.round(zoom * 100)}%
         </span>
-        <ToolButton onClick={() => setZoom(zoom + 0.1)} icon={ZoomIn} title="Zoom In" />
-        <ToolButton onClick={() => setZoom(1)} icon={Maximize} title="Reset Zoom" />
+        <ToolButton onClick={() => {
+          const fn = useUIStore.getState().zoomTo;
+          if (fn) fn(zoom + 0.1);
+        }} icon={ZoomIn} title="Zoom In" />
+        <ToolButton onClick={() => {
+          const fn = useUIStore.getState().fitView;
+          if (fn) fn();
+        }} icon={Maximize} title="Fit View" />
 
         {/* Dirty indicator */}
         {isDirty && (
