@@ -14,41 +14,44 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
   const pushHistory = useBoardStore(s => s.pushHistory);
   const [editing, setEditing] = useState(false);
   const textRef = useRef<HTMLDivElement>(null);
+  const hasAutoEdited = useRef(false);
 
-  if (!element || element.type !== 'text') return null;
-
-  const { style, text } = element;
-
-  const handleDoubleClick = useCallback(() => {
-    if (!element.locked) {
+  // Auto-enter edit mode for newly created text boxes
+  useEffect(() => {
+    if (selected && element?.text === 'Label' && !hasAutoEdited.current) {
+      hasAutoEdited.current = true;
       setEditing(true);
     }
-  }, [element.locked]);
+  }, [selected, element?.text]);
+
+  const handleDoubleClick = useCallback(() => {
+    if (element && !element.locked) {
+      setEditing(true);
+    }
+  }, [element?.locked]);
 
   const handleBlur = useCallback(() => {
     setEditing(false);
-    if (textRef.current) {
+    if (textRef.current && element) {
       const newText = textRef.current.innerText;
-      if (newText !== text) {
+      if (newText !== element.text) {
         pushHistory('Edit text');
         updateElement(elementId, { text: newText });
       }
     }
-  }, [elementId, text, updateElement, pushHistory]);
+  }, [elementId, element?.text, updateElement, pushHistory]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
       setEditing(false);
       textRef.current?.blur();
     }
-    // Stop propagation to prevent canvas shortcuts while editing
     e.stopPropagation();
   }, []);
 
   useEffect(() => {
     if (editing && textRef.current) {
       textRef.current.focus();
-      // Select all text
       const range = document.createRange();
       range.selectNodeContents(textRef.current);
       const sel = window.getSelection();
@@ -56,6 +59,10 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
       sel?.addRange(range);
     }
   }, [editing]);
+
+  if (!element || element.type !== 'text') return null;
+
+  const { style, text } = element;
 
   return (
     <>

@@ -26,6 +26,7 @@ export function useKeyboardShortcuts() {
     // Undo
     if (mod && !e.shiftKey && e.key === 'z') {
       e.preventDefault();
+      useUIStore.getState().clearSelection();
       store.undo();
       return;
     }
@@ -33,6 +34,7 @@ export function useKeyboardShortcuts() {
     // Redo
     if (mod && e.shiftKey && e.key === 'z') {
       e.preventDefault();
+      useUIStore.getState().clearSelection();
       store.redo();
       return;
     }
