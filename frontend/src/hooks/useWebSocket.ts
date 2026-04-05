@@ -1,0 +1,96 @@
+import { useEffect, useRef, useCallback } from 'react';
+import { useBoardStore } from '@/store/boardStore';
+import { useUIStore } from '@/store/uiStore';
+import type { FileEvent } from '@/types/board';
+
+export function useWebSocket() {
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<number>();
+  const bumpImageVersion = useBoardStore(s => s.bumpImageVersion);
+  const board = useBoardStore(s => s.board);
+  const setConnectionStatus = useUIStore(s => s.setConnectionStatus);
+  const addRecentEvent = useUIStore(s => s.addRecentEvent);
+
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    setConnectionStatus('connecting');
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/events`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      setConnectionStatus('connected');
+      // Register watches for current board's image paths
+      if (board) {
+        const roots = new Set<string>();
+        for (const el of board.elements) {
+          if (el.source?.path) {
+            const dir = el.source.path.substring(0, el.source.path.lastIndexOf('/'));
+            if (dir) roots.add(dir);
+          }
+        }
+        roots.forEach(root => {
+          ws.send(JSON.stringify({ action: 'watch', path: root }));
+        });
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data: FileEvent = JSON.parse(event.data);
+        if (data.event_type && data.path) {
+          bumpImageVersion(data.path);
+          addRecentEvent({
+            path: data.path,
+            type: data.event_type,
+            time: new Date().toISOString(),
+          });
+        }
+      } catch {
+        // ignore non-JSON messages
+      }
+    };
+
+    ws.onclose = () => {
+      setConnectionStatus('disconnected');
+      wsRef.current = null;
+      // Reconnect after 3 seconds
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        connect();
+      }, 3000);
+    };
+
+    ws.onerror = () => {
+      ws.close();
+    };
+
+    wsRef.current = ws;
+  }, [board, bumpImageVersion, setConnectionStatus, addRecentEvent]);
+
+  const sendMessage = useCallback((message: Record<string, unknown>) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(message));
+    }
+  }, []);
+
+  const watchPath = useCallback((path: string) => {
+    sendMessage({ action: 'watch', path });
+  }, [sendMessage]);
+
+  const unwatchPath = useCallback((path: string) => {
+    sendMessage({ action: 'unwatch', path });
+  }, [sendMessage]);
+
+  useEffect(() => {
+    connect();
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      wsRef.current?.close();
+    };
+  }, []); // connect once on mount
+
+  return { watchPath, unwatchPath, sendMessage };
+}
