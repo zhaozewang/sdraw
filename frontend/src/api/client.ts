@@ -1,5 +1,6 @@
 import type { Board, BoardSummary, FileInfo, DirEntry } from '@/types/board';
 
+// In packaged mode the backend runs on a dynamic port passed via query param or same origin
 const API_BASE = '/api';
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {

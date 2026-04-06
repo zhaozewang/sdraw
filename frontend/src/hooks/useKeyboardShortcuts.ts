@@ -72,8 +72,9 @@ export function useKeyboardShortcuts() {
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (selectedIds.length > 0) {
         e.preventDefault();
-        store.removeElements(selectedIds);
+        const idsToDelete = [...selectedIds];
         useUIStore.getState().clearSelection();
+        store.removeElements(idsToDelete);
       }
       return;
     }
@@ -140,10 +141,10 @@ export function useKeyboardShortcuts() {
       return;
     }
 
-    // Escape - clear selection
+    // Escape - clear selection / cancel insert mode
     if (e.key === 'Escape') {
       useUIStore.getState().clearSelection();
-      useUIStore.getState().setInsertMode(null);
+      useUIStore.getState().setInsertPayload(null);
       return;
     }
   }, [board]);

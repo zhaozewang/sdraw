@@ -98,6 +98,13 @@ async def validate_path(body: ValidatePathRequest):
         }
 
 
+@router.get("/path/home")
+async def get_home_dir():
+    """Return the current user's home directory."""
+    import os
+    return {"path": str(Path.home())}
+
+
 class BrowseRequest(BaseModel):
     path: str
     show_hidden: bool = False

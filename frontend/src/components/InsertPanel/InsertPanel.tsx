@@ -3,22 +3,51 @@ import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import type { DirEntry, FileInfo } from '@/types/board';
-import { Type, Square, ArrowRight, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw, Circle, RectangleHorizontal, Triangle, Diamond, Minus, Image as ImageIcon } from 'lucide-react';
-import { getFileName, getLastDirectory, saveLastDirectory } from '@/utils/helpers';
+import { Type, Square, ArrowRight, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw, Circle, Triangle, Diamond, Minus, Image as ImageIcon, FolderPlus, Spline, CornerDownRight } from 'lucide-react';
+import { getFileName, getLastDirectory, saveLastDirectory, fetchUserHome } from '@/utils/helpers';
 
 function InsertButton({ icon: Icon, label, onClick }: { icon: any; label: string; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-gray-700 hover:bg-toolbar-hover rounded transition-colors"
+      className="flex items-center gap-1.5 w-full px-2.5 py-1 text-2xs text-gray-700 dark:text-on-surface-secondary hover:bg-toolbar-hover rounded transition-colors"
     >
-      <Icon size={14} className="text-gray-400 shrink-0" />
+      <Icon size={12} className="text-gray-400 dark:text-on-surface-muted shrink-0" />
       <span>{label}</span>
     </button>
   );
 }
 
+function InsertGroup({ label, children, defaultOpen = true }: { label: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 w-full px-2.5 py-1 text-2xs font-semibold text-gray-500 dark:text-on-surface-muted hover:text-gray-700 dark:hover:text-on-surface-primary uppercase tracking-wider"
+      >
+        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        {label}
+      </button>
+      {open && <div className="pb-0.5">{children}</div>}
+    </div>
+  );
+}
+
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp', '.bmp', '.tiff']);
+
+function NavBtn2({ icon: Icon, title, onClick, disabled }: { icon: any; title: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`p-1 rounded ${disabled ? 'text-gray-300 dark:text-on-surface-disabled cursor-not-allowed' : 'text-gray-500 dark:text-on-surface-muted hover:bg-gray-100 dark:hover:bg-surface-tertiary hover:text-gray-700 dark:hover:text-on-surface-primary'}`}
+    >
+      <Icon size={15} />
+    </button>
+  );
+}
 
 function FolderBrowser() {
   const [currentPath, setCurrentPath] = useState('');
@@ -26,6 +55,8 @@ function FolderBrowser() {
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(true);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
   const addElement = useBoardStore(s => s.addElement);
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
 
@@ -36,8 +67,8 @@ function FolderBrowser() {
       setCurrentPath(result.path);
       setParentPath(result.parent);
       setEntries(result.entries);
+      setCreatingFolder(false);
       saveLastDirectory(result.path);
-      // Auto-watch for live refresh
       try { await api.registerWatch(result.path); } catch {}
     } catch {
       setEntries([]);
@@ -45,10 +76,13 @@ function FolderBrowser() {
     setLoading(false);
   }, []);
 
-  // Navigate to last directory on mount
   useEffect(() => {
     const last = getLastDirectory();
-    if (last) navigate(last);
+    if (last && last !== '/Users') {
+      navigate(last);
+    } else {
+      fetchUserHome().then(home => navigate(home));
+    }
   }, [navigate]);
 
   const dirs = entries.filter(e => e.is_dir);
@@ -88,67 +122,75 @@ function FolderBrowser() {
     setSelectedIds(ids);
   }, [imageFiles, addElement, setSelectedIds]);
 
+  const handleCreateFolder = useCallback(async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    try {
+      const result = await api.mkdir(`${currentPath}/${name}`);
+      setNewFolderName('');
+      setCreatingFolder(false);
+      navigate(result.path);
+    } catch {}
+  }, [newFolderName, currentPath, navigate]);
+
   return (
     <div className="border-t border-inspector-border">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 w-full px-3 py-1.5 text-2xs font-semibold text-gray-500 uppercase tracking-wider hover:bg-gray-50"
+        className="flex items-center gap-1 w-full px-3 py-1.5 text-2xs font-semibold text-gray-500 dark:text-on-surface-muted uppercase tracking-wider hover:bg-gray-50 dark:hover:bg-surface-tertiary"
       >
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         Folder Browser
       </button>
       {expanded && (
-        <div className="px-2 py-2 space-y-1.5">
-          {/* Navigation buttons */}
+        <div className="px-2 py-1.5 space-y-1">
+          {/* Nav buttons */}
           <div className="flex items-center gap-0.5">
-            <button
-              onClick={() => parentPath && parentPath !== currentPath && navigate(parentPath)}
-              disabled={!parentPath || parentPath === currentPath}
-              title="Go up"
-              className="p-1 rounded text-gray-500 hover:bg-gray-100 disabled:text-gray-300 disabled:cursor-not-allowed"
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <button onClick={() => navigate('/')} title="Root" className="p-1 rounded text-gray-500 hover:bg-gray-100">
-              <Home size={16} />
-            </button>
-            <button onClick={() => currentPath && navigate(currentPath)} title="Refresh" className="p-1 rounded text-gray-500 hover:bg-gray-100">
-              <RefreshCw size={16} />
-            </button>
+            <NavBtn2 icon={ArrowLeft} title="Back" onClick={() => parentPath && parentPath !== currentPath && navigate(parentPath)} disabled={!parentPath || parentPath === currentPath} />
+            <NavBtn2 icon={Home} title="Home" onClick={() => fetchUserHome().then(navigate)} />
+            <NavBtn2 icon={RefreshCw} title="Refresh" onClick={() => currentPath && navigate(currentPath)} />
+            <NavBtn2 icon={FolderPlus} title="New Folder" onClick={() => { setCreatingFolder(true); setNewFolderName(''); }} />
           </div>
 
-          {/* Current path */}
-          <div
-            className="px-1.5 py-1 text-2xs text-gray-500 bg-gray-50 rounded border border-gray-200 truncate font-mono cursor-pointer hover:border-gray-300"
-            title={currentPath}
-            onClick={() => {
-              const input = window.prompt('Navigate to path:', currentPath);
-              if (input) navigate(input);
-            }}
-          >
-            {currentPath || 'Click to navigate...'}
-          </div>
+          {/* New folder input */}
+          {creatingFolder && (
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={e => setNewFolderName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleCreateFolder();
+                  if (e.key === 'Escape') setCreatingFolder(false);
+                }}
+                placeholder="New folder..."
+                autoFocus
+                className="flex-1 px-1.5 py-0.5 text-2xs border border-blue-400 rounded bg-white dark:bg-surface-tertiary dark:text-on-surface-primary focus:outline-none min-w-0"
+              />
+              <button onClick={handleCreateFolder} className="px-1.5 py-0.5 text-2xs bg-blue-500 text-white rounded">OK</button>
+            </div>
+          )}
 
-          {/* Directory listing */}
-          <div className="max-h-64 overflow-y-auto space-y-0">
+          {/* Listing */}
+          <div className="h-40 overflow-y-auto">
             {loading ? (
-              <div className="text-2xs text-gray-400 text-center py-2">Loading...</div>
+              <div className="text-2xs text-gray-400 dark:text-on-surface-muted text-center py-2">Loading...</div>
             ) : (
               <>
                 {dirs.map(entry => (
                   <button
                     key={entry.path}
                     onClick={() => navigate(entry.path)}
-                    className="flex items-center gap-1.5 w-full px-1.5 py-1 text-xs text-gray-600 hover:bg-blue-50 rounded truncate"
+                    className="flex items-center gap-1.5 w-full px-2.5 py-1 text-2xs text-gray-600 dark:text-on-surface-secondary hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded truncate"
                     title={entry.path}
                   >
-                    <Folder size={11} className="text-blue-400 shrink-0" />
+                    <Folder size={13} className="text-blue-400 shrink-0" />
                     <span className="truncate">{entry.name}</span>
                   </button>
                 ))}
                 {imageFiles.length > 0 && (
-                  <div className="flex items-center justify-between px-1.5 pt-1.5 pb-0.5">
-                    <span className="text-2xs text-gray-400">{imageFiles.length} image{imageFiles.length !== 1 ? 's' : ''}</span>
+                  <div className="flex items-center justify-between px-2.5 pt-1.5 pb-0.5">
+                    <span className="text-2xs text-gray-400 dark:text-on-surface-muted">{imageFiles.length} image{imageFiles.length !== 1 ? 's' : ''}</span>
                     <button onClick={insertAll} className="text-2xs text-accent hover:underline">
                       Insert all
                     </button>
@@ -158,20 +200,20 @@ function FolderBrowser() {
                   <button
                     key={entry.path}
                     onClick={() => insertSingle(entry)}
-                    className="flex items-center gap-1.5 w-full px-1.5 py-1 text-xs text-gray-600 hover:bg-green-50 rounded truncate"
+                    className="flex items-center gap-1.5 w-full px-2.5 py-1 text-2xs text-gray-600 dark:text-on-surface-secondary hover:bg-green-50 dark:hover:bg-green-900/20 rounded truncate"
                     title={entry.path}
                   >
-                    <File size={11} className="text-green-500 shrink-0" />
+                    <File size={13} className="text-green-500 shrink-0" />
                     <span className="truncate">{entry.name}</span>
                     {entry.dimensions && (
-                      <span className="text-2xs text-gray-400 ml-auto shrink-0">
+                      <span className="text-2xs text-gray-400 dark:text-on-surface-muted ml-auto shrink-0">
                         {entry.dimensions.width}x{entry.dimensions.height}
                       </span>
                     )}
                   </button>
                 ))}
                 {dirs.length === 0 && imageFiles.length === 0 && (
-                  <div className="text-2xs text-gray-400 text-center py-2">No folders or images here</div>
+                  <div className="text-2xs text-gray-400 dark:text-on-surface-muted text-center py-2">No folders or images here</div>
                 )}
               </>
             )}
@@ -196,7 +238,7 @@ function LayersList() {
     <div className="border-t border-inspector-border">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 w-full px-3 py-1.5 text-2xs font-semibold text-gray-500 uppercase tracking-wider hover:bg-gray-50"
+        className="flex items-center gap-1 w-full px-3 py-1.5 text-2xs font-semibold text-gray-500 dark:text-on-surface-muted uppercase tracking-wider hover:bg-gray-50 dark:hover:bg-surface-tertiary"
       >
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         Layers ({board.elements.length})
@@ -214,18 +256,56 @@ function LayersList() {
               <button
                 key={el.id}
                 onClick={() => setSelectedIds([el.id])}
-                className={`flex items-center gap-1.5 w-full px-3 py-1 text-xs truncate ${
-                  isSelected ? 'bg-accent/10 text-accent' : 'text-gray-600 hover:bg-gray-50'
+                className={`flex items-center gap-1.5 w-full px-2.5 py-1 text-2xs truncate ${
+                  isSelected ? 'bg-accent/10 text-accent' : 'text-gray-600 dark:text-on-surface-secondary hover:bg-gray-50 dark:hover:bg-surface-tertiary'
                 }`}
               >
                 <Icon size={12} className="shrink-0" />
                 <span className="truncate">{label}</span>
-                <span className="text-2xs text-gray-400 ml-auto">{el.z_index}</span>
+                <span className="text-2xs text-gray-400 dark:text-on-surface-muted ml-auto">{el.z_index}</span>
               </button>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+const LABEL_SETS = {
+  'A-H': ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
+  'a-h': ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
+  '1-8': ['1', '2', '3', '4', '5', '6', '7', '8'],
+  'i-viii': ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii'],
+  'Greek': ['α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ'],
+};
+
+function LabelPicker({ onInsert }: { onInsert: (label: string) => void }) {
+  const [activeSet, setActiveSet] = useState<keyof typeof LABEL_SETS>('A-H');
+  const labels = LABEL_SETS[activeSet];
+
+  return (
+    <div className="px-3 pt-0 pb-4 space-y-1">
+      <select
+        value={activeSet}
+        onChange={e => setActiveSet(e.target.value as keyof typeof LABEL_SETS)}
+        className="w-full px-1.5 py-0.5 text-2xs border border-gray-200 dark:border-border rounded bg-white dark:bg-surface-tertiary text-gray-600 dark:text-on-surface-secondary focus:outline-none focus:border-accent"
+      >
+        {(Object.keys(LABEL_SETS) as (keyof typeof LABEL_SETS)[]).map(key => (
+          <option key={key} value={key}>{key}</option>
+        ))}
+      </select>
+      <div className="flex flex-wrap gap-1">
+        {labels.map(label => (
+          <button
+            key={label}
+            onClick={() => onInsert(label)}
+            className="w-5 h-5 text-2xs font-bold text-gray-600 dark:text-on-surface-secondary bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover border border-gray-200 dark:border-border rounded flex items-center justify-center"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -277,6 +357,7 @@ export function InsertPanel() {
   const board = useBoardStore(s => s.board);
   const addElement = useBoardStore(s => s.addElement);
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
+  const setInsertPayload = useUIStore(s => s.setInsertPayload);
 
   if (!board) return null;
 
@@ -285,25 +366,48 @@ export function InsertPanel() {
     return (
       <button
         onClick={toggleInsertPanel}
-        className="w-8 bg-inspector-bg border-r border-inspector-border flex flex-col items-center pt-2 shrink-0 hover:bg-gray-100 transition-colors"
+        className="w-8 bg-inspector-bg border-r border-inspector-border flex flex-col items-center pt-2 shrink-0 hover:bg-gray-100 dark:hover:bg-surface-tertiary transition-colors"
         title="Show Insert Panel"
       >
-        <PanelLeftOpen size={16} className="text-gray-400" />
+        <PanelLeftOpen size={16} className="text-gray-400 dark:text-on-surface-muted" />
       </button>
     );
   }
 
-  const insert = (type: string, overrides: any = {}) => {
+  /** Insert at viewport center (for text/labels that don't need drag-to-draw) */
+  const insertAtCenter = (type: string, overrides: any = {}) => {
+    const viewport = document.querySelector('.react-flow__viewport') as HTMLElement | null;
+    const container = viewport?.parentElement;
+    if (viewport && container) {
+      const transform = viewport.style.transform;
+      const match = transform.match(/translate\((.+?)px,\s*(.+?)px\)\s*scale\((.+?)\)/);
+      if (match) {
+        const tx = parseFloat(match[1]);
+        const ty = parseFloat(match[2]);
+        const scale = parseFloat(match[3]);
+        const rect = container.getBoundingClientRect();
+        const w = overrides.width ?? 200;
+        const h = overrides.height ?? 150;
+        const centerX = (rect.width / 2 - tx) / scale - w / 2;
+        const centerY = (rect.height / 2 - ty) / scale - h / 2;
+        overrides = { ...overrides, x: Math.round(centerX), y: Math.round(centerY) };
+      }
+    }
     const el = addElement(type as any, overrides);
     setSelectedIds([el.id]);
   };
 
-  const handleInsertText = () => insert('text', {
+  /** Enter drag-to-draw mode for shapes */
+  const startDraw = (type: 'rectangle' | 'arrow', overrides: any = {}) => {
+    setInsertPayload({ type, overrides });
+  };
+
+  const handleInsertText = () => insertAtCenter('text', {
     text: 'Label', width: 100, height: 32,
     style: { fontSize: 16, fontWeight: 700, color: '#111111', background: 'transparent', padding: 4, textAlign: 'left' },
   });
 
-  const handleInsertFigureLabel = (label: string) => insert('text', {
+  const handleInsertFigureLabel = (label: string) => insertAtCenter('text', {
     text: label, width: 36, height: 36,
     style: { fontSize: 24, fontWeight: 700, color: '#111111', background: 'transparent', padding: 2, textAlign: 'center' },
   });
@@ -312,38 +416,35 @@ export function InsertPanel() {
     <div className="flex shrink-0">
       <div className="bg-inspector-bg overflow-y-auto overflow-x-hidden flex flex-col" style={{ width: insertPanelWidth }}>
         <div className="flex items-center justify-between px-3 py-2 border-b border-inspector-border">
-          <span className="text-xs font-semibold text-gray-700">Insert</span>
-          <button onClick={toggleInsertPanel} className="text-gray-400 hover:text-gray-600" title="Collapse panel">
+          <span className="text-xs font-semibold text-gray-700 dark:text-on-surface-primary">Insert</span>
+          <button onClick={toggleInsertPanel} className="text-gray-400 dark:text-on-surface-muted hover:text-gray-600 dark:hover:text-on-surface-primary" title="Collapse panel">
             <PanelLeftClose size={14} />
           </button>
         </div>
 
-        <div className="py-1">
-          <InsertButton icon={Type} label="Text box" onClick={handleInsertText} />
-          <InsertButton icon={Square} label="Rectangle" onClick={() => insert('rectangle', { width: 200, height: 150 })} />
-          <InsertButton icon={Circle} label="Circle / Ellipse" onClick={() => insert('rectangle', { width: 150, height: 150, style: { borderRadius: 9999 } })} />
-          <InsertButton icon={Diamond} label="Diamond" onClick={() => insert('rectangle', { width: 150, height: 150, metadata: { shape: 'diamond' } })} />
-          <InsertButton icon={Triangle} label="Triangle" onClick={() => insert('rectangle', { width: 150, height: 130, metadata: { shape: 'triangle' } })} />
-          <InsertButton icon={Minus} label="Line" onClick={() => insert('arrow', { width: 200, height: 4, points: [{ x: 0, y: 2 }, { x: 200, y: 2 }], metadata: { arrowHead: false } })} />
-          <InsertButton icon={ArrowRight} label="Arrow" onClick={() => insert('arrow', { width: 200, height: 4, points: [{ x: 0, y: 2 }, { x: 200, y: 2 }], metadata: { arrowHead: true } })} />
+        <div className="py-0.5">
+          <InsertButton icon={Type} label="Text" onClick={handleInsertText} />
         </div>
+        <InsertGroup label="Shapes">
+          <InsertButton icon={Square} label="Rectangle" onClick={() => startDraw('rectangle', {})} />
+          <InsertButton icon={Circle} label="Circle" onClick={() => startDraw('rectangle', { style: { borderRadius: 9999 } })} />
+          <InsertButton icon={Diamond} label="Diamond" onClick={() => startDraw('rectangle', { metadata: { shape: 'diamond' } })} />
+          <InsertButton icon={Triangle} label="Triangle" onClick={() => startDraw('rectangle', { metadata: { shape: 'triangle' } })} />
+        </InsertGroup>
+        <InsertGroup label="Lines">
+          <InsertButton icon={Minus} label="Line" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'none', lineType: 'straight' } })} />
+          <InsertButton icon={ArrowRight} label="Arrow" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'straight' } })} />
+          <InsertButton icon={Spline} label="Smooth" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'smooth' } })} />
+          <InsertButton icon={Spline} label="Curve" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'quadratic' } })} />
+          <InsertButton icon={CornerDownRight} label="Step" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'step' } })} />
+        </InsertGroup>
 
         {/* Figure label quick-insert */}
         <div className="border-t border-inspector-border">
           <div className="px-3 py-1.5 text-2xs font-semibold text-gray-500 uppercase tracking-wider">
-            Figure Labels
+            <span className="text-gray-500 dark:text-on-surface-muted">Figure Labels</span>
           </div>
-          <div className="px-3 py-1 flex flex-wrap gap-1">
-            {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(label => (
-              <button
-                key={label}
-                onClick={() => handleInsertFigureLabel(label)}
-                className="w-5 h-5 text-2xs font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded flex items-center justify-center"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <LabelPicker onInsert={handleInsertFigureLabel} />
         </div>
 
         <FolderBrowser />

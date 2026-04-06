@@ -105,6 +105,27 @@ export function getLastDirectory(): string {
   return localStorage.getItem(LAST_DIR_KEY) || '/Users';
 }
 
+// Fetch and cache the user's home directory from the backend
+let _cachedHome: string | null = null;
+export async function fetchUserHome(): Promise<string> {
+  if (_cachedHome) return _cachedHome;
+  try {
+    const res = await fetch('/api/path/home');
+    if (res.ok) {
+      const data = await res.json();
+      _cachedHome = data.path;
+      return data.path;
+    }
+  } catch {}
+  return '/Users';
+}
+
+export function getLastDirectoryOrHome(): string {
+  const last = localStorage.getItem(LAST_DIR_KEY);
+  if (last) return last;
+  return _cachedHome || '/Users';
+}
+
 export function saveLastDirectory(path: string) {
   localStorage.setItem(LAST_DIR_KEY, path);
 }

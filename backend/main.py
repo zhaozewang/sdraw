@@ -4,10 +4,19 @@ import asyncio
 import json
 import logging
 import os
+import sys
+
+# When running as a PyInstaller bundle, ensure the _internal dir is on sys.path
+# so that routers/, services/, models/ packages can be imported.
+if getattr(sys, 'frozen', False):
+    _internal = os.path.join(os.path.dirname(sys.executable), '_internal')
+    if _internal not in sys.path:
+        sys.path.insert(0, _internal)
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from routers import boards, export, files
 from services.watcher import FileWatcherService
@@ -130,13 +139,62 @@ async def websocket_events(ws: WebSocket):
         logger.info("WebSocket client disconnected")
 
 
+# Serve pre-built frontend in production / packaged mode
+def _resolve_static_dir():
+    """Find the frontend dist directory relative to the executable or source."""
+    # PyInstaller sets _MEIPASS to the temp extraction dir
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(base, "frontend_dist"),                             # PyInstaller bundle
+        os.path.join(os.path.dirname(sys.executable), "frontend_dist"),  # PyInstaller --onedir
+        os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"),  # dev layout
+        os.path.join(os.path.dirname(__file__), "frontend_dist"),        # co-located
+    ]
+    for c in candidates:
+        real = os.path.realpath(c)
+        if os.path.isdir(real) and os.path.isfile(os.path.join(real, "index.html")):
+            return real
+    return None
+
+
+_static_dir = _resolve_static_dir()
+if _static_dir:
+    from fastapi.responses import FileResponse
+
+    # Serve static assets (js, css, images)
+    app.mount("/assets", StaticFiles(directory=os.path.join(_static_dir, "assets")), name="static-assets")
+
+    # Serve other static files at root (favicon, etc.)
+    @app.get("/{full_path:path}", tags=["spa"])
+    async def serve_spa(full_path: str):
+        """SPA catch-all: serve the file if it exists, otherwise index.html."""
+        file_path = os.path.join(_static_dir, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(_static_dir, "index.html"))
+
+    logger.info("Serving frontend from %s", _static_dir)
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        reload_dirs=["."],
-    )
+    port = int(os.environ.get("SDRAW_PORT", "8000"))
+    is_frozen = getattr(sys, 'frozen', False)
+
+    if is_frozen:
+        # PyInstaller: pass the app object directly (module import doesn't work)
+        uvicorn.run(
+            app,
+            host="127.0.0.1",
+            port=port,
+        )
+    else:
+        # Dev: use string reference for auto-reload support
+        uvicorn.run(
+            "main:app",
+            host="127.0.0.1",
+            port=port,
+            reload="--reload" in sys.argv,
+            reload_dirs=["."] if "--reload" in sys.argv else None,
+        )

@@ -35,3 +35,9 @@ sample_data/
 
 # Logs
 *.log
+
+# Electron / Desktop build
+release/
+backend/dist/
+backend/build/
+backend/*.spec

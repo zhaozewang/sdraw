@@ -17,7 +17,7 @@ export function StatusBar() {
   const lastEvent = recentEvents[0];
 
   return (
-    <div className="h-6 bg-toolbar-bg border-t border-toolbar-border flex items-center px-3 text-2xs text-gray-500 gap-4 select-none shrink-0">
+    <div className="h-6 bg-toolbar-bg border-t border-toolbar-border flex items-center px-3 text-2xs text-gray-500 dark:text-on-surface-muted gap-4 select-none shrink-0">
       {/* Connection status */}
       <div className="flex items-center gap-1" title={`WebSocket: ${connectionStatus}`}>
         {connectionStatus === 'connected' ? (
@@ -44,7 +44,7 @@ export function StatusBar() {
 
       {/* Last event */}
       {lastEvent && (
-        <span className="text-gray-400 truncate max-w-xs" title={lastEvent.path}>
+        <span className="text-gray-400 dark:text-on-surface-muted truncate max-w-xs" title={lastEvent.path}>
           {lastEvent.type}: {lastEvent.path.split('/').pop()}
         </span>
       )}
@@ -52,7 +52,7 @@ export function StatusBar() {
       {/* Auto-save */}
       <button
         onClick={() => setAutoSaveEnabled(!autoSaveEnabled)}
-        className={`${autoSaveEnabled ? 'text-green-600' : 'text-gray-400'} hover:text-gray-700`}
+        className={`${autoSaveEnabled ? 'text-green-600 dark:text-green-400' : 'text-gray-400 dark:text-on-surface-disabled'} hover:text-gray-700 dark:hover:text-on-surface-primary`}
       >
         {autoSaveEnabled ? 'Auto-save ON' : 'Auto-save OFF'}
       </button>

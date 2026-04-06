@@ -1,9 +1,20 @@
 import { create } from 'zustand';
 
+export type ThemeMode = 'light' | 'dark' | 'system';
 export type InsertMode = null | 'image' | 'text' | 'rectangle' | 'arrow';
+
+/** Pending insert payload: element type + any style/metadata overrides for the shape */
+export interface InsertPayload {
+  type: 'text' | 'rectangle' | 'arrow';
+  overrides?: Record<string, any>;
+}
 export type PanelTab = 'insert' | 'layers';
 
 interface UIState {
+  // Theme
+  theme: ThemeMode;
+  setTheme: (theme: ThemeMode) => void;
+
   // Selection
   selectedIds: string[];
 
@@ -16,6 +27,7 @@ interface UIState {
 
   // Insert mode
   insertMode: InsertMode;
+  insertPayload: InsertPayload | null;
 
   // Zoom
   zoom: number;
@@ -24,6 +36,7 @@ interface UIState {
   showBoardDialog: boolean;
   showExportDialog: boolean;
   showFolderDialog: boolean;
+  showSettings: boolean;
 
   // Status
   connectionStatus: 'connected' | 'disconnected' | 'connecting';
@@ -36,6 +49,14 @@ interface UIState {
   // Flag to suppress Canvas position handling during endpoint drags
   suppressPositionSync: boolean;
   setSuppressPositionSync: (v: boolean) => void;
+
+  // Snap target highlight (element ID whose edge should glow)
+  snapTargetId: string | null;
+  setSnapTargetId: (id: string | null) => void;
+
+  // Auto-export status
+  exportStatus: 'idle' | 'exporting' | 'success' | 'error';
+  setExportStatus: (status: 'idle' | 'exporting' | 'success' | 'error') => void;
 
   // Zoom callbacks (set by Canvas, called by Toolbar)
   zoomTo: ((zoom: number) => void) | null;
@@ -53,6 +74,7 @@ interface UIState {
   toggleInsertPanel: () => void;
   setInsertPanelTab: (tab: PanelTab) => void;
   setInsertMode: (mode: InsertMode) => void;
+  setInsertPayload: (payload: InsertPayload | null) => void;
   setInsertPanelWidth: (width: number) => void;
   setInspectorWidth: (width: number) => void;
 
@@ -61,6 +83,7 @@ interface UIState {
   setShowBoardDialog: (show: boolean) => void;
   setShowExportDialog: (show: boolean) => void;
   setShowFolderDialog: (show: boolean) => void;
+  setShowSettings: (show: boolean) => void;
 
   setConnectionStatus: (status: 'connected' | 'disconnected' | 'connecting') => void;
   setWatchedRoots: (roots: string[]) => void;
@@ -69,7 +92,36 @@ interface UIState {
   setAutoSaveEnabled: (enabled: boolean) => void;
 }
 
+function getInitialTheme(): ThemeMode {
+  try {
+    const stored = localStorage.getItem('sdraw_theme');
+    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
+  } catch {}
+  return 'light';
+}
+
+function applyThemeToDOM(theme: ThemeMode) {
+  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.classList.toggle('dark', isDark);
+}
+
+// Apply on load
+applyThemeToDOM(getInitialTheme());
+
+// Listen for OS theme changes when in 'system' mode
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  const theme = localStorage.getItem('sdraw_theme') as ThemeMode;
+  if (theme === 'system') applyThemeToDOM('system');
+});
+
 export const useUIStore = create<UIState>((set, get) => ({
+  theme: getInitialTheme(),
+  setTheme: (theme) => {
+    localStorage.setItem('sdraw_theme', theme);
+    applyThemeToDOM(theme);
+    set({ theme });
+  },
+
   selectedIds: [],
   showInspector: true,
   showInsertPanel: true,
@@ -77,16 +129,22 @@ export const useUIStore = create<UIState>((set, get) => ({
   insertPanelWidth: 220,
   inspectorWidth: 240,
   insertMode: null,
+  insertPayload: null,
   zoom: 1,
   showBoardDialog: false,
   showExportDialog: false,
   showFolderDialog: false,
+  showSettings: false,
   connectionStatus: 'disconnected',
   watchedRoots: [],
   recentEvents: [],
   autoSaveEnabled: true,
   suppressPositionSync: false,
   setSuppressPositionSync: (v) => set({ suppressPositionSync: v }),
+  snapTargetId: null,
+  setSnapTargetId: (id) => set({ snapTargetId: id }),
+  exportStatus: 'idle',
+  setExportStatus: (status) => set({ exportStatus: status }),
   zoomTo: null,
   fitView: null,
   setZoomTo: (fn) => set({ zoomTo: fn }),
@@ -101,6 +159,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   toggleInsertPanel: () => set(s => ({ showInsertPanel: !s.showInsertPanel })),
   setInsertPanelTab: (tab) => set({ insertPanelTab: tab }),
   setInsertMode: (mode) => set({ insertMode: mode }),
+  setInsertPayload: (payload) => set({ insertPayload: payload, insertMode: payload ? payload.type as InsertMode : null }),
   setInsertPanelWidth: (width) => set({ insertPanelWidth: Math.max(160, Math.min(400, width)) }),
   setInspectorWidth: (width) => set({ inspectorWidth: Math.max(180, Math.min(400, width)) }),
 
@@ -109,6 +168,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   setShowBoardDialog: (show) => set({ showBoardDialog: show }),
   setShowExportDialog: (show) => set({ showExportDialog: show }),
   setShowFolderDialog: (show) => set({ showFolderDialog: show }),
+  setShowSettings: (show) => set({ showSettings: show }),
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setWatchedRoots: (roots) => set({ watchedRoots: roots }),

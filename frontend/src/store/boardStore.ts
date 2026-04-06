@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import type { Board, BoardElement, CanvasSettings, ElementType } from '@/types/board';
+import type { Board, BoardElement, CanvasSettings, ElementType, AutoExportSettings } from '@/types/board';
 import { DEFAULT_CANVAS } from '@/types/board';
 import { createElement } from '@/utils/helpers';
 import { api } from '@/api/client';
@@ -29,6 +29,8 @@ interface BoardState {
   saveBoard: () => Promise<void>;
   closeBoard: () => void;
   setBoardName: (name: string) => void;
+  updateAutoExport: (settings: Partial<AutoExportSettings>) => void;
+  triggerAutoExport: () => Promise<void>;
 
   // Actions - Canvas
   updateCanvas: (settings: Partial<CanvasSettings>) => void;
@@ -149,6 +151,68 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     set({ board: { ...board, name }, isDirty: true });
   },
 
+  updateAutoExport: (settings: Partial<AutoExportSettings>) => {
+    const { board } = get();
+    if (!board) return;
+    const current = board.autoExport || { enabled: false, outputPath: '', format: 'png' as const, dpi: 2, transparent: false };
+    set({ board: { ...board, autoExport: { ...current, ...settings } }, isDirty: true });
+  },
+
+  triggerAutoExport: async () => {
+    const { board } = get();
+    if (!board?.autoExport?.enabled || !board.autoExport.outputPath) return;
+
+    // Lazy import to avoid circular dependency
+    const { useUIStore } = await import('@/store/uiStore');
+    useUIStore.getState().setExportStatus('exporting');
+
+    try {
+      const htmlToImage = await import('html-to-image');
+      const el = document.querySelector('.react-flow__viewport') as HTMLElement;
+      if (!el) { useUIStore.getState().setExportStatus('error'); return; }
+
+      const fmt = board.autoExport.format || 'png';
+      const opts = {
+        pixelRatio: board.autoExport.dpi || 2,
+        backgroundColor: board.autoExport.transparent ? undefined : (board.canvas.background || '#ffffff'),
+      };
+
+      let dataUrl: string;
+      if (fmt === 'jpg') {
+        dataUrl = await htmlToImage.toJpeg(el, { ...opts, quality: 0.95 });
+      } else if (fmt === 'svg') {
+        dataUrl = await htmlToImage.toSvg(el, opts);
+      } else {
+        dataUrl = await htmlToImage.toPng(el, opts);
+      }
+
+      const res = await fetch('/api/export/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: board.autoExport.outputPath,
+          data_url: dataUrl,
+        }),
+      });
+      if (!res.ok) {
+        console.error('Auto-export save failed:', await res.text());
+        useUIStore.getState().setExportStatus('error');
+      } else {
+        useUIStore.getState().setExportStatus('success');
+        // Reset to idle after 3s
+        setTimeout(() => {
+          if (useUIStore.getState().exportStatus === 'success') {
+            useUIStore.getState().setExportStatus('idle');
+          }
+        }, 3000);
+      }
+    } catch (err) {
+      console.error('Auto-export failed:', err);
+      const { useUIStore: ui } = await import('@/store/uiStore');
+      ui.getState().setExportStatus('error');
+    }
+  },
+
   updateCanvas: (settings: Partial<CanvasSettings>) => {
     const { board } = get();
     if (!board) return;
@@ -161,17 +225,41 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const maxZ = board.elements.reduce((max, el) => Math.max(max, el.z_index), 0);
     const element = createElement(type, { ...overrides, z_index: maxZ + 1 });
     const newElements = [...board.elements, element];
-    get().pushHistory(`Add ${type}`);
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory(`Add ${type}`);
     return element;
   },
 
   updateElement: (id: string, updates: Partial<BoardElement>) => {
     const { board } = get();
     if (!board) return;
-    const newElements = board.elements.map(el =>
-      el.id === id ? { ...el, ...updates } : el
-    );
+
+    const target = board.elements.find(el => el.id === id);
+
+    // If moving a group, move all children by the same delta
+    let childUpdates: Map<string, { x: number; y: number }> | null = null;
+    if (target?.type === 'group' && target.children && (updates.x !== undefined || updates.y !== undefined)) {
+      const dx = (updates.x ?? target.x) - target.x;
+      const dy = (updates.y ?? target.y) - target.y;
+      if (dx !== 0 || dy !== 0) {
+        childUpdates = new Map();
+        for (const childId of target.children) {
+          const child = board.elements.find(el => el.id === childId);
+          if (child) {
+            childUpdates.set(childId, { x: child.x + dx, y: child.y + dy });
+          }
+        }
+      }
+    }
+
+    const newElements = board.elements.map(el => {
+      if (el.id === id) return { ...el, ...updates };
+      if (childUpdates?.has(el.id)) {
+        const pos = childUpdates.get(el.id)!;
+        return { ...el, x: pos.x, y: pos.y };
+      }
+      return el;
+    });
     set({ board: { ...board, elements: newElements }, isDirty: true });
   },
 
@@ -190,9 +278,9 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const { board } = get();
     if (!board) return;
     const idSet = new Set(ids);
-    get().pushHistory('Delete elements');
     const newElements = board.elements.filter(el => !idSet.has(el.id));
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory('Delete elements');
   },
 
   duplicateElements: (ids: string[]) => {
@@ -208,8 +296,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       y: el.y + 20,
       z_index: maxZ + 1 + i,
     }));
-    get().pushHistory('Duplicate');
     set({ board: { ...board, elements: [...board.elements, ...duplicated] }, isDirty: true });
+    get().pushHistory('Duplicate');
     return duplicated;
   },
 
@@ -218,11 +306,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!board) return;
     const maxZ = board.elements.reduce((max, el) => Math.max(max, el.z_index), 0);
     const idSet = new Set(ids);
-    get().pushHistory('Bring to front');
     const newElements = board.elements.map((el, i) =>
       idSet.has(el.id) ? { ...el, z_index: maxZ + 1 + i } : el
     );
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory('Bring to front');
   },
 
   sendToBack: (ids: string[]) => {
@@ -230,33 +318,33 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!board) return;
     const minZ = board.elements.reduce((min, el) => Math.min(min, el.z_index), 0);
     const idSet = new Set(ids);
-    get().pushHistory('Send to back');
     const newElements = board.elements.map((el, i) =>
       idSet.has(el.id) ? { ...el, z_index: minZ - ids.length + i } : el
     );
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory('Send to back');
   },
 
   bringForward: (ids: string[]) => {
     const { board } = get();
     if (!board) return;
     const idSet = new Set(ids);
-    get().pushHistory('Bring forward');
     const newElements = board.elements.map(el =>
       idSet.has(el.id) ? { ...el, z_index: el.z_index + 1 } : el
     );
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory('Bring forward');
   },
 
   sendBackward: (ids: string[]) => {
     const { board } = get();
     if (!board) return;
     const idSet = new Set(ids);
-    get().pushHistory('Send backward');
     const newElements = board.elements.map(el =>
       idSet.has(el.id) ? { ...el, z_index: el.z_index - 1 } : el
     );
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory('Send backward');
   },
 
   groupElements: (ids: string[]) => {
@@ -279,29 +367,62 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       children: ids,
     });
 
-    get().pushHistory('Group');
+    // Mark children with their groupId and store relative offsets
+    const newElements = board.elements.map(el => {
+      if (idSet.has(el.id)) {
+        return {
+          ...el,
+          metadata: {
+            ...el.metadata,
+            groupId: group.id,
+            relX: el.x - minX,
+            relY: el.y - minY,
+          },
+        };
+      }
+      return el;
+    });
+
     set({
-      board: { ...board, elements: [...board.elements, group] },
+      board: { ...board, elements: [...newElements, group] },
       isDirty: true,
     });
+    get().pushHistory('Group');
     return group.id;
   },
 
   ungroupElements: (groupId: string) => {
     const { board } = get();
     if (!board) return;
-    get().pushHistory('Ungroup');
-    const newElements = board.elements.filter(el => el.id !== groupId);
+    // Remove groupId from children metadata, remove the group element
+    const newElements = board.elements
+      .filter(el => el.id !== groupId)
+      .map(el => {
+        if (el.metadata?.groupId === groupId) {
+          const { groupId: _, relX, relY, ...restMeta } = el.metadata;
+          return { ...el, metadata: restMeta };
+        }
+        return el;
+      });
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory('Ungroup');
   },
 
   toggleLock: (ids: string[]) => {
     const { board } = get();
     if (!board) return;
     const idSet = new Set(ids);
-    const allLocked = board.elements.filter(el => idSet.has(el.id)).every(el => el.locked);
+    // Expand groups: if a group is selected, include its children
+    const expandedIds = new Set(ids);
+    for (const id of ids) {
+      const el = board.elements.find(e => e.id === id);
+      if (el?.type === 'group' && el.children) {
+        el.children.forEach(cid => expandedIds.add(cid));
+      }
+    }
+    const allLocked = board.elements.filter(el => expandedIds.has(el.id)).every(el => el.locked);
     const newElements = board.elements.map(el =>
-      idSet.has(el.id) ? { ...el, locked: !allLocked } : el
+      expandedIds.has(el.id) ? { ...el, locked: !allLocked } : el
     );
     set({ board: { ...board, elements: newElements }, isDirty: true });
   },
@@ -311,8 +432,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!board || ids.length < 2) return;
     const idSet = new Set(ids);
     const targets = board.elements.filter(el => idSet.has(el.id));
-
-    get().pushHistory(`Align ${alignment}`);
 
     let newElements = [...board.elements];
     switch (alignment) {
@@ -348,6 +467,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       }
     }
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory(`Align ${alignment}`);
   },
 
   distributeElements: (ids: string[], direction) => {
@@ -355,8 +475,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!board || ids.length < 3) return;
     const idSet = new Set(ids);
     const targets = board.elements.filter(el => idSet.has(el.id));
-
-    get().pushHistory(`Distribute ${direction}`);
 
     if (direction === 'horizontal') {
       const sorted = [...targets].sort((a, b) => a.x - b.x);
@@ -393,6 +511,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       });
       set({ board: { ...board, elements: newElements }, isDirty: true });
     }
+    get().pushHistory(`Distribute ${direction}`);
   },
 
   pushHistory: (description: string) => {

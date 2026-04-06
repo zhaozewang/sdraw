@@ -73,12 +73,23 @@ export interface CanvasSettings {
   snap_size: number;
 }
 
+export type ExportFormat = 'png' | 'jpg' | 'pdf' | 'svg';
+
+export interface AutoExportSettings {
+  enabled: boolean;
+  outputPath: string;       // absolute path to export file
+  format: ExportFormat;
+  dpi: number;              // pixel ratio multiplier
+  transparent: boolean;
+}
+
 export interface Board {
   schema_version: number;
   id: string;
   name: string;
   canvas: CanvasSettings;
   elements: BoardElement[];
+  autoExport?: AutoExportSettings;
   created_at: string;
   updated_at: string;
   app_version: string;
@@ -163,7 +174,7 @@ export const DEFAULT_RECT_STYLE: ElementStyle = {
   strokeWidth: 2,
   strokeStyle: 'solid',
   fill: 'transparent',
-  borderRadius: 8,
+  borderRadius: 0,
   opacity: 1,
 };
 

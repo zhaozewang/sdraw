@@ -2,6 +2,71 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===== Theme CSS Variables ===== */
+:root {
+  /* Canvas */
+  --canvas-bg: #f8f9fa;
+  --canvas-grid: #e2e8f0;
+
+  /* Toolbar */
+  --toolbar-bg: #ffffff;
+  --toolbar-border: #e2e8f0;
+  --toolbar-hover: #f1f5f9;
+  --toolbar-active: #e2e8f0;
+
+  /* Inspector */
+  --inspector-bg: #ffffff;
+  --inspector-border: #e2e8f0;
+  --inspector-section: #f8fafc;
+
+  /* Semantic surfaces */
+  --surface-primary: #ffffff;
+  --surface-secondary: #f8f9fa;
+  --surface-tertiary: #f1f5f9;
+
+  /* Semantic text */
+  --text-primary: #1f2937;
+  --text-secondary: #4b5563;
+  --text-muted: #9ca3af;
+  --text-disabled: #d1d5db;
+
+  /* Semantic borders */
+  --border-default: #e2e8f0;
+  --border-light: #f1f5f9;
+}
+
+.dark {
+  /* Canvas */
+  --canvas-bg: #1e1f22;
+  --canvas-grid: #2e3035;
+
+  /* Toolbar */
+  --toolbar-bg: #2b2d31;
+  --toolbar-border: #3f4147;
+  --toolbar-hover: #36373d;
+  --toolbar-active: #3f4147;
+
+  /* Inspector */
+  --inspector-bg: #2b2d31;
+  --inspector-border: #3f4147;
+  --inspector-section: #313338;
+
+  /* Semantic surfaces */
+  --surface-primary: #2b2d31;
+  --surface-secondary: #313338;
+  --surface-tertiary: #36373d;
+
+  /* Semantic text */
+  --text-primary: #f2f3f5;
+  --text-secondary: #b5bac1;
+  --text-muted: #949ba4;
+  --text-disabled: #636a72;
+
+  /* Semantic borders */
+  --border-default: #3f4147;
+  --border-light: #36373d;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -15,9 +80,31 @@ body {
   overflow: hidden;
 }
 
-/* React Flow overrides for draw.io feel */
-.react-flow__node {
-  cursor: default;
+/* React Flow cursor overrides */
+.react-flow__pane {
+  cursor: default !important;
+}
+
+.drawing-mode .react-flow__pane {
+  cursor: crosshair !important;
+}
+
+.react-flow__pane.draggable,
+.react-flow__pane.dragging,
+.react-flow__pane.selection {
+  cursor: default !important;
+}
+
+.react-flow__node.selectable {
+  cursor: default !important;
+}
+
+.react-flow__node.draggable {
+  cursor: move !important;
+}
+
+.react-flow__node.draggable.dragging {
+  cursor: move !important;
 }
 
 .react-flow__node.selected {
@@ -33,17 +120,26 @@ body {
 }
 
 .react-flow__minimap {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--toolbar-border);
   border-radius: 4px;
 }
 
 .react-flow__background pattern line {
-  stroke: #e8ecf1 !important;
+  stroke: var(--canvas-grid) !important;
 }
 
 .react-flow__selection {
   background: rgba(59, 130, 246, 0.08) !important;
   border: 1px solid rgba(59, 130, 246, 0.4) !important;
+}
+
+/* KaTeX zoom stability */
+.katex {
+  font-size: 1em !important;
+}
+
+.katex-html {
+  white-space: nowrap;
 }
 
 /* Alignment guide lines */
@@ -95,8 +191,17 @@ body {
   background: #cbd5e1;
 }
 
+.dark *:hover > ::-webkit-scrollbar-thumb,
+.dark *::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
 *::-webkit-scrollbar-thumb:active {
   background: #94a3b8;
+}
+
+.dark *::-webkit-scrollbar-thumb:active {
+  background: #6b7280;
 }
 
 /* Firefox thin scrollbar */
@@ -107,4 +212,15 @@ body {
 
 *:hover {
   scrollbar-color: #cbd5e1 transparent;
+}
+
+.dark *:hover {
+  scrollbar-color: #4b5563 transparent;
+}
+
+/* Dark mode form element overrides */
+.dark select,
+.dark input[type="text"],
+.dark input[type="number"] {
+  color-scheme: dark;
 }

@@ -40,12 +40,25 @@ export function useWebSocket() {
       try {
         const data: FileEvent = JSON.parse(event.data);
         if (data.event_type && data.path) {
+          const boardState = useBoardStore.getState();
+
+          // Ignore file change events for the auto-export output file itself
+          // to prevent infinite export loops
+          const exportPath = boardState.board?.autoExport?.outputPath;
+          if (exportPath && data.path === exportPath) return;
+
           bumpImageVersion(data.path);
           addRecentEvent({
             path: data.path,
             type: data.event_type,
             time: new Date().toISOString(),
           });
+          // Trigger auto-export after a short delay (let image re-render first)
+          if (boardState.board?.autoExport?.enabled) {
+            setTimeout(() => {
+              useBoardStore.getState().triggerAutoExport();
+            }, 500);
+          }
         }
       } catch {
         // ignore non-JSON messages

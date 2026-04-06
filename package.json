@@ -1,0 +1,88 @@
+{
+  "name": "sdraw",
+  "version": "0.1.0",
+  "description": "sDraw — local-first scientific plot board",
+  "author": "zhaozewang",
+  "license": "MIT",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend:mac": "cd backend && python3 -m PyInstaller --noconfirm --onedir --name sdraw-backend --add-data '../frontend/dist:frontend_dist' main.py",
+    "build:backend:win": "cd backend && python -m PyInstaller --noconfirm --onedir --name sdraw-backend --add-data \"../frontend/dist;frontend_dist\" main.py",
+    "prebuild:mac": "npm run build:frontend && npm run build:backend:mac",
+    "prebuild:win": "npm run build:frontend && npm run build:backend:win",
+    "dist:mac": "npm run prebuild:mac && electron-builder --mac",
+    "dist:win": "npm run prebuild:win && electron-builder --win",
+    "dist:all": "npm run prebuild:mac && electron-builder --mac --win"
+  },
+  "build": {
+    "appId": "com.sdraw.app",
+    "productName": "sDraw",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/dist/sdraw-backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "assets/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "assets/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.graphics-design",
+      "icon": "assets/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "sDraw",
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": ["AppImage"],
+      "category": "Graphics"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.0"
+  }
+}

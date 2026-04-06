@@ -1,8 +1,9 @@
 import { memo, useState, useCallback, useMemo } from 'react';
-import { NodeProps, NodeResizer } from '@xyflow/react';
+import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { api } from '@/api/client';
 import { RefreshCw, AlertTriangle, Lock } from 'lucide-react';
+import { Resizer } from './Resizer';
 
 interface ImageNodeData {
   elementId: string;
@@ -28,6 +29,9 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
     [sourcePath, imageVersion]
   );
 
+  const updateElement = useBoardStore(s => s.updateElement);
+  const pushHistory = useBoardStore(s => s.pushHistory);
+
   const handleRefresh = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     if (sourcePath) {
@@ -36,6 +40,19 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
       setLoading(true);
     }
   }, [sourcePath]);
+
+  const onResizeAbsolute = useCallback((x: number, y: number, w: number, h: number) => {
+    updateElement(elementId, { x, y, width: w, height: h });
+  }, [elementId, updateElement]);
+
+  const onResizeEnd = useCallback(() => {
+    pushHistory('Resize');
+  }, [pushHistory]);
+
+  const getRect = useCallback(() => {
+    const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
+    return el ? { x: el.x, y: el.y, width: el.width, height: el.height } : { x: 0, y: 0, width: 100, height: 100 };
+  }, [elementId]);
 
   if (!element || element.type !== 'image') return null;
 
@@ -50,12 +67,14 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
 
   return (
     <>
-      <NodeResizer
+      <Resizer
         isVisible={selected && !element.locked}
+        nodeId={id}
         minWidth={50}
         minHeight={50}
-        lineStyle={{ borderColor: '#3b82f6', borderWidth: 1 }}
-        handleStyle={{ width: 8, height: 8, backgroundColor: 'white', borderColor: '#3b82f6', borderWidth: 2, borderRadius: 1 }}
+        onResizeAbsolute={onResizeAbsolute}
+        onResizeEnd={onResizeEnd}
+        getRect={getRect}
       />
       <div
         className="w-full h-full relative overflow-hidden"

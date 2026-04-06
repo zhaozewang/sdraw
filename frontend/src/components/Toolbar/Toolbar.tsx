@@ -14,7 +14,7 @@ import {
   ArrowRight,
   Grid3x3,
   Magnet,
-  Download,
+  FileOutput,
   Home,
   AlignStartVertical,
   AlignEndVertical,
@@ -31,6 +31,9 @@ import {
   Rows,
   PanelLeft,
   PanelRight,
+  Sun,
+  Moon,
+  Settings,
 } from 'lucide-react';
 
 function SavePromptDialog({ onSave, onDiscard, onCancel }: {
@@ -40,18 +43,18 @@ function SavePromptDialog({ onSave, onDiscard, onCancel }: {
 }) {
   return (
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onCancel}>
-      <div className="bg-white rounded-lg shadow-xl w-[360px]" onClick={e => e.stopPropagation()}>
-        <div className="px-4 py-3 border-b border-gray-200">
-          <h2 className="text-sm font-semibold text-gray-800">Unsaved Changes</h2>
+      <div className="bg-white dark:bg-surface-primary rounded-lg shadow-xl w-[360px]" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-gray-200 dark:border-border">
+          <h2 className="text-sm font-semibold text-gray-800 dark:text-on-surface-primary">Unsaved Changes</h2>
         </div>
         <div className="px-4 py-4">
-          <p className="text-sm text-gray-600">You have unsaved changes. Would you like to save before leaving?</p>
+          <p className="text-sm text-gray-600 dark:text-on-surface-secondary">You have unsaved changes. Would you like to save before leaving?</p>
         </div>
-        <div className="px-4 py-3 border-t border-gray-100 flex justify-end gap-2">
-          <button onClick={onDiscard} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded">
+        <div className="px-4 py-3 border-t border-gray-100 dark:border-border flex justify-end gap-2">
+          <button onClick={onDiscard} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded">
             Don't Save
           </button>
-          <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 dark:text-on-surface-secondary hover:bg-gray-100 dark:hover:bg-surface-tertiary rounded">
             Cancel
           </button>
           <button onClick={onSave} className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600">
@@ -86,11 +89,15 @@ export function Toolbar() {
   const setZoom = useUIStore(s => s.setZoom);
   const closeBoard = useBoardStore(s => s.closeBoard);
   const setShowExportDialog = useUIStore(s => s.setShowExportDialog);
+  const setShowSettings = useUIStore(s => s.setShowSettings);
 
   const showInsertPanel = useUIStore(s => s.showInsertPanel);
   const toggleInsertPanel = useUIStore(s => s.toggleInsertPanel);
   const showInspector = useUIStore(s => s.showInspector);
+  const exportStatus = useUIStore(s => s.exportStatus);
   const toggleInspector = useUIStore(s => s.toggleInspector);
+  const theme = useUIStore(s => s.theme);
+  const setTheme = useUIStore(s => s.setTheme);
 
   const [showSavePrompt, setShowSavePrompt] = useState(false);
 
@@ -178,9 +185,10 @@ export function Toolbar() {
         active
           ? 'bg-accent/10 text-accent'
           : disabled
-          ? 'text-gray-300 cursor-not-allowed'
-          : 'text-gray-600 hover:bg-toolbar-hover hover:text-gray-900'
+          ? 'text-gray-300 dark:text-on-surface-disabled cursor-not-allowed'
+          : 'text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
       } ${extraClass || ''}`}
+
     >
       <Icon size={16} />
     </button>
@@ -195,27 +203,38 @@ export function Toolbar() {
         <button
           onClick={handleGoHome}
           title="Back to Home"
-          className="p-1 rounded text-gray-600 hover:bg-toolbar-hover transition-colors shrink-0"
+          className="p-1 rounded text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover transition-colors shrink-0"
+    
         >
           <img src="/logo_title_zoomed_in.png" alt="sDraw" style={{ height: 50, paddingTop: 8, paddingBottom: 14 }} className="object-contain" />
         </button>
 
 
         {/* Board name (editable) */}
-        <div className="flex items-center mx-1">
+        <div className="flex items-center mx-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <input
             type="text"
             value={board.name}
             onChange={e => useBoardStore.getState().setBoardName(e.target.value)}
-            className="text-xs text-gray-700 bg-transparent border border-gray-200 rounded px-1.5 py-0.5 hover:border-gray-300 focus:border-accent focus:outline-none w-28 min-w-[50px] truncate"
+            className="text-xs text-gray-700 dark:text-on-surface-secondary bg-transparent border border-gray-200 dark:border-border rounded px-1.5 py-0.5 hover:border-gray-300 dark:hover:border-on-surface-disabled focus:border-accent focus:outline-none w-28 min-w-[50px] truncate"
             title={`${board.name}.sdraw`}
           />
-          <span className="text-2xs text-gray-400 shrink-0 ml-0.5">.sdraw</span>
+          <span className="text-2xs text-gray-400 dark:text-on-surface-muted shrink-0 ml-0.5">.sdraw</span>
         </div>
 
         {/* File actions */}
         <ToolButton onClick={() => saveBoard()} icon={Save} title="Save (Cmd+S)" disabled={!isDirty} />
-        <ToolButton onClick={() => setShowExportDialog(true)} icon={Download} title="Export" />
+        <div className="relative">
+          <ToolButton onClick={() => setShowExportDialog(true)} icon={FileOutput} title="Auto Export" />
+          {board.autoExport?.enabled && board.autoExport?.outputPath && (
+            <div className={`absolute top-0 right-0 w-1.5 h-1.5 rounded-full ${
+              exportStatus === 'exporting' ? 'bg-yellow-400 animate-pulse' :
+              exportStatus === 'error' ? 'bg-red-500' :
+              exportStatus === 'success' ? 'bg-green-500' :
+              'bg-green-500 animate-pulse'
+            }`} />
+          )}
+        </div>
 
         <Separator />
 
@@ -289,12 +308,22 @@ export function Toolbar() {
 
         <Separator />
 
+        {/* Settings & Theme */}
+        <ToolButton onClick={() => setShowSettings(true)} icon={Settings} title="Preferences (Cmd+,)" />
+        <ToolButton
+          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          icon={theme === 'dark' ? Sun : Moon}
+          title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+        />
+
+        <Separator />
+
         {/* Zoom */}
         <ToolButton onClick={() => {
           const fn = useUIStore.getState().zoomTo;
           if (fn) fn(zoom - 0.1);
         }} icon={ZoomOut} title="Zoom Out" />
-        <span className="text-xs text-gray-500 w-12 text-center tabular-nums">
+        <span className="text-xs text-gray-500 dark:text-on-surface-muted w-12 text-center tabular-nums" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {Math.round(zoom * 100)}%
         </span>
         <ToolButton onClick={() => {
@@ -306,10 +335,6 @@ export function Toolbar() {
           if (fn) fn();
         }} icon={Maximize} title="Fit View" />
 
-        {/* Dirty indicator */}
-        {isDirty && (
-          <div className="ml-1 w-2 h-2 rounded-full bg-amber-400" title="Unsaved changes" />
-        )}
       </div>
 
       {showSavePrompt && (

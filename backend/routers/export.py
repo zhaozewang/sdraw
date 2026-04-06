@@ -1,37 +1,39 @@
-"""Export routes (placeholder for client-side export coordination)."""
+"""Export routes for saving rendered images to disk."""
 
-from typing import Optional
+import base64
+import logging
+from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 
-class ExportPngRequest(BaseModel):
-    board_id: str
-    element_ids: Optional[list[str]] = None
-    dpi: int = 150
-    transparent: bool = False
+class SaveExportRequest(BaseModel):
+    path: str
+    data_url: str  # base64 data URL (data:image/png;base64,...)
 
 
-@router.post("/png")
-async def export_png(body: ExportPngRequest):
-    """Placeholder for PNG export.
+@router.post("/save")
+async def save_export(body: SaveExportRequest):
+    """Save an exported image (base64 data URL) to a file on disk."""
+    try:
+        p = Path(body.path).resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
 
-    Actual high-fidelity export is performed client-side using the DOM.
-    This endpoint can be used to store export metadata or trigger
-    client-side export via WebSocket in a future version.
-    """
-    return {
-        "status": "use_client_export",
-        "message": (
-            "PNG export should be performed client-side using html2canvas or "
-            "similar. The board can be loaded via GET /api/boards/{board_id} "
-            "and rendered in a headless canvas at the requested DPI."
-        ),
-        "board_id": body.board_id,
-        "element_ids": body.element_ids,
-        "dpi": body.dpi,
-        "transparent": body.transparent,
-    }
+        # Parse data URL
+        if ',' in body.data_url:
+            header, data = body.data_url.split(',', 1)
+        else:
+            data = body.data_url
+
+        raw = base64.b64decode(data)
+        p.write_bytes(raw)
+        logger.info("Auto-export saved: %s (%d bytes)", p, len(raw))
+        return {"path": str(p), "size": len(raw)}
+    except Exception as exc:
+        logger.error("Export save failed: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))

@@ -1,10 +1,54 @@
-import { memo, useState, useCallback, useRef, useEffect } from 'react';
-import { NodeProps, NodeResizer } from '@xyflow/react';
+import { memo, useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
+import { useUIStore } from '@/store/uiStore';
+import { Resizer } from './Resizer';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 
 interface TextNodeData {
   elementId: string;
   [key: string]: unknown;
+}
+
+/** Parse text with $...$ (inline) and $$...$$ (display) math delimiters. */
+function renderMathText(text: string, color: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  const regex = /(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    const mathStr = match[0];
+    const isDisplay = mathStr.startsWith('$$');
+    const tex = isDisplay ? mathStr.slice(2, -2) : mathStr.slice(1, -1);
+    try {
+      const html = katex.renderToString(tex, {
+        displayMode: isDisplay,
+        throwOnError: false,
+        output: 'html',
+      });
+      parts.push(
+        <span
+          key={match.index}
+          dangerouslySetInnerHTML={{ __html: html }}
+          style={{ color, display: 'inline-block', willChange: 'transform' }}
+        />
+      );
+    } catch {
+      parts.push(mathStr);
+    }
+    lastIndex = match.index + mathStr.length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts;
 }
 
 function TextNodeComponent({ id, data, selected }: NodeProps) {
@@ -13,16 +57,20 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const [editing, setEditing] = useState(false);
-  const textRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasAutoEdited = useRef(false);
+  const selectAllOnEdit = useRef(false);
+  const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
+  const zoom = useUIStore(s => s.zoom);
 
   // Auto-enter edit mode for newly created text boxes
   useEffect(() => {
-    if (selected && element?.text === 'Label' && !hasAutoEdited.current) {
+    if ((selected || isSelectedInStore) && element?.text === 'Label' && !hasAutoEdited.current) {
       hasAutoEdited.current = true;
-      setEditing(true);
+      selectAllOnEdit.current = true;
+      setTimeout(() => setEditing(true), 50);
     }
-  }, [selected, element?.text]);
+  }, [selected, isSelectedInStore, element?.text]);
 
   const handleDoubleClick = useCallback(() => {
     if (element && !element.locked) {
@@ -32,8 +80,8 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
 
   const handleBlur = useCallback(() => {
     setEditing(false);
-    if (textRef.current && element) {
-      const newText = textRef.current.innerText;
+    if (textareaRef.current && element) {
+      const newText = textareaRef.current.value;
       if (newText !== element.text) {
         pushHistory('Edit text');
         updateElement(elementId, { text: newText });
@@ -44,68 +92,111 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
       setEditing(false);
-      textRef.current?.blur();
+      textareaRef.current?.blur();
     }
     e.stopPropagation();
   }, []);
 
+  // Focus textarea when entering edit mode
   useEffect(() => {
-    if (editing && textRef.current) {
-      textRef.current.focus();
-      const range = document.createRange();
-      range.selectNodeContents(textRef.current);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
+    if (editing && textareaRef.current) {
+      textareaRef.current.focus();
+      if (selectAllOnEdit.current) {
+        selectAllOnEdit.current = false;
+        textareaRef.current.select();
+      } else {
+        // Place cursor at end by default
+        const len = textareaRef.current.value.length;
+        textareaRef.current.setSelectionRange(len, len);
+      }
     }
   }, [editing]);
 
+  const onResizeAbsolute = useCallback((x: number, y: number, w: number, h: number) => {
+    updateElement(elementId, { x, y, width: w, height: h });
+  }, [elementId, updateElement]);
+
+  const onResizeEnd = useCallback(() => {
+    pushHistory('Resize');
+  }, [pushHistory]);
+
+  const getRect = useCallback(() => {
+    const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
+    return el ? { x: el.x, y: el.y, width: el.width, height: el.height } : { x: 0, y: 0, width: 100, height: 100 };
+  }, [elementId]);
+
+  const text = element?.type === 'text' ? element.text : undefined;
+  const style = element?.type === 'text' ? element.style : undefined;
+  const hasMath = text ? /\$/.test(text) : false;
+  const fontFamily = style?.fontFamily || 'Inter, sans-serif';
+
+  const renderedContent = useMemo(() => {
+    if (!text || !hasMath) return null;
+    return renderMathText(text, style?.color || '#111111');
+  }, [text, hasMath, style?.color]);
+
   if (!element || element.type !== 'text') return null;
 
-  const { style, text } = element;
+  const textStyles: React.CSSProperties = {
+    fontSize: style!.fontSize ?? 14,
+    fontWeight: style!.fontWeight ?? 400,
+    fontFamily,
+    color: style!.color || '#111111',
+    textAlign: (style!.textAlign as any) || 'left',
+    lineHeight: style!.lineHeight ?? 1.4,
+    fontStyle: style!.italic ? 'italic' : 'normal',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  };
 
   return (
     <>
-      <NodeResizer
-        isVisible={selected && !element.locked}
+      <Resizer
+        isVisible={(selected || isSelectedInStore) && !element.locked}
+        nodeId={id}
         minWidth={30}
         minHeight={20}
-        lineStyle={{ borderColor: '#3b82f6', borderWidth: 1 }}
-        handleStyle={{ width: 8, height: 8, backgroundColor: 'white', borderColor: '#3b82f6', borderWidth: 2, borderRadius: 1 }}
+        onResizeAbsolute={onResizeAbsolute}
+        onResizeEnd={onResizeEnd}
+        getRect={getRect}
       />
       <div
         className="w-full h-full"
         style={{
-          backgroundColor: style.background || 'transparent',
-          padding: style.padding ?? 4,
-          opacity: style.opacity ?? 1,
-          border: selected ? '1px dashed #3b82f6' : '1px solid transparent',
+          backgroundColor: style!.background || 'transparent',
+          padding: style!.padding ?? 4,
+          opacity: style!.opacity ?? 1,
+          border: (selected || isSelectedInStore)
+            ? `${Math.max(1, 1.5 / Math.max(zoom, 0.1))}px dashed #3b82f6`
+            : '1px solid transparent',
         }}
         onDoubleClick={handleDoubleClick}
       >
-        <div
-          ref={textRef}
-          contentEditable={editing}
-          suppressContentEditableWarning
-          onBlur={handleBlur}
-          onKeyDown={editing ? handleKeyDown : undefined}
-          className="w-full h-full outline-none"
-          style={{
-            fontSize: style.fontSize ?? 14,
-            fontWeight: style.fontWeight ?? 400,
-            fontFamily: style.fontFamily || 'Inter, sans-serif',
-            color: style.color || '#111111',
-            textAlign: (style.textAlign as any) || 'left',
-            lineHeight: style.lineHeight ?? 1.4,
-            fontStyle: style.italic ? 'italic' : 'normal',
-            cursor: editing ? 'text' : 'default',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            userSelect: editing ? 'text' : 'none',
-          }}
-        >
-          {text || ''}
-        </div>
+        {editing ? (
+          <textarea
+            ref={textareaRef}
+            defaultValue={text || ''}
+            onBlur={handleBlur}
+            onKeyDown={handleKeyDown}
+            className="w-full h-full outline-none resize-none border-none bg-transparent p-0 m-0"
+            style={{
+              ...textStyles,
+              cursor: 'text',
+              userSelect: 'text',
+            }}
+          />
+        ) : (
+          <div
+            className="w-full h-full"
+            style={{
+              ...textStyles,
+              cursor: 'default',
+              userSelect: 'none',
+            }}
+          >
+            {renderedContent || text || ''}
+          </div>
+        )}
       </div>
     </>
   );
