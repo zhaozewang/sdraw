@@ -133,7 +133,7 @@ export function formatTimestamp(iso: string): string {
 const LAST_DIR_KEY = 'sdraw_last_directory';
 
 export function getLastDirectory(): string {
-  return localStorage.getItem(LAST_DIR_KEY) || '/Users';
+  return localStorage.getItem(LAST_DIR_KEY) || '';
 }
 
 // Fetch and cache the user's home directory from the backend
@@ -148,13 +148,13 @@ export async function fetchUserHome(): Promise<string> {
       return data.path;
     }
   } catch {}
-  return '/Users';
+  return '/';
 }
 
 export function getLastDirectoryOrHome(): string {
   const last = localStorage.getItem(LAST_DIR_KEY);
   if (last) return last;
-  return _cachedHome || '/Users';
+  return _cachedHome || '/';
 }
 
 export function saveLastDirectory(path: string) {

@@ -58,13 +58,6 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
 
   const { source, style } = element;
 
-  const fitMode = style.fitMode || 'contain';
-  const objectFit =
-    fitMode === 'contain' ? 'contain' :
-    fitMode === 'cover' ? 'cover' :
-    fitMode === 'stretch' ? 'fill' :
-    fitMode === 'center' ? 'none' : 'contain';
-
   return (
     <>
       <Resizer
@@ -75,15 +68,16 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
         onResizeAbsolute={onResizeAbsolute}
         onResizeEnd={onResizeEnd}
         getRect={getRect}
+        aspectRatio={element.width / element.height}
       />
       <div
         className="w-full h-full relative overflow-hidden"
         style={{
           borderColor: style.borderColor || '#d0d0d0',
-          borderWidth: style.borderWidth ?? 1,
-          borderStyle: 'solid',
-          borderRadius: style.borderRadius ?? 4,
-          backgroundColor: style.background || '#ffffff',
+          borderWidth: style.borderWidth ?? 0,
+          borderStyle: (style.borderWidth ?? 0) > 0 ? 'solid' : 'none',
+          borderRadius: style.borderRadius ?? 0,
+          backgroundColor: style.background || 'transparent',
           boxShadow: style.shadow ? '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)' : 'none',
           opacity: style.opacity ?? 1,
         }}
@@ -93,7 +87,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
             src={imgUrl}
             alt=""
             className="w-full h-full"
-            style={{ objectFit }}
+            style={{ objectFit: 'fill' as const }}
             onLoad={() => setLoading(false)}
             onError={() => { setImgError(true); setLoading(false); }}
             draggable={false}

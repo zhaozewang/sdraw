@@ -13,6 +13,10 @@ interface ResizerProps {
   onResizeEnd: () => void;
   /** Return current element rect */
   getRect: () => { x: number; y: number; width: number; height: number };
+  /** Lock aspect ratio — width/height. If set, only corner handles are shown. */
+  aspectRatio?: number;
+  /** Only show corner handles (NE, NW, SE, SW) */
+  cornersOnly?: boolean;
 }
 
 type HandlePosition = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
@@ -38,11 +42,50 @@ function computeRect(
   totalDy: number,
   minW: number,
   minH: number,
+  ratio?: number,
 ): { x: number; y: number; width: number; height: number } {
   let { x, y, width: w, height: h } = orig;
   const right = x + w;
   const bottom = y + h;
 
+  if (ratio && (pos === 'nw' || pos === 'ne' || pos === 'sw' || pos === 'se')) {
+    // Aspect-ratio-locked corner resize
+    // Use the axis with the larger absolute delta to drive the resize
+    const absDx = Math.abs(totalDx);
+    const absDy = Math.abs(totalDy);
+    let newW: number, newH: number;
+
+    if (absDx / ratio > absDy) {
+      // Width-driven
+      if (pos === 'ne' || pos === 'se') {
+        newW = Math.max(minW, orig.width + totalDx);
+      } else {
+        newW = Math.max(minW, orig.width - totalDx);
+      }
+      newH = newW / ratio;
+    } else {
+      // Height-driven
+      if (pos === 'se' || pos === 'sw') {
+        newH = Math.max(minH, orig.height + totalDy);
+      } else {
+        newH = Math.max(minH, orig.height - totalDy);
+      }
+      newW = newH * ratio;
+    }
+
+    newW = Math.max(minW, newW);
+    newH = Math.max(minH, newH);
+
+    // Anchor the opposite corner
+    if (pos === 'se') { /* top-left anchored */ }
+    else if (pos === 'sw') { x = right - newW; }
+    else if (pos === 'ne') { y = bottom - newH; }
+    else if (pos === 'nw') { x = right - newW; y = bottom - newH; }
+
+    return { x, y, width: newW, height: newH };
+  }
+
+  // Standard free resize
   if (pos === 'e' || pos === 'ne' || pos === 'se') {
     w = Math.max(minW, orig.width + totalDx);
   }
@@ -63,9 +106,12 @@ function computeRect(
   return { x, y, width: w, height: h };
 }
 
+const CORNER_HANDLES: HandlePosition[] = ['nw', 'ne', 'sw', 'se'];
+const ALL_HANDLES: HandlePosition[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+
 function ResizerComponent({
   isVisible, nodeId, minWidth = 20, minHeight = 20,
-  onResizeAbsolute, onResizeEnd, getRect,
+  onResizeAbsolute, onResizeEnd, getRect, aspectRatio, cornersOnly,
 }: ResizerProps) {
   const zoom = useUIStore(s => s.zoom);
   const { setNodes } = useReactFlow();
@@ -101,7 +147,7 @@ function ResizerComponent({
     const onMove = (ev: PointerEvent) => {
       const totalDx = (ev.clientX - startX) / scale;
       const totalDy = (ev.clientY - startY) / scale;
-      lastRect = computeRect(pos, origRect, totalDx, totalDy, minWidth, minHeight);
+      lastRect = computeRect(pos, origRect, totalDx, totalDy, minWidth, minHeight, aspectRatio);
 
       // Update React Flow directly — this is the fastest path, no store roundtrip
       const nid = nodeIdRef.current;
@@ -152,7 +198,7 @@ function ResizerComponent({
         className="absolute inset-0 pointer-events-none"
         style={{ border: `${borderWidth}px solid #3b82f6` }}
       />
-      {(Object.keys(handleFracs) as HandlePosition[]).map(pos => {
+      {((cornersOnly || aspectRatio) ? CORNER_HANDLES : ALL_HANDLES).map(pos => {
         const [fx, fy] = handleFracs[pos];
         return (
           <div

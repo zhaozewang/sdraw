@@ -65,6 +65,7 @@ export type GridPattern = 'dots' | 'lines' | 'cross';
 export interface CanvasSettings {
   width: number;
   height: number;
+  infinite: boolean;
   background: string;
   grid_enabled: boolean;
   grid_size: number;
@@ -75,12 +76,17 @@ export interface CanvasSettings {
 
 export type ExportFormat = 'png' | 'jpg' | 'pdf' | 'svg';
 
+export type ExportSizeMode = 'fit' | 'fixed' | 'canvas';
+
 export interface AutoExportSettings {
   enabled: boolean;
   outputPath: string;       // absolute path to export file
   format: ExportFormat;
   dpi: number;              // pixel ratio multiplier
   transparent: boolean;
+  sizeMode: ExportSizeMode; // 'fit' = crop to elements, 'fixed' = user W/H, 'canvas' = canvas W/H
+  fixedWidth?: number;
+  fixedHeight?: number;
 }
 
 export interface Board {
@@ -139,6 +145,7 @@ export interface FileEvent {
 export const DEFAULT_CANVAS: CanvasSettings = {
   width: 2400,
   height: 1600,
+  infinite: true,
   background: '#ffffff',
   grid_enabled: true,
   grid_size: 20,
@@ -149,11 +156,10 @@ export const DEFAULT_CANVAS: CanvasSettings = {
 
 export const DEFAULT_IMAGE_STYLE: ElementStyle = {
   borderColor: '#d0d0d0',
-  borderWidth: 1,
-  borderRadius: 4,
-  shadow: true,
-  background: '#ffffff',
-  fitMode: 'contain',
+  borderWidth: 0,
+  borderRadius: 0,
+  shadow: false,
+  background: 'transparent',
   opacity: 1,
 };
 
@@ -187,9 +193,9 @@ export const DEFAULT_ARROW_STYLE: ElementStyle = {
 
 export const DEFAULT_PLOT_STYLE: ElementStyle = {
   borderColor: '#d0d0d0',
-  borderWidth: 1,
-  borderRadius: 4,
-  shadow: true,
-  background: '#ffffff',
+  borderWidth: 0,
+  borderRadius: 0,
+  shadow: false,
+  background: 'transparent',
   opacity: 1,
 };

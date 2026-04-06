@@ -1,8 +1,9 @@
 import { memo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
-import { findSnapTarget } from '@/utils/snapToShape';
+import { findSnapTarget, toRelativeAnchor } from '@/utils/snapToShape';
 
 interface ArrowNodeData {
   elementId: string;
@@ -119,25 +120,27 @@ function buildPath(
 /*  SVG marker definitions                                             */
 /* ------------------------------------------------------------------ */
 
-function MarkerDefs({ id, color, startMarker, endMarker }: {
-  id: string; color: string; startMarker: MarkerType; endMarker: MarkerType;
+function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
+  id: string; color: string; startMarker: MarkerType; endMarker: MarkerType; headSize?: number;
 }) {
   const markers: React.ReactNode[] = [];
+  const s = headSize; // scale factor
 
   const addArrow = (key: string, isStart: boolean) => {
+    const w = 10 * s, h = 8 * s, mid = 4 * s;
     markers.push(
       <marker
         key={key}
         id={key}
-        markerWidth="10"
-        markerHeight="8"
-        refX={isStart ? 1 : 9}
-        refY="4"
+        markerWidth={w}
+        markerHeight={h}
+        refX={isStart ? 0 : w}
+        refY={mid}
         orient="auto"
         markerUnits="strokeWidth"
       >
         <polygon
-          points={isStart ? '10 0, 0 4, 10 8' : '0 0, 10 4, 0 8'}
+          points={isStart ? `${w} 0, 0 ${mid}, ${w} ${h}` : `0 0, ${w} ${mid}, 0 ${h}`}
           fill={color}
         />
       </marker>
@@ -145,74 +148,78 @@ function MarkerDefs({ id, color, startMarker, endMarker }: {
   };
 
   const addArrowOpen = (key: string, isStart: boolean) => {
+    const w = 10 * s, h = 8 * s, mid = 4 * s;
     markers.push(
       <marker
         key={key}
         id={key}
-        markerWidth="10"
-        markerHeight="8"
-        refX={isStart ? 1 : 9}
-        refY="4"
+        markerWidth={w}
+        markerHeight={h}
+        refX={isStart ? 0 : w}
+        refY={mid}
         orient="auto"
         markerUnits="strokeWidth"
       >
         <polyline
-          points={isStart ? '10 0, 0 4, 10 8' : '0 0, 10 4, 0 8'}
+          points={isStart ? `${w} 0, 0 ${mid}, ${w} ${h}` : `0 0, ${w} ${mid}, 0 ${h}`}
           fill="none"
           stroke={color}
-          strokeWidth="1.5"
+          strokeWidth={1.5 * s}
         />
       </marker>
     );
   };
 
   const addDot = (key: string) => {
+    const d = 6 * s, c = 3 * s, r = 2.5 * s;
     markers.push(
       <marker
         key={key}
         id={key}
-        markerWidth="6"
-        markerHeight="6"
-        refX="3"
-        refY="3"
+        markerWidth={d}
+        markerHeight={d}
+        refX={c}
+        refY={c}
         orient="auto"
         markerUnits="strokeWidth"
       >
-        <circle cx="3" cy="3" r="2.5" fill={color} />
+        <circle cx={c} cy={c} r={r} fill={color} />
       </marker>
     );
   };
 
   const addDiamond = (key: string) => {
+    const d = 8 * s, mid = 4 * s;
     markers.push(
       <marker
         key={key}
         id={key}
-        markerWidth="8"
-        markerHeight="8"
-        refX="4"
-        refY="4"
+        markerWidth={d}
+        markerHeight={d}
+        refX={mid}
+        refY={mid}
         orient="auto"
         markerUnits="strokeWidth"
       >
-        <polygon points="4 0, 8 4, 4 8, 0 4" fill={color} />
+        <polygon points={`${mid} 0, ${d} ${mid}, ${mid} ${d}, 0 ${mid}`} fill={color} />
       </marker>
     );
   };
 
   const addBar = (key: string) => {
+    const w = 2 * s, h = 8 * s, cx = 1 * s;
     markers.push(
       <marker
         key={key}
         id={key}
-        markerWidth="2"
-        markerHeight="8"
-        refX="1"
-        refY="4"
+        markerWidth={w}
+        markerHeight={h}
+        refX={cx}
+        refY={h / 2}
         orient="auto"
         markerUnits="strokeWidth"
       >
-        <line x1="1" y1="0" x2="1" y2="8" stroke={color} strokeWidth="2" />
+        <line x1={cx} y1="0" x2={cx} y2={h} stroke={color} strokeWidth={2 * s} />
       </marker>
     );
   };
@@ -239,12 +246,15 @@ function MarkerDefs({ id, color, startMarker, endMarker }: {
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
-function ArrowNodeComponent({ id, data, selected }: NodeProps) {
+function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const elementId = (data as ArrowNodeData).elementId;
   const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const zoom = useUIStore(s => s.zoom);
+  // Arrow nodes have selectable:false on the wrapper, so check UI store directly
+  const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
+  const selected = rfSelected || isSelectedInStore;
   const draggingRef = useRef<string | null>(null);
   const anchorAbsRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const origPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -351,12 +361,27 @@ function ArrowNodeComponent({ id, data, selected }: NodeProps) {
       useUIStore.getState().setSuppressPositionSync(false);
       useUIStore.getState().setSnapTargetId(null);
 
-      // Store connection metadata
+      // Store connection metadata with pinned anchor
       const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
       if (el) {
         const connKey = ep === 'start' ? 'startConnection' : 'endConnection';
+        const anchorKey = ep === 'start' ? 'startAnchor' : 'endAnchor';
         const newMeta = { ...el.metadata, [connKey]: lastSnapId || undefined };
-        if (!lastSnapId) delete newMeta[connKey];
+        if (!lastSnapId) {
+          delete newMeta[connKey];
+          delete newMeta[anchorKey];
+        } else {
+          // Compute and store the relative anchor position
+          const snapEl = useBoardStore.getState().board?.elements.find(e => e.id === lastSnapId);
+          if (snapEl) {
+            const pts = el.points && el.points.length >= 2
+              ? el.points : [{ x: 0, y: el.height / 2 }, { x: el.width, y: el.height / 2 }];
+            const orig = origPosRef.current;
+            const ptIdx = ep === 'start' ? 0 : 1;
+            const absPoint = { x: orig.x + pts[ptIdx].x, y: orig.y + pts[ptIdx].y };
+            newMeta[anchorKey] = toRelativeAnchor(absPoint, snapEl);
+          }
+        }
         updateElement(elementId, { metadata: newMeta });
       }
 
@@ -438,20 +463,75 @@ function ArrowNodeComponent({ id, data, selected }: NodeProps) {
 
   return (
     <>
-      <div className="absolute inset-0" style={{ minHeight: 16, minWidth: 16 }} />
+      {/* Bounding div — pointer-events: none so clicks pass through empty space */}
+      <div className="absolute inset-0 pointer-events-none" style={{ minHeight: 16, minWidth: 16 }} />
       <svg
         className="overflow-visible absolute inset-0"
-        style={{ opacity: style.opacity ?? 1, width: '100%', height: '100%' }}
+        style={{ opacity: style.opacity ?? 1, width: '100%', height: '100%', pointerEvents: 'none' }}
       >
         <MarkerDefs
           id={elementId}
           color={strokeColor}
           startMarker={startMarker}
           endMarker={endMarker}
+          headSize={(metadata?.arrowHeadSize as number) || 1}
         />
 
-        {/* Invisible thick path for easier clicking */}
-        <path d={pathD} fill="none" stroke="transparent" strokeWidth={Math.max(14, strokeWidth + 10)} />
+        {/* Invisible thick path for easier clicking — this is the only hit area */}
+        <path
+          d={pathD} fill="none" stroke="transparent"
+          strokeWidth={Math.max(14, strokeWidth + 10)}
+          style={{ pointerEvents: 'stroke', cursor: element.locked ? 'default' : 'pointer' }}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            // Select
+            const shiftKey = e.shiftKey;
+            const sel = useUIStore.getState().selectedIds;
+            if (shiftKey) {
+              if (sel.includes(elementId)) useUIStore.getState().removeFromSelection(elementId);
+              else useUIStore.getState().addToSelection(elementId);
+            } else if (!sel.includes(elementId)) {
+              useUIStore.getState().setSelectedIds([elementId]);
+            }
+
+            // Drag support
+            if (element.locked) return;
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const origEl = useBoardStore.getState().board?.elements.find(el => el.id === elementId);
+            if (!origEl) return;
+            const origPos = { x: origEl.x, y: origEl.y };
+            const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
+            const scale = viewport
+              ? parseFloat(viewport.style.transform.match(/scale\((.+?)\)/)?.[1] || '1')
+              : 1;
+            let moved = false;
+
+            const onMove = (ev: PointerEvent) => {
+              moved = true;
+              const dx = (ev.clientX - startX) / scale;
+              const dy = (ev.clientY - startY) / scale;
+              updateElement(elementId, { x: origPos.x + dx, y: origPos.y + dy });
+            };
+            const onUp = () => {
+              document.removeEventListener('pointermove', onMove);
+              document.removeEventListener('pointerup', onUp);
+              if (moved) {
+                // Clear cached absolute positions since the arrow moved
+                const el = useBoardStore.getState().board?.elements.find(el => el.id === elementId);
+                if (el?.metadata?.startAbsPos || el?.metadata?.endAbsPos) {
+                  const meta = { ...el.metadata };
+                  delete meta.startAbsPos;
+                  delete meta.endAbsPos;
+                  updateElement(elementId, { metadata: meta });
+                }
+                pushHistory('Move');
+              }
+            };
+            document.addEventListener('pointermove', onMove);
+            document.addEventListener('pointerup', onUp);
+          }}
+        />
 
         {/* Visible path */}
         <path
@@ -462,54 +542,74 @@ function ArrowNodeComponent({ id, data, selected }: NodeProps) {
           strokeDasharray={dashArray}
           markerStart={mStart}
           markerEnd={mEnd}
+          style={{ pointerEvents: 'none' }}
         />
 
-        {/* Editing handles when selected — zoom-invariant */}
-        {selected && !element.locked && (() => {
-          const iz = 1 / Math.max(zoom, 0.1);
-          const hr = BASE_HANDLE_R * iz;
-          const hs = BASE_STROKE_W * iz;
-          const cr = BASE_CTRL_R * iz;
-          const cs = BASE_CTRL_STROKE * iz;
-          const gw = BASE_GUIDE_W * iz;
-          const gd = `${3 * iz},${2 * iz}`;
-          return (
-            <>
-              {/* Start endpoint */}
-              <circle
-                cx={pts[0].x} cy={pts[0].y} r={hr}
-                fill="white" stroke="#3b82f6" strokeWidth={hs}
-                style={{ cursor: 'crosshair' }}
-                onPointerDown={handleEndpointDown('start')}
-              />
-              {/* End endpoint */}
-              <circle
-                cx={pts[1].x} cy={pts[1].y} r={hr}
-                fill="white" stroke="#3b82f6" strokeWidth={hs}
-                style={{ cursor: 'crosshair' }}
-                onPointerDown={handleEndpointDown('end')}
-              />
-              {/* Control point handles for curves */}
-              {effectiveCtrl.map((c, i) => (
-                <g key={`ctrl-${i}`}>
-                  <line
-                    x1={i === 0 ? pts[0].x : pts[1].x}
-                    y1={i === 0 ? pts[0].y : pts[1].y}
-                    x2={c.x} y2={c.y}
-                    stroke="#a78bfa" strokeWidth={gw} strokeDasharray={gd}
-                  />
-                  <circle
-                    cx={c.x} cy={c.y} r={cr}
-                    fill="#a78bfa" stroke="white" strokeWidth={cs}
-                    style={{ cursor: 'move' }}
-                    onPointerDown={handleCtrlDown(i)}
-                  />
-                </g>
-              ))}
-            </>
-          );
-        })()}
       </svg>
+
+      {/* Endpoint handles — rendered via portal to sit above all nodes */}
+      {selected && !element.locked && (() => {
+        const viewport = document.querySelector('.react-flow__viewport');
+        if (!viewport) return null;
+        const iz = 1 / Math.max(zoom, 0.1);
+        const hr = BASE_HANDLE_R * iz;
+        const hs = BASE_STROKE_W * iz;
+        const cr = BASE_CTRL_R * iz;
+        const cs = BASE_CTRL_STROKE * iz;
+        const gw = BASE_GUIDE_W * iz;
+        const gd = `${3 * iz},${2 * iz}`;
+        // Absolute canvas positions for the handles
+        const ax = element.x;
+        const ay = element.y;
+        return createPortal(
+          <svg
+            className="overflow-visible"
+            style={{
+              position: 'absolute',
+              left: 0, top: 0,
+              width: 1, height: 1,
+              zIndex: 999999,
+              pointerEvents: 'none',
+            }}
+          >
+            {/* Control point guide lines */}
+            {effectiveCtrl.map((c, i) => (
+              <line
+                key={`guide-${i}`}
+                x1={ax + (i === 0 ? pts[0].x : pts[1].x)}
+                y1={ay + (i === 0 ? pts[0].y : pts[1].y)}
+                x2={ax + c.x} y2={ay + c.y}
+                stroke="#a78bfa" strokeWidth={gw} strokeDasharray={gd}
+              />
+            ))}
+            {/* Start endpoint */}
+            <circle
+              cx={ax + pts[0].x} cy={ay + pts[0].y} r={hr}
+              fill="white" stroke="#3b82f6" strokeWidth={hs}
+              style={{ cursor: 'crosshair', pointerEvents: 'auto' }}
+              onPointerDown={handleEndpointDown('start')}
+            />
+            {/* End endpoint */}
+            <circle
+              cx={ax + pts[1].x} cy={ay + pts[1].y} r={hr}
+              fill="white" stroke="#3b82f6" strokeWidth={hs}
+              style={{ cursor: 'crosshair', pointerEvents: 'auto' }}
+              onPointerDown={handleEndpointDown('end')}
+            />
+            {/* Control point handles */}
+            {effectiveCtrl.map((c, i) => (
+              <circle
+                key={`ctrl-${i}`}
+                cx={ax + c.x} cy={ay + c.y} r={cr}
+                fill="#a78bfa" stroke="white" strokeWidth={cs}
+                style={{ cursor: 'move', pointerEvents: 'auto' }}
+                onPointerDown={handleCtrlDown(i)}
+              />
+            ))}
+          </svg>,
+          viewport,
+        );
+      })()}
     </>
   );
 }

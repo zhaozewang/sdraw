@@ -93,10 +93,18 @@ function FolderBrowser() {
   });
 
   const insertSingle = useCallback((entry: DirEntry) => {
+    const MAX_W = 500;
+    const MAX_H = 400;
+    let w = entry.dimensions?.width || 400;
+    let h = entry.dimensions?.height || 300;
+    // Scale down proportionally to preserve aspect ratio
+    const scale = Math.min(1, MAX_W / w, MAX_H / h);
+    w = Math.round(w * scale);
+    h = Math.round(h * scale);
     const el = addElement('image', {
       source: { mode: 'exact', path: entry.path, followLatest: false, autoRefresh: true },
-      width: Math.min(entry.dimensions?.width || 400, 500),
-      height: Math.min(entry.dimensions?.height || 300, 400),
+      width: w,
+      height: h,
     });
     setSelectedIds([el.id]);
   }, [addElement, setSelectedIds]);
@@ -105,19 +113,31 @@ function FolderBrowser() {
     const ids: string[] = [];
     const cols = Math.ceil(Math.sqrt(imageFiles.length));
     const gap = 20;
-    const w = 300;
-    const h = 220;
+    const CELL = 320;
+    let cursorX = 60, cursorY = 60;
+    let rowMaxH = 0;
     imageFiles.forEach((file, i) => {
       const col = i % cols;
-      const row = Math.floor(i / cols);
+      if (col === 0 && i > 0) {
+        cursorX = 60;
+        cursorY += rowMaxH + gap;
+        rowMaxH = 0;
+      }
+      let w = file.dimensions?.width || 300;
+      let h = file.dimensions?.height || 220;
+      const scale = Math.min(1, CELL / w, CELL / h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
       const el = addElement('image', {
-        x: 60 + col * (w + gap),
-        y: 60 + row * (h + gap),
+        x: cursorX,
+        y: cursorY,
         width: w,
         height: h,
         source: { mode: 'exact', path: file.path, followLatest: false, autoRefresh: true },
       });
       ids.push(el.id);
+      cursorX += w + gap;
+      rowMaxH = Math.max(rowMaxH, h);
     });
     setSelectedIds(ids);
   }, [imageFiles, addElement, setSelectedIds]);

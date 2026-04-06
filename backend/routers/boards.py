@@ -114,3 +114,73 @@ async def delete_board_file(body: DeleteBoardFileRequest):
         return {"deleted": str(p)}
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---- Checkpoint / crash-recovery ----
+
+def _checkpoint_path(board_path: str) -> Path:
+    """Return the hidden checkpoint file path for a given board file."""
+    p = Path(board_path).resolve()
+    return p.parent / f".{p.name}.checkpoint"
+
+
+class CheckpointRequest(BaseModel):
+    board: dict
+    path: str  # path to the main board file
+
+
+@router.post("/checkpoint/save")
+async def save_checkpoint(body: CheckpointRequest):
+    """Save a lightweight checkpoint (hidden file) for crash recovery."""
+    cp = _checkpoint_path(body.path)
+    try:
+        cp.write_text(json.dumps(body.board))
+        return {"path": str(cp)}
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+class CheckpointCheckRequest(BaseModel):
+    path: str  # path to the main board file
+
+
+@router.post("/checkpoint/check")
+async def check_checkpoint(body: CheckpointCheckRequest):
+    """Check if a checkpoint exists and is newer than the saved board file."""
+    cp = _checkpoint_path(body.path)
+    board_p = Path(body.path).resolve()
+    if not cp.exists():
+        return {"exists": False}
+    try:
+        cp_mtime = cp.stat().st_mtime
+        board_mtime = board_p.stat().st_mtime if board_p.exists() else 0
+        return {
+            "exists": True,
+            "newer": cp_mtime > board_mtime,
+            "checkpoint_modified": cp_mtime,
+            "board_modified": board_mtime,
+        }
+    except OSError:
+        return {"exists": False}
+
+
+@router.post("/checkpoint/load")
+async def load_checkpoint(body: CheckpointCheckRequest):
+    """Load board data from a checkpoint file."""
+    cp = _checkpoint_path(body.path)
+    if not cp.exists():
+        raise HTTPException(status_code=404, detail="No checkpoint found")
+    try:
+        data = json.loads(cp.read_text())
+        return {"path": body.path, "board": data}
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/checkpoint/delete")
+async def delete_checkpoint(body: CheckpointCheckRequest):
+    """Delete a checkpoint file."""
+    cp = _checkpoint_path(body.path)
+    if cp.exists():
+        cp.unlink()
+    return {"deleted": True}

@@ -1,26 +1,26 @@
 import { useEffect, useRef } from 'react';
 import { useBoardStore } from '@/store/boardStore';
-import { useUIStore } from '@/store/uiStore';
 
-export function useAutoSave(intervalMs: number = 5000) {
+const CHECKPOINT_INTERVAL = 3000; // Save checkpoint every 3s when dirty
+
+export function useAutoSave() {
   const isDirty = useBoardStore(s => s.isDirty);
   const board = useBoardStore(s => s.board);
-  const autoSaveEnabled = useUIStore(s => s.autoSaveEnabled);
-  const saveTimerRef = useRef<number>();
+  const checkpointTimerRef = useRef<number>();
   const exportTimerRef = useRef<number>();
 
-  // Auto-save board file
+  // Checkpoint save (crash recovery) — always active, no user toggle
   useEffect(() => {
-    if (!autoSaveEnabled || !isDirty || !board) return;
+    if (!isDirty || !board) return;
 
-    saveTimerRef.current = window.setTimeout(() => {
-      useBoardStore.getState().saveBoard();
-    }, intervalMs);
+    checkpointTimerRef.current = window.setTimeout(() => {
+      useBoardStore.getState().saveCheckpoint();
+    }, CHECKPOINT_INTERVAL);
 
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (checkpointTimerRef.current) clearTimeout(checkpointTimerRef.current);
     };
-  }, [isDirty, autoSaveEnabled, board, intervalMs]);
+  }, [isDirty, board]);
 
   // Auto-export on board changes (debounced 2s after last change)
   const boardFingerprint = board?.elements

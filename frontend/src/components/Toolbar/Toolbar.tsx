@@ -119,8 +119,9 @@ export function Toolbar() {
     closeBoard();
   }, [saveBoard, closeBoard]);
 
-  const handleDiscardAndLeave = useCallback(() => {
+  const handleDiscardAndLeave = useCallback(async () => {
     setShowSavePrompt(false);
+    await useBoardStore.getState().deleteCheckpoint();
     closeBoard();
   }, [closeBoard]);
 
@@ -341,14 +342,22 @@ export function Toolbar() {
         {/* Zoom */}
         <ToolButton onClick={() => {
           const fn = useUIStore.getState().zoomTo;
-          if (fn) fn(zoom / 1.2);
+          if (fn) fn(zoom / 1.5);
         }} icon={ZoomOut} title="Zoom Out" />
-        <span className="text-xs text-gray-500 dark:text-on-surface-muted w-12 text-center tabular-nums" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        <button
+          onClick={() => {
+            const fn = useUIStore.getState().zoomTo;
+            if (fn) fn(1);
+          }}
+          className="text-xs text-gray-500 dark:text-on-surface-muted w-12 text-center tabular-nums hover:text-blue-600 dark:hover:text-blue-400"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          title="Reset to 100%"
+        >
           {Math.round(zoom * 100)}%
-        </span>
+        </button>
         <ToolButton onClick={() => {
           const fn = useUIStore.getState().zoomTo;
-          if (fn) fn(zoom * 1.2);
+          if (fn) fn(zoom * 1.5);
         }} icon={ZoomIn} title="Zoom In" />
         <ToolButton onClick={() => {
           const fn = useUIStore.getState().fitView;

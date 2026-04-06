@@ -102,6 +102,7 @@ class BoardElement(BaseModel):
 class CanvasSettings(BaseModel):
     width: int = 2400
     height: int = 1600
+    infinite: bool = True
     background: str = "#ffffff"
     grid_enabled: bool = True
     grid_size: int = 20

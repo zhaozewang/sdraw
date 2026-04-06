@@ -146,7 +146,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   connectionStatus: 'disconnected',
   watchedRoots: [],
   recentEvents: [],
-  autoSaveEnabled: true,
+  autoSaveEnabled: false,
   suppressPositionSync: false,
   setSuppressPositionSync: (v) => set({ suppressPositionSync: v }),
   snapTargetId: null,

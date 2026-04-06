@@ -9,8 +9,6 @@ export function StatusBar() {
   const zoom = useUIStore(s => s.zoom);
   const connectionStatus = useUIStore(s => s.connectionStatus);
   const recentEvents = useUIStore(s => s.recentEvents);
-  const autoSaveEnabled = useUIStore(s => s.autoSaveEnabled);
-  const setAutoSaveEnabled = useUIStore(s => s.setAutoSaveEnabled);
 
   if (!board) return null;
 
@@ -48,14 +46,6 @@ export function StatusBar() {
           {lastEvent.type}: {lastEvent.path.split('/').pop()}
         </span>
       )}
-
-      {/* Auto-save */}
-      <button
-        onClick={() => setAutoSaveEnabled(!autoSaveEnabled)}
-        className={`${autoSaveEnabled ? 'text-green-600 dark:text-green-400' : 'text-gray-400 dark:text-on-surface-disabled'} hover:text-gray-700 dark:hover:text-on-surface-primary`}
-      >
-        {autoSaveEnabled ? 'Auto-save ON' : 'Auto-save OFF'}
-      </button>
 
       {/* Save status */}
       {isDirty && <span className="text-amber-500">Unsaved</span>}

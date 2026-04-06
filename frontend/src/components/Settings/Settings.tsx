@@ -51,9 +51,6 @@ export function Settings() {
   const setShowSettings = useUIStore(s => s.setShowSettings);
   const theme = useUIStore(s => s.theme);
   const setTheme = useUIStore(s => s.setTheme);
-  const autoSaveEnabled = useUIStore(s => s.autoSaveEnabled);
-  const setAutoSaveEnabled = useUIStore(s => s.setAutoSaveEnabled);
-
   // Grid and snap defaults (stored in localStorage)
   const [defaultGridSize, setDefaultGridSize] = useState(() => {
     try { return Number(localStorage.getItem('sdraw_default_grid_size')) || 20; } catch { return 20; }
@@ -142,9 +139,6 @@ export function Settings() {
 
           {/* Editor */}
           <SettingsSection title="Editor">
-            <SettingsRow label="Auto-save" description="Automatically save boards after changes">
-              <Toggle checked={autoSaveEnabled} onChange={setAutoSaveEnabled} />
-            </SettingsRow>
             <SettingsRow label="Show grid by default">
               <Toggle checked={defaultGridEnabled} onChange={setDefaultGridEnabled} />
             </SettingsRow>

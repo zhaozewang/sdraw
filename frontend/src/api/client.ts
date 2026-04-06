@@ -29,7 +29,7 @@ export interface WorkspaceBoardSummary {
   path: string;
   element_count: number;
   image_count: number;
-  canvas: { width?: number; height?: number; background?: string };
+  canvas: { width?: number; height?: number; infinite?: boolean; background?: string };
   thumbnail?: string | null;
 }
 
@@ -53,6 +53,31 @@ export const api = {
 
   deleteBoardFile: (path: string) =>
     request<{ deleted: string }>('/boards/delete-file', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+
+  // Checkpoint / crash recovery
+  saveCheckpoint: (board: Board, path: string) =>
+    request<{ path: string }>('/boards/checkpoint/save', {
+      method: 'POST',
+      body: JSON.stringify({ board, path }),
+    }),
+
+  checkCheckpoint: (path: string) =>
+    request<{ exists: boolean; newer?: boolean }>('/boards/checkpoint/check', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+
+  loadCheckpoint: (path: string) =>
+    request<{ path: string; board: Board }>('/boards/checkpoint/load', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+
+  deleteCheckpoint: (path: string) =>
+    request<{ deleted: boolean }>('/boards/checkpoint/delete', {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),

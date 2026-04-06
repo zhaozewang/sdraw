@@ -190,14 +190,44 @@ export function findSnapTarget(
 }
 
 /**
- * Given a connected element and the position of the OTHER endpoint,
- * compute where the connected endpoint should be on the element's boundary.
- * The line should point from otherEndpoint toward the element center,
- * intersecting the element boundary.
+ * Convert an absolute snap point to a relative anchor (fraction of element size).
+ */
+export function toRelativeAnchor(
+  point: Point,
+  el: BoardElement,
+): { rx: number; ry: number } {
+  return {
+    rx: el.width > 0 ? (point.x - el.x) / el.width : 0.5,
+    ry: el.height > 0 ? (point.y - el.y) / el.height : 0.5,
+  };
+}
+
+/**
+ * Convert a relative anchor back to an absolute point on the element.
+ */
+export function fromRelativeAnchor(
+  anchor: { rx: number; ry: number },
+  el: BoardElement,
+): Point {
+  return {
+    x: el.x + anchor.rx * el.width,
+    y: el.y + anchor.ry * el.height,
+  };
+}
+
+/**
+ * Given a connected element and an optional pinned anchor,
+ * compute where the connected endpoint should be.
+ * If anchor is provided, uses the pinned position.
+ * Otherwise falls back to nearest boundary from otherEndpoint.
  */
 export function computeConnectionPoint(
   connectedElement: BoardElement,
   otherEndpoint: Point,
+  anchor?: { rx: number; ry: number },
 ): Point {
+  if (anchor) {
+    return fromRelativeAnchor(anchor, connectedElement);
+  }
   return nearestBoundaryPoint(otherEndpoint, connectedElement);
 }

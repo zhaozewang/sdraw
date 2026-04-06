@@ -315,37 +315,80 @@ function NumberInput({ value, onChange, min, max, step, className }: {
   );
 }
 
+const RECENT_COLORS_KEY = 'sdraw_recent_colors';
+const MAX_RECENT_COLORS = 8;
+
+function getRecentColors(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_COLORS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function addRecentColor(color: string) {
+  if (!color || color === 'transparent') return;
+  const normalized = color.toLowerCase();
+  const colors = getRecentColors().filter(c => c.toLowerCase() !== normalized);
+  colors.unshift(color);
+  localStorage.setItem(RECENT_COLORS_KEY, JSON.stringify(colors.slice(0, MAX_RECENT_COLORS)));
+}
+
 function ColorInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const isTransparent = !value || value === 'transparent';
+  const [recentColors, setRecentColors] = useState<string[]>(getRecentColors);
+
+  const handleChange = useCallback((color: string) => {
+    onChange(color);
+    if (color && color !== 'transparent') {
+      addRecentColor(color);
+      setRecentColors(getRecentColors());
+    }
+  }, [onChange]);
+
   return (
-    <div className="flex items-center gap-1 min-w-0">
-      <div className="relative w-2.5 h-2.5 shrink-0 border border-gray-300 dark:border-border overflow-hidden cursor-pointer">
-        {isTransparent ? (
-          <div className="absolute inset-0" style={{ background: 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 50% / 5px 5px' }} />
-        ) : (
-          <div className="absolute inset-0" style={{ backgroundColor: value }} />
-        )}
+    <div className="space-y-0.5">
+      <div className="flex items-center gap-1 min-w-0">
+        <div className="relative w-2.5 h-2.5 shrink-0 border border-gray-300 dark:border-border overflow-hidden cursor-pointer">
+          {isTransparent ? (
+            <div className="absolute inset-0" style={{ background: 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 50% / 5px 5px' }} />
+          ) : (
+            <div className="absolute inset-0" style={{ backgroundColor: value }} />
+          )}
+          <input
+            type="color"
+            value={value && value !== 'transparent' ? value : '#000000'}
+            onChange={e => handleChange(e.target.value)}
+            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+          />
+        </div>
+        <button
+          onClick={() => handleChange(isTransparent ? '#ffffff' : 'transparent')}
+          className={`shrink-0 px-1 py-px text-2xs rounded border ${isTransparent ? 'border-accent text-accent bg-accent/5' : 'border-gray-200 dark:border-border text-gray-400 dark:text-on-surface-muted hover:border-gray-300'}`}
+          title={isTransparent ? 'Set to white' : 'Set to transparent'}
+        >
+          {isTransparent ? '∅' : '∅'}
+        </button>
         <input
-          type="color"
-          value={value && value !== 'transparent' ? value : '#000000'}
-          onChange={e => onChange(e.target.value)}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+          type="text"
+          value={value || ''}
+          onChange={e => handleChange(e.target.value)}
+          className="flex-1 min-w-[30px] px-1 py-px text-2xs border border-gray-200 dark:border-border rounded bg-white dark:bg-surface-tertiary dark:text-on-surface-primary focus:border-accent focus:outline-none font-mono"
+          placeholder="transparent"
         />
       </div>
-      <button
-        onClick={() => onChange(isTransparent ? '#ffffff' : 'transparent')}
-        className={`shrink-0 px-1 py-px text-2xs rounded border ${isTransparent ? 'border-accent text-accent bg-accent/5' : 'border-gray-200 dark:border-border text-gray-400 dark:text-on-surface-muted hover:border-gray-300'}`}
-        title={isTransparent ? 'Set to white' : 'Set to transparent'}
-      >
-        {isTransparent ? '∅' : '∅'}
-      </button>
-      <input
-        type="text"
-        value={value || ''}
-        onChange={e => onChange(e.target.value)}
-        className="flex-1 min-w-[30px] px-1 py-px text-2xs border border-gray-200 dark:border-border rounded bg-white dark:bg-surface-tertiary dark:text-on-surface-primary focus:border-accent focus:outline-none font-mono"
-        placeholder="transparent"
-      />
+      {recentColors.length > 0 && (
+        <div className="flex gap-0.5">
+          {recentColors.map((c, i) => (
+            <button
+              key={`${c}-${i}`}
+              onClick={() => handleChange(c)}
+              className="w-3 h-3 rounded-sm border border-gray-300 dark:border-border hover:scale-125 transition-transform"
+              style={{ backgroundColor: c }}
+              title={c}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -482,6 +525,8 @@ function ElementInspector({ element }: { element: BoardElement }) {
   const removeElements = useBoardStore(s => s.removeElements);
   const duplicateElements = useBoardStore(s => s.duplicateElements);
   const toggleLock = useBoardStore(s => s.toggleLock);
+  const bringToFront = useBoardStore(s => s.bringToFront);
+  const sendToBack = useBoardStore(s => s.sendToBack);
   const ungroupElements = useBoardStore(s => s.ungroupElements);
   const bumpImageVersion = useBoardStore(s => s.bumpImageVersion);
   const clearSelection = useUIStore(s => s.clearSelection);
@@ -582,7 +627,11 @@ function ElementInspector({ element }: { element: BoardElement }) {
             );
           })()}
           <Field label="Z-Index">
-            <NumberInput value={element.z_index} onChange={v => update({ z_index: v })} />
+            <div className="flex items-center gap-1">
+              <NumberInput value={element.z_index} onChange={v => update({ z_index: v })} />
+              <button onClick={() => bringToFront([element.id])} className="px-1.5 py-px text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary shrink-0" title="Bring to front">Top</button>
+              <button onClick={() => sendToBack([element.id])} className="px-1.5 py-px text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary shrink-0" title="Send to back">Btm</button>
+            </div>
           </Field>
           <Field label="Opacity">
             <NumberInput value={element.style.opacity ?? 1} onChange={v => updateStyle({ opacity: v })} min={0} max={1} step={0.1} />
@@ -604,8 +653,25 @@ function ElementInspector({ element }: { element: BoardElement }) {
               <NumberInput value={element.height} onChange={v => { pushHistory('Resize'); update({ height: v }); }} min={10} />
             </CompactField>
           </div>
+          {element.type !== 'image' && (
+            <div className="flex items-center gap-1 mt-1">
+              <label className="flex items-center gap-1 text-2xs text-gray-500 dark:text-on-surface-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!element.metadata?.lockAspectRatio}
+                  onChange={e => update({ metadata: { ...element.metadata, lockAspectRatio: e.target.checked } })}
+                  className="rounded"
+                />
+                Lock aspect ratio
+              </label>
+            </div>
+          )}
           <Field label="Z-Index">
-            <NumberInput value={element.z_index} onChange={v => update({ z_index: v })} />
+            <div className="flex items-center gap-1">
+              <NumberInput value={element.z_index} onChange={v => update({ z_index: v })} />
+              <button onClick={() => bringToFront([element.id])} className="px-1.5 py-px text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary shrink-0" title="Bring to front">Top</button>
+              <button onClick={() => sendToBack([element.id])} className="px-1.5 py-px text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary shrink-0" title="Send to back">Btm</button>
+            </div>
           </Field>
           <Field label="Rotation">
             <NumberInput value={element.rotation} onChange={v => update({ rotation: v })} min={0} max={360} />
@@ -634,18 +700,6 @@ function ElementInspector({ element }: { element: BoardElement }) {
           {element.source.path && (
             <div className="text-2xs text-gray-400 dark:text-on-surface-muted truncate">{getFileName(element.source.path)}</div>
           )}
-          <Field label="Fit">
-            <SelectInput
-              value={element.style.fitMode || 'contain'}
-              onChange={v => updateStyle({ fitMode: v as any })}
-              options={[
-                { value: 'contain', label: 'Contain' },
-                { value: 'cover', label: 'Cover' },
-                { value: 'stretch', label: 'Stretch' },
-                { value: 'center', label: 'Center (no scale)' },
-              ]}
-            />
-          </Field>
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-1 text-2xs text-gray-500 dark:text-on-surface-muted">
               <input
@@ -674,19 +728,34 @@ function ElementInspector({ element }: { element: BoardElement }) {
             <ColorInput value={element.style.borderColor || '#d0d0d0'} onChange={v => updateStyle({ borderColor: v })} />
           </Field>
           <Field label="B. Width">
-            <NumberInput value={element.style.borderWidth ?? 1} onChange={v => updateStyle({ borderWidth: v })} min={0} max={20} />
+            <NumberInput value={element.style.borderWidth ?? 0} onChange={v => updateStyle({ borderWidth: v })} min={0} max={20} />
           </Field>
           <Field label="Radius">
-            <NumberInput value={element.style.borderRadius ?? 4} onChange={v => updateStyle({ borderRadius: v })} min={0} max={100} />
+            <NumberInput value={element.style.borderRadius ?? 0} onChange={v => updateStyle({ borderRadius: v })} min={0} max={100} />
+          </Field>
+        </Section>
+      )}
+
+      {/* Plot style */}
+      {element.type === 'plot' && (
+        <Section title="Plot Style">
+          <Field label="Border">
+            <ColorInput value={element.style.borderColor || '#d0d0d0'} onChange={v => updateStyle({ borderColor: v })} />
+          </Field>
+          <Field label="B. Width">
+            <NumberInput value={element.style.borderWidth ?? 0} onChange={v => updateStyle({ borderWidth: v })} min={0} max={20} />
+          </Field>
+          <Field label="Radius">
+            <NumberInput value={element.style.borderRadius ?? 0} onChange={v => updateStyle({ borderRadius: v })} min={0} max={100} />
           </Field>
           <Field label="Bg">
-            <ColorInput value={element.style.background || '#ffffff'} onChange={v => updateStyle({ background: v })} />
+            <ColorInput value={element.style.background || 'transparent'} onChange={v => updateStyle({ background: v })} />
           </Field>
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-1 text-2xs text-gray-500 dark:text-on-surface-muted">
               <input
                 type="checkbox"
-                checked={element.style.shadow ?? true}
+                checked={element.style.shadow ?? false}
                 onChange={e => updateStyle({ shadow: e.target.checked })}
                 className="rounded"
               />
@@ -814,6 +883,15 @@ function ElementInspector({ element }: { element: BoardElement }) {
               }}
             />
           </Field>
+          <Field label="Head Size">
+            <NumberInput
+              value={(element.metadata?.arrowHeadSize as number) ?? 1}
+              onChange={v => update({ metadata: { ...element.metadata, arrowHeadSize: v } })}
+              min={0.5}
+              max={5}
+              step={0.25}
+            />
+          </Field>
           <Field label="Color">
             <ColorInput value={element.style.strokeColor || '#333333'} onChange={v => updateStyle({ strokeColor: v })} />
           </Field>
@@ -839,15 +917,18 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
   const groupElements = useBoardStore(s => s.groupElements);
   const ungroupElements = useBoardStore(s => s.ungroupElements);
   const toggleLock = useBoardStore(s => s.toggleLock);
+  const bringToFront = useBoardStore(s => s.bringToFront);
+  const sendToBack = useBoardStore(s => s.sendToBack);
+  const updateElements = useBoardStore(s => s.updateElements);
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
 
-  // Check if the selection is exactly one group (for ungroup)
-  const isSingleGroup = ids.length === 1
-    && board?.elements.find(e => e.id === ids[0])?.type === 'group';
-  // Check if selection contains any groups (for ungroup all)
   const groupsInSelection = ids.filter(id =>
     board?.elements.find(e => e.id === id)?.type === 'group'
   );
+
+  const allLocked = ids.every(id => board?.elements.find(e => e.id === id)?.locked);
+
+  const btnClass = "px-2 py-1 text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary disabled:opacity-40 disabled:cursor-not-allowed";
 
   return (
     <>
@@ -864,7 +945,7 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
                 }
               }}
               disabled={ids.length < 2}
-              className="px-2 py-1 text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+              className={btnClass}
             >
               Group
             </button>
@@ -876,12 +957,11 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
                   if (el?.children) allChildIds.push(...el.children);
                   ungroupElements(gid);
                 }
-                // Select the ungrouped children + non-group items
                 const nonGroupIds = ids.filter(id => !groupsInSelection.includes(id));
                 setSelectedIds([...nonGroupIds, ...allChildIds]);
               }}
               disabled={groupsInSelection.length === 0}
-              className="px-2 py-1 text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+              className={btnClass}
             >
               Ungroup
             </button>
@@ -889,44 +969,54 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
 
           {/* Alignment */}
           <div className="text-xs text-gray-500 dark:text-on-surface-muted">Alignment</div>
-          <div className="grid grid-cols-3 gap-1">
-            {(['left', 'centerH', 'right', 'top', 'centerV', 'bottom'] as const).map(align => (
-              <button
-                key={align}
-                onClick={() => alignElements(ids, align)}
-                className="px-2 py-1 text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary"
-              >
-                {align.replace('centerH', 'Center H').replace('centerV', 'Center V')}
-              </button>
-            ))}
-          </div>
+          <select
+            defaultValue=""
+            onChange={e => { if (e.target.value) { alignElements(ids, e.target.value as any); e.target.value = ''; } }}
+            className="w-full px-2 py-1 text-2xs border border-gray-200 dark:border-border rounded bg-white dark:bg-surface-tertiary dark:text-on-surface-primary focus:outline-none cursor-pointer"
+          >
+            <option value="" disabled>Choose alignment...</option>
+            <option value="left">Align Left</option>
+            <option value="centerH">Align Center (Horizontal)</option>
+            <option value="right">Align Right</option>
+            <option value="top">Align Top</option>
+            <option value="centerV">Align Center (Vertical)</option>
+            <option value="bottom">Align Bottom</option>
+          </select>
           {ids.length >= 3 && (
             <>
-              <div className="text-xs text-gray-500 mt-2">Distribution</div>
+              <div className="text-xs text-gray-500 dark:text-on-surface-muted mt-1">Distribution</div>
               <div className="grid grid-cols-2 gap-1">
-                <button
-                  onClick={() => distributeElements(ids, 'horizontal')}
-                  className="px-2 py-1 text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary"
-                >
+                <button onClick={() => distributeElements(ids, 'horizontal')} className={btnClass}>
                   Distribute H
                 </button>
-                <button
-                  onClick={() => distributeElements(ids, 'vertical')}
-                  className="px-2 py-1 text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary"
-                >
+                <button onClick={() => distributeElements(ids, 'vertical')} className={btnClass}>
                   Distribute V
                 </button>
               </div>
             </>
           )}
 
-          {/* Lock */}
-          <div className="grid grid-cols-2 gap-1">
+          {/* Z-order */}
+          <div className="text-xs text-gray-500 dark:text-on-surface-muted mt-1">Z-Index</div>
+          <div className="flex items-center gap-1">
+            <NumberInput
+              value={(() => {
+                const zVals = ids.map(id => board?.elements.find(e => e.id === id)?.z_index ?? 0);
+                return zVals.every(z => z === zVals[0]) ? zVals[0] : 0;
+              })()}
+              onChange={v => updateElements(ids.map(id => ({ id, changes: { z_index: v } })))}
+            />
+            <button onClick={() => bringToFront(ids)} className={btnClass + ' shrink-0'} title="Bring to front">Top</button>
+            <button onClick={() => sendToBack(ids)} className={btnClass + ' shrink-0'} title="Send to back">Btm</button>
+          </div>
+
+          {/* Lock / Unlock */}
+          <div className="grid grid-cols-1 gap-1 mt-1">
             <button
               onClick={() => toggleLock(ids)}
-              className="px-2 py-1 text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary"
+              className={btnClass}
             >
-              Toggle Lock
+              {allLocked ? 'Unlock' : 'Lock'}
             </button>
           </div>
         </div>

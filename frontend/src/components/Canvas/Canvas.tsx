@@ -25,9 +25,18 @@ import {
   type SpacingIndicator,
   type Rect,
 } from '@/utils/alignmentGuides';
-import { findSnapTarget, computeConnectionPoint } from '@/utils/snapToShape';
+import { findSnapTarget, toRelativeAnchor } from '@/utils/snapToShape';
 
 function elementToNode(element: BoardElement): Node {
+  // Arrow nodes and unfilled shapes need pointer-events:none on the wrapper
+  // so that clicks in empty space pass through. The SVG content inside
+  // handles its own click events to trigger selection.
+  const isArrow = element.type === 'arrow';
+  const shape = element.metadata?.shape as string | undefined;
+  const isNonRectShape = element.type === 'rectangle'
+    && (shape === 'triangle' || shape === 'diamond');
+  const passThrough = isArrow || isNonRectShape;
+
   return {
     id: element.id,
     type: element.type === 'group' ? 'rectangle' : element.type,
@@ -38,10 +47,11 @@ function elementToNode(element: BoardElement): Node {
     style: {
       width: element.width,
       height: element.height,
+      ...(passThrough ? { pointerEvents: 'none' as const } : {}),
     },
     zIndex: element.z_index,
-    draggable: !element.locked,
-    selectable: true,
+    draggable: !element.locked && !passThrough,
+    selectable: !passThrough,
     hidden: !element.visible,
   };
 }
@@ -248,6 +258,10 @@ export function Canvas() {
   const pushHistory = useBoardStore(s => s.pushHistory);
   const addElement = useBoardStore(s => s.addElement);
 
+  // Stable ref for board so onNodesChange doesn't recreate on every board update
+  const boardRef = useRef(board);
+  boardRef.current = board;
+
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
   const setZoom = useUIStore(s => s.setZoom);
   const zoom = useUIStore(s => s.zoom);
@@ -313,7 +327,7 @@ export function Canvas() {
 
     // Structural fingerprint: things that require a full node rebuild
     const structFingerprint = board.elements
-      .map(el => `${el.id}:${el.visible}:${el.locked}:${el.type}:${el.source?.path || ''}:${el.text || ''}`)
+      .map(el => `${el.id}:${el.visible}:${el.locked}:${el.type}:${el.source?.path || ''}:${el.text || ''}:${el.metadata?.shape || ''}:${el.style?.fill || ''}`)
       .join('|');
     // Position/size fingerprint
     const posFingerprint = board.elements
@@ -364,18 +378,19 @@ export function Canvas() {
   const onNodesChange: OnNodesChange = useCallback((changes: NodeChange[]) => {
     onNodesChangeBase(changes);
 
-    if (!board) return;
+    const b = boardRef.current;
+    if (!b) return;
     if (useUIStore.getState().suppressPositionSync) return;
 
     let isDragging = false;
 
     for (const change of changes) {
       if (change.type === 'position' && change.position && change.id) {
-        let el = board.elements.find(e => e.id === change.id);
+        let el = b.elements.find(e => e.id === change.id);
         // If this element belongs to a group, move the group instead
         const groupId = el?.metadata?.groupId as string | undefined;
         if (groupId) {
-          const groupEl = board.elements.find(e => e.id === groupId);
+          const groupEl = b.elements.find(e => e.id === groupId);
           if (groupEl) {
             const dx = change.position.x - (el?.x ?? 0);
             const dy = change.position.y - (el?.y ?? 0);
@@ -404,7 +419,7 @@ export function Canvas() {
               width: el.width,
               height: el.height,
             };
-            const otherRects: Rect[] = board.elements
+            const otherRects: Rect[] = b.elements
               .filter(e => e.id !== change.id && e.visible)
               .map(e => ({ id: e.id, x: e.x, y: e.y, width: e.width, height: e.height }));
 
@@ -416,12 +431,12 @@ export function Canvas() {
             x = result.snappedX;
             y = result.snappedY;
 
-            if (!didAlignX && board.canvas.snap_enabled) {
-              const snap = board.canvas.grid_size;
+            if (!didAlignX && b.canvas.snap_enabled) {
+              const snap = b.canvas.grid_size;
               x = Math.round(x / snap) * snap;
             }
-            if (!didAlignY && board.canvas.snap_enabled) {
-              const snap = board.canvas.grid_size;
+            if (!didAlignY && b.canvas.snap_enabled) {
+              const snap = b.canvas.grid_size;
               y = Math.round(y / snap) * snap;
             }
 
@@ -434,44 +449,7 @@ export function Canvas() {
 
           // Auto-update connected arrow endpoints when a shape moves
           if (change.dragging) {
-            const movedId = change.id;
-            for (const arrow of board.elements) {
-              if (arrow.type !== 'arrow') continue;
-              const startConn = arrow.metadata?.startConnection as string | undefined;
-              const endConn = arrow.metadata?.endConnection as string | undefined;
-              if (startConn !== movedId && endConn !== movedId) continue;
-
-              const pts = arrow.points && arrow.points.length >= 2
-                ? arrow.points
-                : [{ x: 0, y: arrow.height / 2 }, { x: arrow.width, y: arrow.height / 2 }];
-
-              let sAbs = { x: arrow.x + pts[0].x, y: arrow.y + pts[0].y };
-              let eAbs = { x: arrow.x + pts[1].x, y: arrow.y + pts[1].y };
-
-              // Recompute connected endpoints against the moved element's new position
-              // Use the updated position (x, y) for the moved element
-              const movedEl = { ...board.elements.find(e => e.id === movedId)!, x, y };
-
-              if (startConn === movedId) {
-                sAbs = computeConnectionPoint(movedEl, eAbs);
-              }
-              if (endConn === movedId) {
-                eAbs = computeConnectionPoint(movedEl, sAbs);
-              }
-
-              const minX = Math.min(sAbs.x, eAbs.x);
-              const minY = Math.min(sAbs.y, eAbs.y);
-              const w = Math.max(Math.abs(eAbs.x - sAbs.x), 1);
-              const h = Math.max(Math.abs(eAbs.y - sAbs.y), 1);
-
-              updateElement(arrow.id, {
-                x: minX, y: minY, width: w, height: h,
-                points: [
-                  { x: sAbs.x - minX, y: sAbs.y - minY },
-                  { x: eAbs.x - minX, y: eAbs.y - minY },
-                ],
-              });
-            }
+            useBoardStore.getState().updateConnectedArrows(change.id);
           }
 
           if (!change.dragging && dragStartRef.current.has(change.id)) {
@@ -485,22 +463,25 @@ export function Canvas() {
       }
 
       if (change.type === 'dimensions' && change.id && change.dimensions) {
-        const el = board.elements.find(e => e.id === change.id);
+        const el = b.elements.find(e => e.id === change.id);
         if (el && !el.locked) {
-          updateElement(change.id, {
-            width: change.dimensions.width,
-            height: change.dimensions.height,
-          });
+          // Skip no-op dimension updates (React Flow fires these on initial measure)
+          const newW = change.dimensions.width;
+          const newH = change.dimensions.height;
+          if (Math.abs(el.width - newW) > 0.5 || Math.abs(el.height - newH) > 0.5) {
+            updateElement(change.id, { width: newW, height: newH });
+          }
         }
       }
     }
-  }, [board, onNodesChangeBase, updateElement, pushHistory]);
+  }, [onNodesChangeBase, updateElement, pushHistory]);
 
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: { nodes: Node[] }) => {
-    if (!board) return;
+    const b = boardRef.current;
+    if (!b) return;
     // If a child of a group is selected, select the group instead
     const ids = selectedNodes.map(n => {
-      const el = board.elements.find(e => e.id === n.id);
+      const el = b.elements.find(e => e.id === n.id);
       if (el?.metadata?.groupId) {
         return el.metadata.groupId as string;
       }
@@ -508,10 +489,13 @@ export function Canvas() {
     });
     // Deduplicate
     setSelectedIds([...new Set(ids)]);
-  }, [setSelectedIds, board]);
+  }, [setSelectedIds]);
 
   const onPaneClick = useCallback(() => {
-    // No-op: drag-to-draw handles insert via pointer events
+    // Clear selection when clicking empty canvas
+    if (!useUIStore.getState().insertPayload) {
+      useUIStore.getState().setSelectedIds([]);
+    }
   }, []);
 
   /** Convert client coords to canvas coords */
@@ -541,7 +525,9 @@ export function Canvas() {
 
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (!target.closest('.react-flow__pane')) return;
+    // Allow drawing on the pane or through passthrough nodes.
+    // Reject clicks on interactive UI elements (minimap, panels, controls).
+    if (target.closest('.react-flow__minimap') || target.closest('.react-flow__controls')) return;
 
     e.stopPropagation();
     e.preventDefault();
@@ -680,13 +666,30 @@ export function Canvas() {
 
       useUIStore.getState().setSnapTargetId(null);
 
-      // Store connection metadata for arrows
+      // Store connection metadata for arrows with pinned anchors
       if (isArrow && (startSnapId || endSnapId)) {
         const el = useBoardStore.getState().board?.elements.find(e => e.id === elId);
+        const boardElements = useBoardStore.getState().board?.elements || [];
         if (el) {
           const meta = { ...el.metadata };
-          if (startSnapId) meta.startConnection = startSnapId;
-          if (endSnapId) meta.endConnection = endSnapId;
+          const finalPts = el.points && el.points.length >= 2
+            ? el.points : [{ x: 0, y: 0 }, { x: el.width, y: 0 }];
+          if (startSnapId) {
+            meta.startConnection = startSnapId;
+            const snapEl = boardElements.find(e => e.id === startSnapId);
+            if (snapEl) {
+              const absPoint = { x: el.x + finalPts[0].x, y: el.y + finalPts[0].y };
+              meta.startAnchor = toRelativeAnchor(absPoint, snapEl);
+            }
+          }
+          if (endSnapId) {
+            meta.endConnection = endSnapId;
+            const snapEl = boardElements.find(e => e.id === endSnapId);
+            if (snapEl) {
+              const absPoint = { x: el.x + finalPts[1].x, y: el.y + finalPts[1].y };
+              meta.endAnchor = toRelativeAnchor(absPoint, snapEl);
+            }
+          }
           useBoardStore.getState().updateElement(elId, { metadata: meta });
         }
       }
@@ -737,7 +740,7 @@ export function Canvas() {
         zoomOnPinch
         minZoom={0.1}
         maxZoom={5}
-        fitView
+        defaultViewport={{ x: 0, y: 0, zoom: 1 }}
         snapToGrid={false}
         elevateNodesOnSelect={false}
         deleteKeyCode={null}
@@ -774,7 +777,7 @@ export function Canvas() {
         />
         <Panel position="top-left">
           <div className="text-2xs text-gray-400 dark:text-on-surface-muted bg-white/60 dark:bg-surface-primary/60 px-1.5 py-0.5 rounded">
-            {board.canvas.width} x {board.canvas.height}
+            {board.canvas.infinite ? 'Infinite canvas' : `${board.canvas.width} × ${board.canvas.height}`}
           </div>
         </Panel>
       </ReactFlow>

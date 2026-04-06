@@ -159,6 +159,7 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
         onResizeAbsolute={onResizeAbsolute}
         onResizeEnd={onResizeEnd}
         getRect={getRect}
+        aspectRatio={element.metadata?.lockAspectRatio ? element.width / element.height : undefined}
       />
       <div
         className="w-full h-full"

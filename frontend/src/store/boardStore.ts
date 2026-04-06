@@ -4,6 +4,7 @@ import type { Board, BoardElement, CanvasSettings, ElementType, AutoExportSettin
 import { DEFAULT_CANVAS } from '@/types/board';
 import { createElement } from '@/utils/helpers';
 import { api } from '@/api/client';
+import { toRelativeAnchor, fromRelativeAnchor } from '@/utils/snapToShape';
 /**
  * Capture the visible React Flow canvas using html2canvas.
  * html-to-image has a known bug where images with different query params
@@ -64,6 +65,8 @@ interface BoardState {
   newBoard: (name: string, filePath: string, canvasOverrides?: Partial<CanvasSettings>) => Promise<void>;
   openBoard: (filePath: string) => Promise<void>;
   saveBoard: () => Promise<void>;
+  saveCheckpoint: () => Promise<void>;
+  deleteCheckpoint: () => Promise<void>;
   closeBoard: () => void;
   setBoardName: (name: string) => void;
   updateAutoExport: (settings: Partial<AutoExportSettings>) => void;
@@ -100,6 +103,9 @@ interface BoardState {
   pushHistory: (description: string) => void;
   undo: () => void;
   redo: () => void;
+
+  // Actions - Connected arrows
+  updateConnectedArrows: (movedElementId: string) => void;
 
   // Actions - Image refresh
   bumpImageVersion: (path: string) => void;
@@ -167,12 +173,31 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     };
     await api.saveBoardToFile(updated, boardFilePath);
     set({ board: updated, isDirty: false });
+    // Clean up checkpoint after a successful save
+    try { await api.deleteCheckpoint(boardFilePath); } catch {}
+  },
+
+  saveCheckpoint: async () => {
+    const { board, boardFilePath, isDirty } = get();
+    if (!board || !boardFilePath || !isDirty) return;
+    try {
+      // Lightweight save — no thumbnail, no updated_at change
+      await api.saveCheckpoint(board, boardFilePath);
+    } catch {
+      // Best-effort
+    }
+  },
+
+  deleteCheckpoint: async () => {
+    const { boardFilePath } = get();
+    if (!boardFilePath) return;
+    try { await api.deleteCheckpoint(boardFilePath); } catch {}
   },
 
   closeBoard: async () => {
     // Capture thumbnail before closing so the welcome page shows a preview
-    const { board, boardFilePath } = get();
-    if (board && boardFilePath) {
+    const { board, boardFilePath, isDirty } = get();
+    if (board && boardFilePath && isDirty) {
       try {
         const thumbnail = await captureCanvas(board.canvas.background || '#ffffff', 0.3);
         if (thumbnail) {
@@ -195,7 +220,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   updateAutoExport: (settings: Partial<AutoExportSettings>) => {
     const { board } = get();
     if (!board) return;
-    const current = board.autoExport || { enabled: false, outputPath: '', format: 'png' as const, dpi: 2, transparent: false };
+    const current = board.autoExport || { enabled: false, outputPath: '', format: 'png' as const, dpi: 2, transparent: false, sizeMode: 'fit' as const };
     set({ board: { ...board, autoExport: { ...current, ...settings } }, isDirty: true });
   },
 
@@ -213,9 +238,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       if (!el) { useUIStore.getState().setExportStatus('error'); return; }
 
       const fmt = board.autoExport.format || 'png';
+      const isTransparent = board.autoExport.transparent && fmt === 'png';
+      const scale = board.autoExport.dpi || 2;
 
       // Hide overlays
-      const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution'];
+      const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution', '.react-flow__background'];
       const hidden: HTMLElement[] = [];
       for (const sel of selectors) {
         el.querySelectorAll(sel).forEach(node => {
@@ -227,19 +254,80 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         });
       }
 
+      // Temporarily strip CSS background for transparent export
+      const origBg = el.style.backgroundColor;
+      if (isTransparent) {
+        el.style.backgroundColor = 'transparent';
+        el.classList.remove('bg-canvas-bg');
+      }
+
       let dataUrl: string;
       try {
-        const canvas = await html2canvas(el, {
-          scale: board.autoExport.dpi || 2,
-          backgroundColor: board.autoExport.transparent ? null : (board.canvas.background || '#ffffff'),
+        const fullCanvas = await html2canvas(el, {
+          scale,
+          backgroundColor: isTransparent ? null : (board.canvas.background || '#ffffff'),
           useCORS: true,
           allowTaint: true,
           logging: false,
         });
+
+        let resultCanvas = fullCanvas;
+        const sizeMode = board.autoExport.sizeMode || 'fit';
+
+        if (sizeMode === 'fit' && board.elements.length > 0) {
+          const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
+          const transform = viewport?.style.transform || '';
+          const match = transform.match(/translate\((.+?)px,\s*(.+?)px\)\s*scale\((.+?)\)/);
+          if (match) {
+            const tx = parseFloat(match[1]);
+            const ty = parseFloat(match[2]);
+            const vScale = parseFloat(match[3]);
+            const pad = 20;
+            const minX = Math.min(...board.elements.map(e => e.x)) - pad;
+            const minY = Math.min(...board.elements.map(e => e.y)) - pad;
+            const maxX = Math.max(...board.elements.map(e => e.x + e.width)) + pad;
+            const maxY = Math.max(...board.elements.map(e => e.y + e.height)) + pad;
+            const sx = (minX * vScale + tx) * scale;
+            const sy = (minY * vScale + ty) * scale;
+            const sw = (maxX - minX) * vScale * scale;
+            const sh = (maxY - minY) * vScale * scale;
+            const cx = Math.max(0, Math.round(sx));
+            const cy = Math.max(0, Math.round(sy));
+            const cw = Math.min(Math.round(sw), fullCanvas.width - cx);
+            const ch = Math.min(Math.round(sh), fullCanvas.height - cy);
+            if (cw > 0 && ch > 0) {
+              const cropped = document.createElement('canvas');
+              cropped.width = cw;
+              cropped.height = ch;
+              cropped.getContext('2d')!.drawImage(fullCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
+              resultCanvas = cropped;
+            }
+          }
+        } else if (sizeMode === 'fixed' && board.autoExport.fixedWidth && board.autoExport.fixedHeight) {
+          const fw = board.autoExport.fixedWidth * scale;
+          const fh = board.autoExport.fixedHeight * scale;
+          const resized = document.createElement('canvas');
+          resized.width = fw;
+          resized.height = fh;
+          const ctx = resized.getContext('2d')!;
+          const scaleX = fw / fullCanvas.width;
+          const scaleY = fh / fullCanvas.height;
+          const s = Math.min(scaleX, scaleY);
+          const dx = (fw - fullCanvas.width * s) / 2;
+          const dy = (fh - fullCanvas.height * s) / 2;
+          if (!isTransparent) { ctx.fillStyle = board.canvas.background || '#ffffff'; ctx.fillRect(0, 0, fw, fh); }
+          ctx.drawImage(fullCanvas, dx, dy, fullCanvas.width * s, fullCanvas.height * s);
+          resultCanvas = resized;
+        }
+
         const mimeType = fmt === 'jpg' ? 'image/jpeg' : 'image/png';
-        dataUrl = canvas.toDataURL(mimeType, 0.95);
+        dataUrl = resultCanvas.toDataURL(mimeType, 0.95);
       } finally {
         for (const node of hidden) node.style.display = '';
+        if (isTransparent) {
+          el.style.backgroundColor = origBg;
+          el.classList.add('bg-canvas-bg');
+        }
       }
 
       const res = await fetch('/api/export/save', {
@@ -601,6 +689,68 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       historyIndex: newIndex,
       isDirty: true,
     });
+  },
+
+  updateConnectedArrows: (movedElementId: string) => {
+    const { board } = get();
+    if (!board) return;
+    const movedEl = board.elements.find(e => e.id === movedElementId);
+    if (!movedEl) return;
+
+    for (const arrow of board.elements) {
+      if (arrow.type !== 'arrow') continue;
+      const startConn = arrow.metadata?.startConnection as string | undefined;
+      const endConn = arrow.metadata?.endConnection as string | undefined;
+      if (startConn !== movedElementId && endConn !== movedElementId) continue;
+
+      const pts = arrow.points && arrow.points.length >= 2
+        ? arrow.points
+        : [{ x: 0, y: arrow.height / 2 }, { x: arrow.width, y: arrow.height / 2 }];
+      const newMeta = { ...arrow.metadata };
+
+      const resolveEndpoint = (
+        connId: string | undefined,
+        anchorKey: string,
+        absKey: string,
+        ptIdx: number,
+      ) => {
+        if (connId) {
+          let anchor = arrow.metadata?.[anchorKey] as { rx: number; ry: number } | undefined;
+          const el = connId === movedElementId ? movedEl : board.elements.find(e => e.id === connId);
+          if (el) {
+            if (!anchor) {
+              const absPoint = { x: arrow.x + pts[ptIdx].x, y: arrow.y + pts[ptIdx].y };
+              anchor = toRelativeAnchor(absPoint, el);
+              newMeta[anchorKey] = anchor;
+            }
+            return fromRelativeAnchor(anchor, el);
+          }
+        }
+        const stored = arrow.metadata?.[absKey] as { x: number; y: number } | undefined;
+        if (stored) return { ...stored };
+        return { x: arrow.x + pts[ptIdx].x, y: arrow.y + pts[ptIdx].y };
+      };
+
+      const sAbs = resolveEndpoint(startConn, 'startAnchor', 'startAbsPos', 0);
+      const eAbs = resolveEndpoint(endConn, 'endAnchor', 'endAbsPos', 1);
+
+      if (!startConn) newMeta.startAbsPos = sAbs;
+      if (!endConn) newMeta.endAbsPos = eAbs;
+
+      const minX = Math.min(sAbs.x, eAbs.x);
+      const minY = Math.min(sAbs.y, eAbs.y);
+      const w = Math.max(Math.abs(eAbs.x - sAbs.x), 1);
+      const h = Math.max(Math.abs(eAbs.y - sAbs.y), 1);
+
+      get().updateElement(arrow.id, {
+        x: minX, y: minY, width: w, height: h,
+        points: [
+          { x: sAbs.x - minX, y: sAbs.y - minY },
+          { x: eAbs.x - minX, y: eAbs.y - minY },
+        ],
+        metadata: newMeta,
+      });
+    }
   },
 
   bumpImageVersion: (path: string) => {

@@ -89,7 +89,7 @@ function FileBrowserDialog({
   const onPathChangeRef = useRef(onPathChange);
   onPathChangeRef.current = onPathChange;
 
-  const navigate = useCallback(async (path: string) => {
+  const navigateRaw = useCallback(async (path: string) => {
     setLoading(true);
     try {
       const result = await api.browse(path);
@@ -102,15 +102,29 @@ function FileBrowserDialog({
       setFolderError('');
       saveLastDirectory(result.path);
       onPathChangeRef.current?.(result.path);
+      setLoading(false);
+      return true;
     } catch {
       setEntries([]);
+      setLoading(false);
+      return false;
     }
-    setLoading(false);
   }, []);
+
+  const navigate = useCallback(async (path: string) => {
+    const ok = await navigateRaw(path);
+    if (!ok) {
+      // Fallback to home directory from backend
+      const home = await fetchUserHome();
+      if (home !== path) {
+        await navigateRaw(home);
+      }
+    }
+  }, [navigateRaw]);
 
   useEffect(() => {
     const last = getLastDirectory();
-    if (last && last !== '/Users') {
+    if (last) {
       navigate(last);
     } else {
       fetchUserHome().then(home => navigate(home));
@@ -286,11 +300,12 @@ function NewBoardDialog({
 }: {
   folderPath: string;
   onClose: () => void;
-  onCreate: (name: string, filePath: string, width: number, height: number) => void;
+  onCreate: (name: string, filePath: string, width: number, height: number, infinite: boolean) => void;
 }) {
   const [boardName, setBoardName] = useState('');
   const [canvasWidth, setCanvasWidth] = useState(2400);
   const [canvasHeight, setCanvasHeight] = useState(1600);
+  const [infinite, setInfinite] = useState(true);
 
   const safeFileName = useMemo(() => {
     const name = boardName.trim() || 'Untitled Board';
@@ -299,7 +314,7 @@ function NewBoardDialog({
 
   const handleSubmit = () => {
     const name = boardName.trim() || 'Untitled Board';
-    onCreate(name, `${folderPath}/${safeFileName}`, canvasWidth, canvasHeight);
+    onCreate(name, `${folderPath}/${safeFileName}`, canvasWidth, canvasHeight, infinite);
   };
 
   return (
@@ -331,6 +346,16 @@ function NewBoardDialog({
           <div>
             <label className="text-xs font-medium text-gray-600 dark:text-on-surface-secondary block mb-1.5">Canvas size</label>
             <div className="flex flex-wrap gap-1.5 mb-2">
+              <button
+                onClick={() => setInfinite(true)}
+                className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                  infinite
+                    ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-400 text-blue-600 dark:text-blue-400'
+                    : 'border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary hover:border-gray-300 hover:bg-gray-50 dark:hover:bg-surface-tertiary'
+                }`}
+              >
+                Infinite
+              </button>
               {[
                 { label: 'Single column', w: 1200, h: 1600 },
                 { label: '1.5 column', w: 1800, h: 1200 },
@@ -338,11 +363,11 @@ function NewBoardDialog({
                 { label: 'Wide', w: 3200, h: 1200 },
                 { label: 'Poster', w: 4800, h: 3200 },
               ].map(p => {
-                const active = canvasWidth === p.w && canvasHeight === p.h;
+                const active = !infinite && canvasWidth === p.w && canvasHeight === p.h;
                 return (
                   <button
                     key={p.label}
-                    onClick={() => { setCanvasWidth(p.w); setCanvasHeight(p.h); }}
+                    onClick={() => { setInfinite(false); setCanvasWidth(p.w); setCanvasHeight(p.h); }}
                     className={`px-2.5 py-1 text-xs rounded border transition-colors ${
                       active
                         ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-400 text-blue-600 dark:text-blue-400'
@@ -354,6 +379,7 @@ function NewBoardDialog({
                 );
               })}
             </div>
+            {!infinite && (
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1">
                 <span className="text-xs text-gray-500">W</span>
@@ -376,6 +402,7 @@ function NewBoardDialog({
               </div>
               <span className="text-2xs text-gray-400">px</span>
             </div>
+            )}
           </div>
         </div>
         <div className="px-4 py-3 border-t border-gray-100 dark:border-border flex justify-end gap-2">
@@ -516,6 +543,7 @@ function WelcomeScreen() {
   const [newBoardFolder, setNewBoardFolder] = useState('');
   const [showFileBrowser, setShowFileBrowser] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ name: string; path: string } | null>(null);
+  const [recoveryTarget, setRecoveryTarget] = useState<string | null>(null); // board file path with a checkpoint
   const theme = useUIStore(s => s.theme);
   const setTheme = useUIStore(s => s.setTheme);
 
@@ -530,24 +558,23 @@ function WelcomeScreen() {
   // Load workspace boards on mount
   useEffect(() => { loadBoards(); }, [loadBoards]);
 
-  const handleCreate = useCallback(async (name: string, filePath: string, width: number, height: number) => {
+  const handleCreate = useCallback(async (name: string, filePath: string, width: number, height: number, infinite: boolean) => {
     try {
       setError('');
-      await newBoard(name, filePath, { width, height });
+      await newBoard(name, filePath, { width, height, infinite });
       addRecentBoard(name, filePath);
     } catch (err: any) {
       setError(err.message || 'Failed to create board');
     }
   }, [newBoard]);
 
-  const handleOpen = useCallback(async (filePath: string) => {
+  const doOpen = useCallback(async (filePath: string) => {
     try {
       setError('');
       await openBoard(filePath);
       const board = useBoardStore.getState().board;
       addRecentBoard(board?.name || 'Untitled', filePath);
     } catch (err: any) {
-      // Auto-remove stale recent entry if file not found
       if (err.message?.includes('404')) {
         removeRecentBoard(filePath);
         setRecentBoards(getRecentBoards());
@@ -555,6 +582,48 @@ function WelcomeScreen() {
       setError(err.message || 'Failed to open board');
     }
   }, [openBoard]);
+
+  const handleOpen = useCallback(async (filePath: string) => {
+    // Check for a crash-recovery checkpoint
+    try {
+      const check = await api.checkCheckpoint(filePath);
+      if (check.exists && check.newer) {
+        setRecoveryTarget(filePath);
+        return;
+      }
+    } catch {
+      // No checkpoint or check failed — proceed normally
+    }
+    doOpen(filePath);
+  }, [doOpen]);
+
+  const handleRecover = useCallback(async () => {
+    if (!recoveryTarget) return;
+    try {
+      setError('');
+      const result = await api.loadCheckpoint(recoveryTarget);
+      // Load the recovered board directly into the store
+      useBoardStore.setState({
+        board: result.board as any,
+        boardFilePath: recoveryTarget,
+        isDirty: true, // Mark dirty so user can save
+        history: [{ elements: structuredClone((result.board as any).elements || []), description: 'Recovered' }],
+        historyIndex: 0,
+      });
+      const board = useBoardStore.getState().board;
+      addRecentBoard(board?.name || 'Untitled', recoveryTarget);
+    } catch (err: any) {
+      setError(err.message || 'Failed to recover from checkpoint');
+    }
+    setRecoveryTarget(null);
+  }, [recoveryTarget]);
+
+  const handleDiscardRecovery = useCallback(async () => {
+    if (!recoveryTarget) return;
+    try { await api.deleteCheckpoint(recoveryTarget); } catch {}
+    doOpen(recoveryTarget);
+    setRecoveryTarget(null);
+  }, [recoveryTarget, doOpen]);
 
   const handleRemoveRecent = useCallback((path: string) => {
     removeRecentBoard(path);
@@ -684,7 +753,7 @@ function WelcomeScreen() {
         <NewBoardDialog
           folderPath={newBoardFolder}
           onClose={() => setShowNewDialog(false)}
-          onCreate={(name, path, w, h) => { setShowNewDialog(false); handleCreate(name, path, w, h); }}
+          onCreate={(name, path, w, h, inf) => { setShowNewDialog(false); handleCreate(name, path, w, h, inf); }}
         />
       )}
 
@@ -694,6 +763,32 @@ function WelcomeScreen() {
           onConfirm={handleConfirmDelete}
           onCancel={() => setDeleteTarget(null)}
         />
+      )}
+
+      {recoveryTarget && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => { setRecoveryTarget(null); doOpen(recoveryTarget); }}>
+          <div className="bg-white dark:bg-surface-primary rounded-lg shadow-xl w-[400px]" onClick={e => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-gray-200 dark:border-border">
+              <h2 className="text-sm font-semibold text-gray-800 dark:text-on-surface-primary">Recover Unsaved Changes?</h2>
+            </div>
+            <div className="px-4 py-4 space-y-2">
+              <p className="text-sm text-gray-600 dark:text-on-surface-secondary">
+                A recovery checkpoint with unsaved changes was found for this board.
+              </p>
+              <p className="text-xs text-gray-400 dark:text-on-surface-muted">
+                Would you like to recover the unsaved changes or discard them and open the last saved version?
+              </p>
+            </div>
+            <div className="px-4 py-3 border-t border-gray-100 dark:border-border flex justify-end gap-2">
+              <button onClick={handleDiscardRecovery} className="px-3 py-1.5 text-sm text-gray-600 dark:text-on-surface-secondary hover:bg-gray-100 dark:hover:bg-surface-tertiary rounded">
+                Discard
+              </button>
+              <button onClick={handleRecover} className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600">
+                Recover
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -710,7 +805,7 @@ function ExportDialog() {
   const triggerAutoExport = useBoardStore(s => s.triggerAutoExport);
   const saveBoard = useBoardStore(s => s.saveBoard);
   const boardName = board?.name || 'board';
-  const autoExport = board?.autoExport || { enabled: false, outputPath: '', format: 'png' as const, dpi: 2, transparent: false };
+  const autoExport = board?.autoExport || { enabled: false, outputPath: '', format: 'png' as const, dpi: 2, transparent: false, sizeMode: 'fit' as const, fixedWidth: 1920, fixedHeight: 1080 };
   // Capture the original path when dialog opens — never changes during the dialog session
   const [originalSettings] = useState(() => ({
     path: autoExport.outputPath || '',
@@ -735,6 +830,9 @@ function ExportDialog() {
   });
   const [dpi, setDpi] = useState(autoExport.dpi || 2);
   const [transparent, setTransparent] = useState(autoExport.transparent || false);
+  const [sizeMode, setSizeMode] = useState<'fit' | 'fixed' | 'canvas'>(autoExport.sizeMode || 'fit');
+  const [fixedWidth, setFixedWidth] = useState(autoExport.fixedWidth || 1920);
+  const [fixedHeight, setFixedHeight] = useState(autoExport.fixedHeight || 1080);
   const [showConfirm, setShowConfirm] = useState<'change' | 'overwrite' | null>(null);
 
   if (!showExportDialog) return null;
@@ -766,41 +864,125 @@ function ExportDialog() {
     setExporting(false);
   };
 
+  const captureCanvas = async (opts: {
+    scale: number; transparent: boolean; mode: 'fit' | 'fixed' | 'canvas';
+    fixedW?: number; fixedH?: number;
+  }) => {
+    const el = document.querySelector('.react-flow') as HTMLElement;
+    if (!el) throw new Error('Canvas not found');
+
+    // Hide overlays
+    const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution', '.react-flow__background'];
+    const hidden: HTMLElement[] = [];
+    for (const sel of selectors) {
+      el.querySelectorAll(sel).forEach(node => {
+        const htmlNode = node as HTMLElement;
+        if (htmlNode.style.display !== 'none') {
+          hidden.push(htmlNode);
+          htmlNode.style.display = 'none';
+        }
+      });
+    }
+
+    // Temporarily strip CSS background for transparent export
+    const origBg = el.style.backgroundColor;
+    if (opts.transparent) {
+      el.style.backgroundColor = 'transparent';
+      el.classList.remove('bg-canvas-bg');
+    }
+
+    try {
+      const fullCanvas = await html2canvas(el, {
+        scale: opts.scale,
+        backgroundColor: opts.transparent ? null : '#ffffff',
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+      });
+
+      // Determine crop region based on size mode
+      const boardState = useBoardStore.getState().board;
+      const elements = boardState?.elements || [];
+
+      if (opts.mode === 'fit' && elements.length > 0) {
+        // Get viewport transform
+        const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
+        const transform = viewport?.style.transform || '';
+        const match = transform.match(/translate\((.+?)px,\s*(.+?)px\)\s*scale\((.+?)\)/);
+        if (match) {
+          const tx = parseFloat(match[1]);
+          const ty = parseFloat(match[2]);
+          const vScale = parseFloat(match[3]);
+          const pad = 20; // padding in canvas coords
+
+          // Bounding box of all elements in canvas coords
+          const minX = Math.min(...elements.map(e => e.x)) - pad;
+          const minY = Math.min(...elements.map(e => e.y)) - pad;
+          const maxX = Math.max(...elements.map(e => e.x + e.width)) + pad;
+          const maxY = Math.max(...elements.map(e => e.y + e.height)) + pad;
+
+          // Convert canvas coords to screen coords relative to the react-flow container
+          const sx = (minX * vScale + tx) * opts.scale;
+          const sy = (minY * vScale + ty) * opts.scale;
+          const sw = (maxX - minX) * vScale * opts.scale;
+          const sh = (maxY - minY) * vScale * opts.scale;
+
+          // Clamp to canvas bounds
+          const cx = Math.max(0, Math.round(sx));
+          const cy = Math.max(0, Math.round(sy));
+          const cw = Math.min(Math.round(sw), fullCanvas.width - cx);
+          const ch = Math.min(Math.round(sh), fullCanvas.height - cy);
+
+          if (cw > 0 && ch > 0) {
+            const cropped = document.createElement('canvas');
+            cropped.width = cw;
+            cropped.height = ch;
+            cropped.getContext('2d')!.drawImage(fullCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
+            return cropped;
+          }
+        }
+      } else if (opts.mode === 'fixed' && opts.fixedW && opts.fixedH) {
+        const resized = document.createElement('canvas');
+        resized.width = opts.fixedW * opts.scale;
+        resized.height = opts.fixedH * opts.scale;
+        const ctx = resized.getContext('2d')!;
+        // Center the capture in the fixed size
+        const scaleX = resized.width / fullCanvas.width;
+        const scaleY = resized.height / fullCanvas.height;
+        const s = Math.min(scaleX, scaleY);
+        const dx = (resized.width - fullCanvas.width * s) / 2;
+        const dy = (resized.height - fullCanvas.height * s) / 2;
+        if (!opts.transparent) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, resized.width, resized.height);
+        }
+        ctx.drawImage(fullCanvas, dx, dy, fullCanvas.width * s, fullCanvas.height * s);
+        return resized;
+      }
+
+      // 'canvas' mode or fallback — return full capture
+      return fullCanvas;
+    } finally {
+      for (const node of hidden) node.style.display = '';
+      if (opts.transparent) {
+        el.style.backgroundColor = origBg;
+        el.classList.add('bg-canvas-bg');
+      }
+    }
+  };
+
   const handleDownload = async () => {
     setExporting(true);
     try {
-      const el = document.querySelector('.react-flow') as HTMLElement;
-      if (!el) throw new Error('Canvas not found');
-
-      // Hide overlays before capture
-      const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution'];
-      const hidden: HTMLElement[] = [];
-      for (const sel of selectors) {
-        el.querySelectorAll(sel).forEach(node => {
-          const htmlNode = node as HTMLElement;
-          if (htmlNode.style.display !== 'none') {
-            hidden.push(htmlNode);
-            htmlNode.style.display = 'none';
-          }
-        });
-      }
-
-      try {
-        const canvas = await html2canvas(el, {
-          scale: dpi,
-          backgroundColor: transparent ? null : '#ffffff',
-          useCORS: true,
-          allowTaint: true,
-          logging: false,
-        });
-        const dataUrl = canvas.toDataURL(format === 'jpg' ? 'image/jpeg' : 'image/png', 0.95);
-        const link = document.createElement('a');
-        link.download = `${fileName}.${format}`;
-        link.href = dataUrl;
-        link.click();
-      } finally {
-        for (const node of hidden) node.style.display = '';
-      }
+      const canvas = await captureCanvas({
+        scale: dpi, transparent, mode: sizeMode,
+        fixedW: fixedWidth, fixedH: fixedHeight,
+      });
+      const dataUrl = canvas.toDataURL(format === 'jpg' ? 'image/jpeg' : 'image/png', 0.95);
+      const link = document.createElement('a');
+      link.download = `${fileName}.${format}`;
+      link.href = dataUrl;
+      link.click();
     } catch (err) {
       console.error('Download failed:', err);
     }
@@ -863,6 +1045,9 @@ function ExportDialog() {
         format: format as any,
         dpi,
         transparent,
+        sizeMode,
+        fixedWidth: sizeMode === 'fixed' ? fixedWidth : undefined,
+        fixedHeight: sizeMode === 'fixed' ? fixedHeight : undefined,
       },
     };
     useBoardStore.setState({ board: updatedBoard, isDirty: true });
@@ -935,7 +1120,57 @@ function ExportDialog() {
               </div>
             </div>
 
-            {/* DPI + Transparent in a row */}
+            {/* Size mode */}
+            <div>
+              <label className="text-xs text-gray-600 dark:text-on-surface-secondary block mb-1">Size</label>
+              <div className="flex gap-1">
+                {([
+                  { value: 'fit', label: 'Fit content' },
+                  { value: 'canvas', label: 'Full canvas' },
+                  { value: 'fixed', label: 'Fixed size' },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setSizeMode(opt.value)}
+                    className={`flex-1 px-2 py-1 text-xs rounded border transition-colors ${
+                      sizeMode === opt.value
+                        ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-400 text-blue-600 dark:text-blue-400'
+                        : 'border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary hover:bg-gray-50 dark:hover:bg-surface-tertiary'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {sizeMode === 'fixed' && (
+                <div className="flex items-center gap-2 mt-1.5">
+                  <div className="flex items-center gap-1">
+                    <span className="text-2xs text-gray-500">W</span>
+                    <input
+                      type="number"
+                      value={fixedWidth}
+                      onChange={e => setFixedWidth(Math.max(100, parseInt(e.target.value) || 100))}
+                      className="w-16 px-1.5 py-1 text-xs border border-gray-200 dark:border-border dark:bg-surface-tertiary dark:text-on-surface-primary rounded text-center"
+                      min={100}
+                    />
+                  </div>
+                  <span className="text-gray-400 text-xs">&times;</span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-2xs text-gray-500">H</span>
+                    <input
+                      type="number"
+                      value={fixedHeight}
+                      onChange={e => setFixedHeight(Math.max(100, parseInt(e.target.value) || 100))}
+                      className="w-16 px-1.5 py-1 text-xs border border-gray-200 dark:border-border dark:bg-surface-tertiary dark:text-on-surface-primary rounded text-center"
+                      min={100}
+                    />
+                  </div>
+                  <span className="text-2xs text-gray-400">px</span>
+                </div>
+              )}
+            </div>
+
+            {/* DPI + Transparent */}
             <div className="flex items-center gap-3">
               <div className="flex-1">
                 <label className="text-xs text-gray-600 dark:text-on-surface-secondary block mb-1">DPI</label>
@@ -950,15 +1185,17 @@ function ExportDialog() {
                   <option value={4}>4x</option>
                 </select>
               </div>
-              <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-on-surface-secondary pt-4">
-                <input
-                  type="checkbox"
-                  checked={transparent}
-                  onChange={e => setTransparent(e.target.checked)}
-                  className="rounded"
-                />
-                Transparent
-              </label>
+              {format === 'png' && (
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-on-surface-secondary pt-4">
+                  <input
+                    type="checkbox"
+                    checked={transparent}
+                    onChange={e => setTransparent(e.target.checked)}
+                    className="rounded"
+                  />
+                  Transparent BG
+                </label>
+              )}
             </div>
 
           </div>
