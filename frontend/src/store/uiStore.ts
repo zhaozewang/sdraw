@@ -54,6 +54,14 @@ interface UIState {
   snapTargetId: string | null;
   setSnapTargetId: (id: string | null) => void;
 
+  // Plot editor modal
+  plotEditorElementId: string | null;
+  setPlotEditorElementId: (id: string | null) => void;
+
+  // Python environment for plot execution
+  pythonEnvPath: string | null; // null = default (built-in)
+  setPythonEnvPath: (path: string | null) => void;
+
   // Auto-export status
   exportStatus: 'idle' | 'exporting' | 'success' | 'error';
   setExportStatus: (status: 'idle' | 'exporting' | 'success' | 'error') => void;
@@ -143,6 +151,16 @@ export const useUIStore = create<UIState>((set, get) => ({
   setSuppressPositionSync: (v) => set({ suppressPositionSync: v }),
   snapTargetId: null,
   setSnapTargetId: (id) => set({ snapTargetId: id }),
+  plotEditorElementId: null,
+  setPlotEditorElementId: (id) => set({ plotEditorElementId: id }),
+  pythonEnvPath: (() => { try { return localStorage.getItem('sdraw_python_env') || null; } catch { return null; } })(),
+  setPythonEnvPath: (path) => {
+    try {
+      if (path) localStorage.setItem('sdraw_python_env', path);
+      else localStorage.removeItem('sdraw_python_env');
+    } catch {}
+    set({ pythonEnvPath: path });
+  },
   exportStatus: 'idle',
   setExportStatus: (status) => set({ exportStatus: status }),
   zoomTo: null,

@@ -5,6 +5,7 @@ import {
   DEFAULT_TEXT_STYLE,
   DEFAULT_RECT_STYLE,
   DEFAULT_ARROW_STYLE,
+  DEFAULT_PLOT_STYLE,
 } from '@/types/board';
 
 export function generateId(): string {
@@ -20,8 +21,8 @@ export function createElement(
     type,
     x: 100,
     y: 100,
-    width: type === 'arrow' ? 200 : type === 'text' ? 120 : 300,
-    height: type === 'arrow' ? 0 : type === 'text' ? 40 : 200,
+    width: type === 'arrow' ? 200 : type === 'text' ? 120 : type === 'plot' ? 480 : 300,
+    height: type === 'arrow' ? 0 : type === 'text' ? 40 : type === 'plot' ? 520 : 200,
     z_index: 0,
     locked: false,
     visible: true,
@@ -50,6 +51,35 @@ export function createElement(
     };
   }
 
+  if (type === 'plot') {
+    defaults.metadata = {
+      code: [
+        'import matplotlib.pyplot as plt',
+        'import numpy as np',
+        '',
+        '# Generate sample data',
+        'x = np.linspace(0, 10, 200)',
+        'y1 = np.sin(x)',
+        'y2 = np.cos(x)',
+        '',
+        '# Create the figure',
+        'fig, ax = plt.subplots(figsize=(8, 5))',
+        'ax.plot(x, y1, label="sin(x)", color="#4f46e5", linewidth=2)',
+        'ax.plot(x, y2, label="cos(x)", color="#e11d48", linewidth=2, linestyle="--")',
+        '',
+        '# Style the plot',
+        'ax.set_xlabel("x")',
+        'ax.set_ylabel("y")',
+        'ax.set_title("Sine and Cosine Waves")',
+        'ax.legend()',
+        'ax.grid(True, alpha=0.3)',
+        'fig.tight_layout()',
+      ].join('\n'),
+      lastOutput: null,
+      lastError: null,
+    };
+  }
+
   if (type === 'group') {
     defaults.children = [];
   }
@@ -63,6 +93,7 @@ export function getDefaultStyle(type: ElementType): ElementStyle {
     case 'text': return { ...DEFAULT_TEXT_STYLE };
     case 'rectangle': return { ...DEFAULT_RECT_STYLE };
     case 'arrow': return { ...DEFAULT_ARROW_STYLE };
+    case 'plot': return { ...DEFAULT_PLOT_STYLE };
     case 'group': return { opacity: 1 };
     default: return {};
   }

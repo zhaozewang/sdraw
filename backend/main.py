@@ -18,7 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from routers import boards, export, files
+from routers import boards, export, files, plot
 from services.watcher import FileWatcherService
 from services.workspace import WorkspaceService
 
@@ -71,6 +71,7 @@ app.add_middleware(
 app.include_router(boards.router)
 app.include_router(files.router)
 app.include_router(export.router)
+app.include_router(plot.router)
 
 
 @app.get("/api/health", tags=["health"])

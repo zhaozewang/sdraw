@@ -6,13 +6,14 @@ import { Inspector } from '@/components/Inspector/Inspector';
 import { InsertPanel } from '@/components/InsertPanel/InsertPanel';
 import { StatusBar } from '@/components/StatusBar/StatusBar';
 import { Settings } from '@/components/Settings/Settings';
+import { PlotEditor } from '@/components/PlotEditor/PlotEditor';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAutoSave } from '@/hooks/useAutoSave';
 import { api } from '@/api/client';
-import { toPng } from 'html-to-image';
+import html2canvas from 'html2canvas';
 import type { DirEntry } from '@/types/board';
 import { getLastDirectory, saveLastDirectory, fetchUserHome, getLastDirectoryOrHome } from '@/utils/helpers';
 import {
@@ -768,16 +769,38 @@ function ExportDialog() {
   const handleDownload = async () => {
     setExporting(true);
     try {
-      const el = document.querySelector('.react-flow__viewport') as HTMLElement;
+      const el = document.querySelector('.react-flow') as HTMLElement;
       if (!el) throw new Error('Canvas not found');
-      const dataUrl = await toPng(el, {
-        pixelRatio: dpi,
-        backgroundColor: transparent ? undefined : '#ffffff',
-      });
-      const link = document.createElement('a');
-      link.download = `${fileName}.${format}`;
-      link.href = dataUrl;
-      link.click();
+
+      // Hide overlays before capture
+      const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution'];
+      const hidden: HTMLElement[] = [];
+      for (const sel of selectors) {
+        el.querySelectorAll(sel).forEach(node => {
+          const htmlNode = node as HTMLElement;
+          if (htmlNode.style.display !== 'none') {
+            hidden.push(htmlNode);
+            htmlNode.style.display = 'none';
+          }
+        });
+      }
+
+      try {
+        const canvas = await html2canvas(el, {
+          scale: dpi,
+          backgroundColor: transparent ? null : '#ffffff',
+          useCORS: true,
+          allowTaint: true,
+          logging: false,
+        });
+        const dataUrl = canvas.toDataURL(format === 'jpg' ? 'image/jpeg' : 'image/png', 0.95);
+        const link = document.createElement('a');
+        link.download = `${fileName}.${format}`;
+        link.href = dataUrl;
+        link.click();
+      } finally {
+        for (const node of hidden) node.style.display = '';
+      }
     } catch (err) {
       console.error('Download failed:', err);
     }
@@ -1072,6 +1095,7 @@ function Editor() {
       <StatusBar />
       <ExportDialog />
       <Settings />
+      <PlotEditor />
     </div>
   );
 }

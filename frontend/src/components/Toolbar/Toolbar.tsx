@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { PythonEnvPicker } from '@/components/PythonEnvPicker/PythonEnvPicker';
 import {
   Save,
   Undo2,
@@ -12,6 +13,7 @@ import {
   Type,
   Square,
   ArrowRight,
+  Code2,
   Grid3x3,
   Magnet,
   FileOutput,
@@ -98,7 +100,6 @@ export function Toolbar() {
   const toggleInspector = useUIStore(s => s.toggleInspector);
   const theme = useUIStore(s => s.theme);
   const setTheme = useUIStore(s => s.setTheme);
-
   const [showSavePrompt, setShowSavePrompt] = useState(false);
 
   const hasSelection = selectedIds.length > 0;
@@ -146,6 +147,28 @@ export function Toolbar() {
 
   const handleInsertArrow = useCallback(() => {
     const el = useBoardStore.getState().addElement('arrow', { width: 200, height: 4 });
+    useUIStore.getState().setSelectedIds([el.id]);
+  }, []);
+
+  const handleInsertPlot = useCallback(() => {
+    let overrides: Record<string, any> = {};
+    // Place at viewport center
+    const viewport = document.querySelector('.react-flow__viewport') as HTMLElement | null;
+    const container = viewport?.parentElement;
+    if (viewport && container) {
+      const transform = viewport.style.transform;
+      const match = transform.match(/translate\((.+?)px,\s*(.+?)px\)\s*scale\((.+?)\)/);
+      if (match) {
+        const tx = parseFloat(match[1]);
+        const ty = parseFloat(match[2]);
+        const scale = parseFloat(match[3]);
+        const rect = container.getBoundingClientRect();
+        const w = 480, h = 520;
+        overrides.x = Math.round((rect.width / 2 - tx) / scale - w / 2);
+        overrides.y = Math.round((rect.height / 2 - ty) / scale - h / 2);
+      }
+    }
+    const el = useBoardStore.getState().addElement('plot', overrides);
     useUIStore.getState().setSelectedIds([el.id]);
   }, []);
 
@@ -244,11 +267,8 @@ export function Toolbar() {
 
         <Separator />
 
-        {/* Insert tools */}
-        <ToolButton onClick={handleShowFileBrowser} icon={Image} title="Browse & Insert Image" active={showInsertPanel} />
-        <ToolButton onClick={handleInsertText} icon={Type} title="Insert Text" />
-        <ToolButton onClick={handleInsertRect} icon={Square} title="Insert Rectangle" />
-        <ToolButton onClick={handleInsertArrow} icon={ArrowRight} title="Insert Arrow" />
+        {/* Python env picker */}
+        <PythonEnvPicker />
 
         <Separator />
 
@@ -321,14 +341,14 @@ export function Toolbar() {
         {/* Zoom */}
         <ToolButton onClick={() => {
           const fn = useUIStore.getState().zoomTo;
-          if (fn) fn(zoom - 0.1);
+          if (fn) fn(zoom / 1.2);
         }} icon={ZoomOut} title="Zoom Out" />
         <span className="text-xs text-gray-500 dark:text-on-surface-muted w-12 text-center tabular-nums" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {Math.round(zoom * 100)}%
         </span>
         <ToolButton onClick={() => {
           const fn = useUIStore.getState().zoomTo;
-          if (fn) fn(zoom + 0.1);
+          if (fn) fn(zoom * 1.2);
         }} icon={ZoomIn} title="Zoom In" />
         <ToolButton onClick={() => {
           const fn = useUIStore.getState().fitView;

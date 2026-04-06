@@ -3,9 +3,9 @@ import type { Board, BoardSummary, FileInfo, DirEntry } from '@/types/board';
 // In packaged mode the backend runs on a dynamic port passed via query param or same origin
 const API_BASE = '/api';
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+async function request<T>(url: string, options?: RequestInit, timeoutMs = 5000): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${API_BASE}${url}`, {
       headers: { 'Content-Type': 'application/json' },
@@ -103,4 +103,37 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
+
+  // Plot execution
+  executePlot: (code: string, timeout = 30, dpi = 150, pythonPath?: string | null) =>
+    request<{ success: boolean; image_base64: string | null; error: string | null }>(
+      '/plot/execute',
+      {
+        method: 'POST',
+        body: JSON.stringify({ code, timeout, dpi, python_path: pythonPath || null }),
+      },
+      (timeout + 5) * 1000,
+    ),
+
+  // Python environment
+  getDefaultPythonEnv: () =>
+    request<{ valid: boolean; python: string | null; version: string | null; packages: string[]; is_default: boolean; error: string | null }>(
+      '/plot/default-env',
+    ),
+
+  discoverPythonEnvs: (projectDir?: string | null) => {
+    const params = projectDir ? `?project_dir=${encodeURIComponent(projectDir)}` : '';
+    return request<{ environments: Array<{ name: string; path: string; source: string }> }>(
+      `/plot/discover-envs${params}`,
+      undefined,
+      15000,
+    );
+  },
+
+  validatePythonEnv: (pythonPath: string) =>
+    request<{ valid: boolean; python: string | null; version: string | null; packages: string[]; is_default: boolean; error: string | null }>(
+      '/plot/validate-env',
+      { method: 'POST', body: JSON.stringify({ python_path: pythonPath }) },
+      15000,
+    ),
 };

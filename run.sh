@@ -12,11 +12,9 @@ if [ ! -d "$DIR/backend/venv" ]; then
   echo "Setting up Python virtual environment..."
   cd "$DIR/backend"
   python3 -m venv venv
-  source venv/bin/activate
-  pip install -r requirements.txt
-else
-  source "$DIR/backend/venv/bin/activate"
 fi
+source "$DIR/backend/venv/bin/activate"
+pip install -q -r "$DIR/backend/requirements.txt"
 
 # Check node_modules
 if [ ! -d "$DIR/frontend/node_modules" ]; then

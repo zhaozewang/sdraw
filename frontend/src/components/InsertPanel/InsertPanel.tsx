@@ -3,7 +3,7 @@ import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import type { DirEntry, FileInfo } from '@/types/board';
-import { Type, Square, ArrowRight, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw, Circle, Triangle, Diamond, Minus, Image as ImageIcon, FolderPlus, Spline, CornerDownRight } from 'lucide-react';
+import { Type, Square, ArrowRight, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw, Circle, Triangle, Diamond, Minus, Image as ImageIcon, FolderPlus, Spline, CornerDownRight, Code2 } from 'lucide-react';
 import { getFileName, getLastDirectory, saveLastDirectory, fetchUserHome } from '@/utils/helpers';
 
 function InsertButton({ icon: Icon, label, onClick }: { icon: any; label: string; onClick: () => void }) {
@@ -438,6 +438,10 @@ export function InsertPanel() {
           <InsertButton icon={Spline} label="Curve" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'quadratic' } })} />
           <InsertButton icon={CornerDownRight} label="Step" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'step' } })} />
         </InsertGroup>
+
+        <div className="py-0.5">
+          <InsertButton icon={Code2} label="Python Plot" onClick={() => insertAtCenter('plot', {})} />
+        </div>
 
         {/* Figure label quick-insert */}
         <div className="border-t border-inspector-border">

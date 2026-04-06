@@ -4,6 +4,43 @@ import type { Board, BoardElement, CanvasSettings, ElementType, AutoExportSettin
 import { DEFAULT_CANVAS } from '@/types/board';
 import { createElement } from '@/utils/helpers';
 import { api } from '@/api/client';
+/**
+ * Capture the visible React Flow canvas using html2canvas.
+ * html-to-image has a known bug where images with different query params
+ * get deduplicated during DOM cloning, causing identical renders.
+ * html2canvas rasterizes directly from the live DOM, avoiding this.
+ */
+async function captureCanvas(bg: string, scale = 0.3): Promise<string | undefined> {
+  const { default: html2canvas } = await import('html2canvas');
+  const el = document.querySelector('.react-flow') as HTMLElement;
+  if (!el) return undefined;
+
+  // Hide overlays
+  const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution'];
+  const hidden: HTMLElement[] = [];
+  for (const sel of selectors) {
+    el.querySelectorAll(sel).forEach(node => {
+      const htmlNode = node as HTMLElement;
+      if (htmlNode.style.display !== 'none') {
+        hidden.push(htmlNode);
+        htmlNode.style.display = 'none';
+      }
+    });
+  }
+
+  try {
+    const canvas = await html2canvas(el, {
+      scale,
+      backgroundColor: bg,
+      useCORS: true,
+      allowTaint: true,
+      logging: false,
+    });
+    return canvas.toDataURL('image/png');
+  } finally {
+    for (const node of hidden) node.style.display = '';
+  }
+}
 
 interface HistoryEntry {
   elements: BoardElement[];
@@ -118,16 +155,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     // Capture thumbnail from the canvas
     let thumbnail: string | undefined;
     try {
-      const { toPng } = await import('html-to-image');
-      const el = document.querySelector('.react-flow__viewport') as HTMLElement;
-      if (el) {
-        thumbnail = await toPng(el, {
-          pixelRatio: 0.3,
-          backgroundColor: board.canvas.background || '#ffffff',
-          width: el.scrollWidth,
-          height: el.scrollHeight,
-        });
-      }
+      thumbnail = await captureCanvas(board.canvas.background || '#ffffff', 0.3);
     } catch {
       // Thumbnail capture is best-effort
     }
@@ -141,7 +169,20 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     set({ board: updated, isDirty: false });
   },
 
-  closeBoard: () => {
+  closeBoard: async () => {
+    // Capture thumbnail before closing so the welcome page shows a preview
+    const { board, boardFilePath } = get();
+    if (board && boardFilePath) {
+      try {
+        const thumbnail = await captureCanvas(board.canvas.background || '#ffffff', 0.3);
+        if (thumbnail) {
+          const updated = { ...board, updated_at: new Date().toISOString(), thumbnail };
+          await api.saveBoardToFile(updated, boardFilePath);
+        }
+      } catch {
+        // Best-effort
+      }
+    }
     set({ board: null, boardFilePath: null, isDirty: false, history: [], historyIndex: -1 });
   },
 
@@ -167,23 +208,38 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     useUIStore.getState().setExportStatus('exporting');
 
     try {
-      const htmlToImage = await import('html-to-image');
-      const el = document.querySelector('.react-flow__viewport') as HTMLElement;
+      const { default: html2canvas } = await import('html2canvas');
+      const el = document.querySelector('.react-flow') as HTMLElement;
       if (!el) { useUIStore.getState().setExportStatus('error'); return; }
 
       const fmt = board.autoExport.format || 'png';
-      const opts = {
-        pixelRatio: board.autoExport.dpi || 2,
-        backgroundColor: board.autoExport.transparent ? undefined : (board.canvas.background || '#ffffff'),
-      };
+
+      // Hide overlays
+      const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution'];
+      const hidden: HTMLElement[] = [];
+      for (const sel of selectors) {
+        el.querySelectorAll(sel).forEach(node => {
+          const htmlNode = node as HTMLElement;
+          if (htmlNode.style.display !== 'none') {
+            hidden.push(htmlNode);
+            htmlNode.style.display = 'none';
+          }
+        });
+      }
 
       let dataUrl: string;
-      if (fmt === 'jpg') {
-        dataUrl = await htmlToImage.toJpeg(el, { ...opts, quality: 0.95 });
-      } else if (fmt === 'svg') {
-        dataUrl = await htmlToImage.toSvg(el, opts);
-      } else {
-        dataUrl = await htmlToImage.toPng(el, opts);
+      try {
+        const canvas = await html2canvas(el, {
+          scale: board.autoExport.dpi || 2,
+          backgroundColor: board.autoExport.transparent ? null : (board.canvas.background || '#ffffff'),
+          useCORS: true,
+          allowTaint: true,
+          logging: false,
+        });
+        const mimeType = fmt === 'jpg' ? 'image/jpeg' : 'image/png';
+        dataUrl = canvas.toDataURL(mimeType, 0.95);
+      } finally {
+        for (const node of hidden) node.style.display = '';
       }
 
       const res = await fetch('/api/export/save', {

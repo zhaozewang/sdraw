@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Generate sample plot images and a sample board for development."""
 
+import base64
 import json
 import os
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -30,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_DIR = ROOT / "sample_data"
 WORKSPACE_DIR = ROOT / "workspace"
 BOARDS_DIR = WORKSPACE_DIR / "boards"
+RUNNER_PATH = ROOT / "backend" / "services" / "plot_runner.py"
 
 
 def generate_matplotlib_plots():
@@ -39,7 +42,7 @@ def generate_matplotlib_plots():
     np.random.seed(42)
     plots = []
 
-    # 1. Line plot
+    # A. Line plot
     fig, ax = plt.subplots(figsize=(6, 4))
     x = np.linspace(0, 10, 100)
     for i in range(3):
@@ -54,23 +57,22 @@ def generate_matplotlib_plots():
     plt.close(fig)
     plots.append(("line_plot.png", 900, 600))
 
-    # 2. Bar chart
+    # B. Histogram (was E)
     fig, ax = plt.subplots(figsize=(6, 4))
-    categories = ['Control', 'Treatment A', 'Treatment B', 'Treatment C']
-    values = [23.5, 31.2, 28.7, 35.1]
-    errors = [2.1, 3.4, 2.8, 4.0]
-    colors = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2']
-    ax.bar(categories, values, yerr=errors, capsize=5, color=colors, edgecolor='white')
-    ax.set_ylabel('Response Rate (%)')
-    ax.set_title('Treatment Comparison')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    path = SAMPLE_DIR / "bar_chart.png"
+    data1 = np.random.normal(0, 1, 500)
+    data2 = np.random.normal(2, 1.2, 500)
+    ax.hist(data1, bins=30, alpha=0.6, label='Group A', color='#4e79a7')
+    ax.hist(data2, bins=30, alpha=0.6, label='Group B', color='#e15759')
+    ax.set_xlabel('Value')
+    ax.set_ylabel('Count')
+    ax.set_title('Distribution Comparison')
+    ax.legend()
+    path = SAMPLE_DIR / "histogram.png"
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    plots.append(("bar_chart.png", 900, 600))
+    plots.append(("histogram.png", 900, 600))
 
-    # 3. Scatter plot
+    # C. Scatter plot
     fig, ax = plt.subplots(figsize=(6, 4))
     n = 100
     x = np.random.randn(n)
@@ -87,7 +89,7 @@ def generate_matplotlib_plots():
     plt.close(fig)
     plots.append(("scatter_plot.png", 900, 600))
 
-    # 4. Heatmap
+    # D. Heatmap
     fig, ax = plt.subplots(figsize=(6, 5))
     data = np.random.rand(8, 8)
     im = ax.imshow(data, cmap='RdBu_r', aspect='auto')
@@ -100,36 +102,6 @@ def generate_matplotlib_plots():
     plt.close(fig)
     plots.append(("heatmap.png", 900, 750))
 
-    # 5. Histogram
-    fig, ax = plt.subplots(figsize=(6, 4))
-    data1 = np.random.normal(0, 1, 500)
-    data2 = np.random.normal(2, 1.2, 500)
-    ax.hist(data1, bins=30, alpha=0.6, label='Group A', color='#4e79a7')
-    ax.hist(data2, bins=30, alpha=0.6, label='Group B', color='#e15759')
-    ax.set_xlabel('Value')
-    ax.set_ylabel('Count')
-    ax.set_title('Distribution Comparison')
-    ax.legend()
-    path = SAMPLE_DIR / "histogram.png"
-    fig.savefig(path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    plots.append(("histogram.png", 900, 600))
-
-    # 6. Box plot
-    fig, ax = plt.subplots(figsize=(5, 4))
-    data = [np.random.normal(loc, 1, 50) for loc in [2, 3, 2.5, 4, 3.5]]
-    bp = ax.boxplot(data, labels=['A', 'B', 'C', 'D', 'E'], patch_artist=True)
-    colors_box = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f']
-    for patch, color in zip(bp['boxes'], colors_box):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.7)
-    ax.set_ylabel('Measurement')
-    ax.set_title('Group Statistics')
-    path = SAMPLE_DIR / "boxplot.png"
-    fig.savefig(path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    plots.append(("boxplot.png", 750, 600))
-
     return plots
 
 
@@ -138,21 +110,18 @@ def generate_pillow_plots():
     SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
 
     plots = []
-    names = ["line_plot", "bar_chart", "scatter_plot", "heatmap", "histogram", "boxplot"]
-    colors = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948"]
+    names = ["line_plot", "histogram", "scatter_plot", "heatmap"]
+    colors = ["#4e79a7", "#e15759", "#f28e2b", "#76b7b2"]
 
     for name, color in zip(names, colors):
         img = Image.new('RGB', (600, 400), 'white')
         draw = ImageDraw.Draw(img)
-        # Draw a border
         draw.rectangle([10, 10, 589, 389], outline=color, width=3)
-        # Draw some lines to simulate a plot
         import random
         random.seed(hash(name))
         points = [(20 + i * 5, 200 + random.randint(-150, 150)) for i in range(112)]
         for i in range(len(points) - 1):
             draw.line([points[i], points[i+1]], fill=color, width=2)
-        # Label
         draw.text((250, 20), name.replace('_', ' ').title(), fill='#333333')
 
         path = SAMPLE_DIR / f"{name}.png"
@@ -160,6 +129,104 @@ def generate_pillow_plots():
         plots.append((f"{name}.png", 600, 400))
 
     return plots
+
+
+def run_plot_code(code: str) -> str | None:
+    """Run Python plot code through plot_runner and return base64 PNG, or None on failure."""
+    import tempfile
+    if not RUNNER_PATH.is_file():
+        print(f"  WARNING: plot_runner.py not found at {RUNNER_PATH}")
+        return None
+
+    python = sys.executable
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, prefix='sdraw_sample_')
+    try:
+        tmp.write(code)
+        tmp.close()
+        env = {**os.environ, "SDRAW_PLOT_DPI": "150"}
+        result = subprocess.run(
+            [python, str(RUNNER_PATH), tmp.name],
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+        if result.returncode != 0:
+            print(f"  Plot execution failed: {result.stderr.strip()[:200]}")
+            return None
+        b64 = result.stdout.strip()
+        if b64:
+            return b64
+        print("  Plot produced no output")
+        return None
+    except Exception as e:
+        print(f"  Plot execution error: {e}")
+        return None
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+# Python code for the in-line plot elements
+INLINE_PLOT_CODE = """\
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Box plot with individual data points
+np.random.seed(42)
+groups = ['A', 'B', 'C', 'D', 'E']
+data = [np.random.normal(loc, 1, 50) for loc in [2, 3, 2.5, 4, 3.5]]
+colors = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f']
+
+fig, ax = plt.subplots(figsize=(6, 4))
+bp = ax.boxplot(data, labels=groups, patch_artist=True, widths=0.5)
+for patch, c in zip(bp['boxes'], colors):
+    patch.set_facecolor(c)
+    patch.set_alpha(0.7)
+
+# Overlay individual points
+for i, d in enumerate(data):
+    jitter = np.random.uniform(-0.1, 0.1, len(d))
+    ax.scatter(np.full_like(d, i + 1) + jitter, d,
+               alpha=0.4, s=12, color=colors[i], edgecolors='none')
+
+ax.set_ylabel('Measurement')
+ax.set_title('Group Statistics')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+fig.tight_layout()
+"""
+
+INLINE_PLOTLY_3D_CODE = """\
+import plotly.graph_objects as go
+import numpy as np
+
+# Generate a 3D mesh surface
+np.random.seed(0)
+x = np.linspace(-3, 3, 50)
+y = np.linspace(-3, 3, 50)
+X, Y = np.meshgrid(x, y)
+Z = np.sin(np.sqrt(X**2 + Y**2)) * np.cos(X * 0.5)
+
+fig = go.Figure(data=[go.Surface(
+    x=X, y=Y, z=Z,
+    colorscale='Viridis',
+    showscale=True,
+    colorbar=dict(title='Z'),
+)])
+
+fig.update_layout(
+    title='3D Surface Mesh',
+    scene=dict(
+        xaxis_title='X',
+        yaxis_title='Y',
+        zaxis_title='Z',
+        camera=dict(eye=dict(x=1.5, y=1.5, z=1.0)),
+    ),
+    width=700,
+    height=500,
+    margin=dict(l=20, r=20, t=40, b=20),
+)
+"""
 
 
 def create_sample_board(plots):
@@ -195,23 +262,52 @@ def create_sample_board(plots):
         "metadata": {}
     })
 
-    # Image panels in a grid
+    # Layout: 6 panels in a 3x2 grid
+    # A: line_plot, B: histogram, C: scatter_plot, D: heatmap (static)
+    # E: matplotlib box plot (python), F: plotly 3D (python)
+    python_plots = [
+        (INLINE_PLOT_CODE, 'In-line Python — matplotlib'),
+        (INLINE_PLOTLY_3D_CODE, 'In-line Python — Plotly 3D'),
+    ]
+
+    # Pre-render python plots
+    python_outputs = []
+    for code, label in python_plots:
+        print(f"  Running python plot: {label}...")
+        b64 = run_plot_code(code)
+        python_outputs.append(b64)
+        if b64:
+            print(f"    OK ({len(b64)} bytes)")
+        else:
+            print(f"    Failed — will show as empty plot node")
+
+    labels = ['A', 'B', 'C', 'D', 'E', 'F']
+    descriptions = [
+        'Static image — time series',
+        'Static image — histogram',
+        'Static image — scatter plot',
+        'Static image — heatmap',
+        python_plots[0][1],
+        python_plots[1][1],
+    ]
+
     cols = 3
     gap = 30
     panel_w = 420
     panel_h = 300
     start_x = 60
     start_y = 80
+    total_items = len(plots) + len(python_plots)
 
-    labels = ['A', 'B', 'C', 'D', 'E', 'F']
-
-    for i, (filename, w, h) in enumerate(plots):
+    for i in range(total_items):
         col = i % cols
         row = i // cols
         x = start_x + col * (panel_w + gap)
-        y = start_y + row * (panel_h + gap + 40)
+        y = start_y + row * (panel_h + gap + 60)
 
-        # Label
+        is_python_plot = (i >= len(plots))
+
+        # Panel label (A, B, C, ...)
         elements.append({
             "id": str(uuid.uuid4()),
             "type": "text",
@@ -219,7 +315,7 @@ def create_sample_board(plots):
             "y": y,
             "width": 30,
             "height": 30,
-            "z_index": 50 + i * 2 + 1,
+            "z_index": 50 + i * 3 + 2,
             "locked": False,
             "visible": True,
             "rotation": 0,
@@ -235,39 +331,91 @@ def create_sample_board(plots):
             "metadata": {}
         })
 
-        # Image
-        abs_path = str((SAMPLE_DIR / filename).resolve())
+        if is_python_plot:
+            py_idx = i - len(plots)
+            elements.append({
+                "id": str(uuid.uuid4()),
+                "type": "plot",
+                "x": x + 35,
+                "y": y,
+                "width": panel_w - 35,
+                "height": panel_h,
+                "z_index": 50 + i * 3 + 1,
+                "locked": False,
+                "visible": True,
+                "rotation": 0,
+                "style": {
+                    "borderColor": "#d0d0d0",
+                    "borderWidth": 1,
+                    "borderRadius": 6,
+                    "shadow": True,
+                    "background": "#ffffff",
+                    "opacity": 1
+                },
+                "metadata": {
+                    "code": python_plots[py_idx][0],
+                    "lastOutput": python_outputs[py_idx],
+                    "lastError": None
+                }
+            })
+        else:
+            filename, w, h = plots[i]
+            abs_path = str((SAMPLE_DIR / filename).resolve())
+            elements.append({
+                "id": str(uuid.uuid4()),
+                "type": "image",
+                "x": x + 35,
+                "y": y,
+                "width": panel_w - 35,
+                "height": panel_h,
+                "z_index": 50 + i * 3 + 1,
+                "locked": False,
+                "visible": True,
+                "rotation": 0,
+                "style": {
+                    "borderColor": "#d0d0d0",
+                    "borderWidth": 1,
+                    "borderRadius": 6,
+                    "shadow": True,
+                    "background": "#ffffff",
+                    "fitMode": "contain",
+                    "opacity": 1
+                },
+                "source": {
+                    "mode": "exact",
+                    "path": abs_path,
+                    "followLatest": False,
+                    "autoRefresh": True
+                },
+                "crop": None,
+                "metadata": {
+                    "lastKnownWidth": w,
+                    "lastKnownHeight": h
+                }
+            })
+
+        # Description text below the plot
         elements.append({
             "id": str(uuid.uuid4()),
-            "type": "image",
+            "type": "text",
             "x": x + 35,
-            "y": y,
+            "y": y + panel_h + 4,
             "width": panel_w - 35,
-            "height": panel_h,
-            "z_index": 50 + i * 2,
+            "height": 20,
+            "z_index": 50 + i * 3,
             "locked": False,
             "visible": True,
             "rotation": 0,
             "style": {
-                "borderColor": "#d0d0d0",
-                "borderWidth": 1,
-                "borderRadius": 6,
-                "shadow": True,
-                "background": "#ffffff",
-                "fitMode": "contain",
-                "opacity": 1
+                "fontSize": 20,
+                "fontWeight": 600,
+                "color": "#374151",
+                "background": "transparent",
+                "padding": 2,
+                "textAlign": "center"
             },
-            "source": {
-                "mode": "exact",
-                "path": abs_path,
-                "followLatest": False,
-                "autoRefresh": True
-            },
-            "crop": None,
-            "metadata": {
-                "lastKnownWidth": w,
-                "lastKnownHeight": h
-            }
+            "text": descriptions[i] if i < len(descriptions) else "",
+            "metadata": {}
         })
 
     # A decorative rectangle around the top row
@@ -299,10 +447,11 @@ def create_sample_board(plots):
         "name": "Sample Figure Board",
         "canvas": {
             "width": 1500,
-            "height": 1000,
+            "height": 1100,
             "background": "#ffffff",
             "grid_enabled": True,
             "grid_size": 20,
+            "grid_pattern": "dots",
             "snap_enabled": True,
             "snap_size": 10
         },
