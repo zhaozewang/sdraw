@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services.export_renderer import render_board
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -37,3 +39,29 @@ async def save_export(body: SaveExportRequest):
     except Exception as exc:
         logger.error("Export save failed: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+class RenderExportRequest(BaseModel):
+    board: dict
+    image_versions: dict = {}
+
+
+@router.post("/render")
+async def render_export(body: RenderExportRequest):
+    """Render a board to an image file server-side.
+
+    This is a deterministic function of the board data — it does not
+    depend on any browser viewport state.
+    """
+    board = body.board
+    auto_export = board.get('autoExport', {})
+    output_path = auto_export.get('outputPath', '')
+    if not output_path:
+        raise HTTPException(status_code=400, detail="No outputPath in autoExport settings")
+
+    try:
+        result = render_board(board, output_path)
+        return result
+    except Exception as exc:
+        logger.error("Render export failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))

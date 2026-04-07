@@ -6,6 +6,7 @@ import type { FileEvent } from '@/types/board';
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number>();
+  const exportTimeoutRef = useRef<number>();
   const bumpImageVersion = useBoardStore(s => s.bumpImageVersion);
   const board = useBoardStore(s => s.board);
   const setConnectionStatus = useUIStore(s => s.setConnectionStatus);
@@ -55,8 +56,13 @@ export function useWebSocket() {
           });
           // Trigger auto-export after a short delay (let image re-render first)
           if (boardState.board?.autoExport?.enabled) {
-            setTimeout(() => {
-              useBoardStore.getState().triggerAutoExport();
+            if (exportTimeoutRef.current) clearTimeout(exportTimeoutRef.current);
+            const currentBoardId = boardState.board.id;
+            exportTimeoutRef.current = window.setTimeout(() => {
+              const state = useBoardStore.getState();
+              if (state.board?.id === currentBoardId) {
+                state.triggerAutoExport();
+              }
             }, 500);
           }
         }
@@ -98,9 +104,8 @@ export function useWebSocket() {
   useEffect(() => {
     connect();
     return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (exportTimeoutRef.current) clearTimeout(exportTimeoutRef.current);
       wsRef.current?.close();
     };
   }, []); // connect once on mount

@@ -871,8 +871,13 @@ function ExportDialog() {
     const el = document.querySelector('.react-flow') as HTMLElement;
     if (!el) throw new Error('Canvas not found');
 
-    // Hide overlays
-    const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution', '.react-flow__background'];
+    // Hide overlays, selection UI, and non-visual elements
+    const selectors = [
+      '.react-flow__minimap', '.react-flow__panel', '.react-flow__controls',
+      '.react-flow__attribution', '.react-flow__background',
+      '.react-flow__selection', '.react-flow__nodesselection',
+      '.react-flow__selectionpane',
+    ];
     const hidden: HTMLElement[] = [];
     for (const sel of selectors) {
       el.querySelectorAll(sel).forEach(node => {
@@ -884,12 +889,83 @@ function ExportDialog() {
       });
     }
 
+    // Hide selection outlines on selected nodes
+    const selectedNodes = el.querySelectorAll('.react-flow__node.selected');
+    const removedClasses: Array<{ el: Element; cls: string }> = [];
+    selectedNodes.forEach(node => {
+      node.classList.remove('selected');
+      removedClasses.push({ el: node, cls: 'selected' });
+    });
+
+    // Make all node wrappers overflow visible so arrows/shapes aren't clipped
+    const overflowFixed: Array<{ el: HTMLElement; orig: string }> = [];
+    el.querySelectorAll('.react-flow__node').forEach(node => {
+      const htmlNode = node as HTMLElement;
+      if (htmlNode.style.overflow !== 'visible') {
+        overflowFixed.push({ el: htmlNode, orig: htmlNode.style.overflow });
+        htmlNode.style.overflow = 'visible';
+      }
+    });
+
+    // Clear selection so resize handles and selection outlines don't appear in export
+    const { useUIStore } = await import('@/store/uiStore');
+    const prevSelection = useUIStore.getState().selectedIds;
+    useUIStore.getState().setSelectedIds([]);
+
     // Temporarily strip CSS background for transparent export
     const origBg = el.style.backgroundColor;
     if (opts.transparent) {
       el.style.backgroundColor = 'transparent';
       el.classList.remove('bg-canvas-bg');
     }
+
+    // Collect arrow SVG data from live DOM, then hide arrows for html2canvas
+    const arrowSvgData: Array<{
+      svgMarkup: string; bboxX: number; bboxY: number; bboxW: number; bboxH: number;
+      elX: number; elY: number;
+    }> = [];
+    el.querySelectorAll('.react-flow__node-arrow').forEach(node => {
+      const wrapper = node as HTMLElement;
+      const svg = wrapper.querySelector('svg.overflow-visible') as SVGSVGElement | null;
+      if (!svg) return;
+      try {
+        const bbox = svg.getBBox();
+        if (!bbox || (bbox.width === 0 && bbox.height === 0)) return;
+        const m = wrapper.style.transform.match(/translate\((.+?)px,\s*(.+?)px\)/);
+        const elX = m ? parseFloat(m[1]) : 0;
+        const elY = m ? parseFloat(m[2]) : 0;
+        const pad = 5;
+        const vbX = bbox.x - pad, vbY = bbox.y - pad;
+        const vbW = bbox.width + pad * 2, vbH = bbox.height + pad * 2;
+        const clonedSvg = svg.cloneNode(true) as SVGSVGElement;
+        clonedSvg.querySelectorAll('[stroke="transparent"]').forEach(el => el.remove());
+        const removeAttrs = (node: Element) => {
+          for (const attr of Array.from(node.attributes)) {
+            if (attr.name.startsWith('on') || attr.name === 'class' || attr.name === 'style') {
+              node.removeAttribute(attr.name);
+            }
+          }
+          for (const child of Array.from(node.children)) removeAttrs(child);
+        };
+        removeAttrs(clonedSvg);
+        clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        clonedSvg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
+        clonedSvg.setAttribute('width', String(Math.ceil(vbW)));
+        clonedSvg.setAttribute('height', String(Math.ceil(vbH)));
+        const opacity = svg.style.opacity;
+        if (opacity && opacity !== '1') clonedSvg.setAttribute('opacity', opacity);
+        arrowSvgData.push({
+          svgMarkup: new XMLSerializer().serializeToString(clonedSvg),
+          bboxX: vbX, bboxY: vbY, bboxW: vbW, bboxH: vbH, elX, elY,
+        });
+      } catch {}
+    });
+
+    const arrowNodes: HTMLElement[] = [];
+    el.querySelectorAll('.react-flow__node-arrow').forEach(node => {
+      const wrapper = node as HTMLElement;
+      if (wrapper.style.display !== 'none') { arrowNodes.push(wrapper); wrapper.style.display = 'none'; }
+    });
 
     try {
       const fullCanvas = await html2canvas(el, {
@@ -900,74 +976,91 @@ function ExportDialog() {
         logging: false,
       });
 
-      // Determine crop region based on size mode
+      // Determine crop/resize
       const boardState = useBoardStore.getState().board;
       const elements = boardState?.elements || [];
+      let resultCanvas = fullCanvas;
 
       if (opts.mode === 'fit' && elements.length > 0) {
-        // Get viewport transform
         const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
         const transform = viewport?.style.transform || '';
         const match = transform.match(/translate\((.+?)px,\s*(.+?)px\)\s*scale\((.+?)\)/);
         if (match) {
-          const tx = parseFloat(match[1]);
-          const ty = parseFloat(match[2]);
-          const vScale = parseFloat(match[3]);
-          const pad = 20; // padding in canvas coords
-
-          // Bounding box of all elements in canvas coords
-          const minX = Math.min(...elements.map(e => e.x)) - pad;
-          const minY = Math.min(...elements.map(e => e.y)) - pad;
-          const maxX = Math.max(...elements.map(e => e.x + e.width)) + pad;
-          const maxY = Math.max(...elements.map(e => e.y + e.height)) + pad;
-
-          // Convert canvas coords to screen coords relative to the react-flow container
-          const sx = (minX * vScale + tx) * opts.scale;
-          const sy = (minY * vScale + ty) * opts.scale;
-          const sw = (maxX - minX) * vScale * opts.scale;
-          const sh = (maxY - minY) * vScale * opts.scale;
-
-          // Clamp to canvas bounds
-          const cx = Math.max(0, Math.round(sx));
-          const cy = Math.max(0, Math.round(sy));
+          const tx = parseFloat(match[1]), ty = parseFloat(match[2]), vScale = parseFloat(match[3]);
+          const cPad = 20;
+          const minX = Math.min(...elements.map(e => e.x)) - cPad;
+          const minY = Math.min(...elements.map(e => e.y)) - cPad;
+          const maxX = Math.max(...elements.map(e => e.x + e.width)) + cPad;
+          const maxY = Math.max(...elements.map(e => e.y + e.height)) + cPad;
+          const sx = (minX * vScale + tx) * opts.scale, sy = (minY * vScale + ty) * opts.scale;
+          const sw = (maxX - minX) * vScale * opts.scale, sh = (maxY - minY) * vScale * opts.scale;
+          const cx = Math.max(0, Math.round(sx)), cy = Math.max(0, Math.round(sy));
           const cw = Math.min(Math.round(sw), fullCanvas.width - cx);
           const ch = Math.min(Math.round(sh), fullCanvas.height - cy);
-
           if (cw > 0 && ch > 0) {
             const cropped = document.createElement('canvas');
-            cropped.width = cw;
-            cropped.height = ch;
+            cropped.width = cw; cropped.height = ch;
             cropped.getContext('2d')!.drawImage(fullCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
-            return cropped;
+            resultCanvas = cropped;
           }
         }
       } else if (opts.mode === 'fixed' && opts.fixedW && opts.fixedH) {
         const resized = document.createElement('canvas');
-        resized.width = opts.fixedW * opts.scale;
-        resized.height = opts.fixedH * opts.scale;
+        resized.width = opts.fixedW * opts.scale; resized.height = opts.fixedH * opts.scale;
         const ctx = resized.getContext('2d')!;
-        // Center the capture in the fixed size
-        const scaleX = resized.width / fullCanvas.width;
-        const scaleY = resized.height / fullCanvas.height;
+        const scaleX = resized.width / fullCanvas.width, scaleY = resized.height / fullCanvas.height;
         const s = Math.min(scaleX, scaleY);
-        const dx = (resized.width - fullCanvas.width * s) / 2;
-        const dy = (resized.height - fullCanvas.height * s) / 2;
-        if (!opts.transparent) {
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, resized.width, resized.height);
-        }
+        const dx = (resized.width - fullCanvas.width * s) / 2, dy = (resized.height - fullCanvas.height * s) / 2;
+        if (!opts.transparent) { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, resized.width, resized.height); }
         ctx.drawImage(fullCanvas, dx, dy, fullCanvas.width * s, fullCanvas.height * s);
-        return resized;
+        resultCanvas = resized;
       }
 
-      // 'canvas' mode or fallback — return full capture
-      return fullCanvas;
+      // Composite arrows via SVG→Image→Canvas
+      const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
+      const vTransform = viewport?.style.transform || '';
+      const vm = vTransform.match(/translate\((.+?)px,\s*(.+?)px\)\s*scale\((.+?)\)/);
+      if (vm) {
+        const vtx = parseFloat(vm[1]), vty = parseFloat(vm[2]), vs = parseFloat(vm[3]);
+        const rctx = resultCanvas.getContext('2d')!;
+        for (const arrow of arrowSvgData) {
+          try {
+            const blob = new Blob([arrow.svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+              const i = new window.Image(); i.onload = () => resolve(i); i.onerror = reject; i.src = url;
+            });
+            // Arrow screen position = (elX + bboxX) in viewport-transformed coords
+            let drawX = ((arrow.elX + arrow.bboxX) * vs + vtx) * opts.scale; // removed: was not used
+            let drawY = ((arrow.elY + arrow.bboxY) * vs + vty) * opts.scale;
+            const drawW = arrow.bboxW * vs * opts.scale;
+            const drawH = arrow.bboxH * vs * opts.scale;
+            // For fit mode, subtract content origin
+            if (opts.mode === 'fit' && elements.length > 0) {
+              const cPad = 20;
+              const oMinX = Math.min(...elements.map(e => e.x)) - cPad;
+              const oMinY = Math.min(...elements.map(e => e.y)) - cPad;
+              drawX = ((arrow.elX + arrow.bboxX - oMinX) * vs) * opts.scale;
+              drawY = ((arrow.elY + arrow.bboxY - oMinY) * vs) * opts.scale;
+            }
+            rctx.drawImage(img, drawX, drawY, drawW, drawH);
+            URL.revokeObjectURL(url);
+          } catch (e) { console.warn('Failed to render arrow for export:', e); }
+        }
+      }
+
+      return resultCanvas;
     } finally {
+      for (const node of arrowNodes) node.style.display = '';
       for (const node of hidden) node.style.display = '';
+      for (const { el: cls, cls: c } of removedClasses) cls.classList.add(c);
+      for (const { el: n, orig } of overflowFixed) n.style.overflow = orig;
       if (opts.transparent) {
         el.style.backgroundColor = origBg;
         el.classList.add('bg-canvas-bg');
       }
+      // Restore selection
+      useUIStore.getState().setSelectedIds(prevSelection);
     }
   };
 
