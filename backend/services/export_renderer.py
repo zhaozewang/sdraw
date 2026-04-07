@@ -123,11 +123,12 @@ def _arrowhead_svg(tip, tangent_dx, tangent_dy, mtype, color, stroke_width, head
 
     if mtype in ('arrow', 'arrow-open'):
         # Triangle: tip at (0,0), base at (-length, ±half_width)
-        # In the browser, markerUnits="strokeWidth" scales the marker viewport
-        # but the visual polygon size is markerWidth in viewport coordinates.
-        # The effective pixel size is roughly markerWidth * strokeWidth^0.5.
-        length = 10 * s * max(sw * 0.75, 1)
-        half_w = 4 * s * max(sw * 0.75, 1)
+        # SVG spec: with markerUnits="strokeWidth", marker content coordinates
+        # are in a coordinate system where 1 unit = strokeWidth user units.
+        # So the polygon (0,0)→(10*s, 4*s)→(0, 8*s) becomes
+        # (0,0)→(10*s*sw, 4*s*sw)→(0, 8*s*sw) in user units.
+        length = 10 * s * sw
+        half_w = 4 * s * sw
         if mtype == 'arrow':
             return (f'<polygon points="0,0 {-length},{-half_w} {-length},{half_w}" '
                     f'fill="{color}" '
