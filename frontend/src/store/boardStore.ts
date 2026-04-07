@@ -70,7 +70,7 @@ interface BoardState {
   closeBoard: () => void;
   setBoardName: (name: string) => void;
   updateAutoExport: (settings: Partial<AutoExportSettings>) => void;
-  triggerAutoExport: () => Promise<void>;
+  triggerAutoExport: (boardSnapshot?: Board) => Promise<void>;
 
   // Actions - Canvas
   updateCanvas: (settings: Partial<CanvasSettings>) => void;
@@ -237,8 +237,9 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     set({ board: { ...board, autoExport: { ...current, ...settings } }, isDirty: true });
   },
 
-  triggerAutoExport: async () => {
-    const { board } = get();
+  triggerAutoExport: async (boardSnapshot?: Board) => {
+    // Use the provided snapshot if available, otherwise read from store.
+    const board = boardSnapshot ?? get().board;
     if (!board?.autoExport?.enabled || !board.autoExport.outputPath) return;
     if (!board.elements.length) return;
 
@@ -247,18 +248,50 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (signal?.aborted) return;
 
     const { useUIStore } = await import('@/store/uiStore');
+
+    // Re-check after await: board may have switched during dynamic import
+    if (signal?.aborted || (get().board && get().board!.id !== exportBoardId)) {
+      return;
+    }
+
     useUIStore.getState().setExportStatus('exporting');
 
     try {
-      // Use server-side rendering — completely independent of the DOM.
-      // This ensures the correct board's data is rendered even if the user
-      // has switched to a different board in the UI.
-      const res = await fetch('/api/export/render', {
+      // Use browser-side canvas capture — this rasterises the actual DOM
+      // so the export is pixel-perfect relative to what the user sees.
+      // This avoids the impossible task of re-implementing every rendering
+      // detail in a separate Python renderer.
+      const { captureCanvasForExport } = await import('@/utils/captureCanvas');
+
+      if (signal?.aborted || get().board?.id !== exportBoardId) {
+        useUIStore.getState().setExportStatus('idle');
+        return;
+      }
+
+      const ae = board.autoExport;
+      const canvas = await captureCanvasForExport({
+        scale: ae.dpi || 2,
+        transparent: ae.transparent && ae.format === 'png',
+        mode: ae.sizeMode || 'fit',
+        fixedW: ae.fixedWidth,
+        fixedH: ae.fixedHeight,
+      }, board);
+
+      if (signal?.aborted || get().board?.id !== exportBoardId) {
+        useUIStore.getState().setExportStatus('idle');
+        return;
+      }
+
+      const mimeType = ae.format === 'jpg' ? 'image/jpeg' : 'image/png';
+      const dataUrl = canvas.toDataURL(mimeType, 0.95);
+
+      const res = await fetch('/api/export/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: signal,
         body: JSON.stringify({
-          board,
-          image_versions: get().imageVersions,
+          path: ae.outputPath,
+          data_url: dataUrl,
         }),
       });
 
@@ -268,7 +301,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       }
 
       if (!res.ok) {
-        console.error('Auto-export render failed:', await res.text());
+        console.error('Auto-export save failed:', await res.text());
         useUIStore.getState().setExportStatus('error');
       } else {
         useUIStore.getState().setExportStatus('success');
@@ -279,7 +312,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         }, 3000);
       }
     } catch (err) {
-      if (signal?.aborted) return;
+      if (signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')) return;
       console.error('Auto-export failed:', err);
       const { useUIStore: ui } = await import('@/store/uiStore');
       ui.getState().setExportStatus('error');

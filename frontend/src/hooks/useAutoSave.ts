@@ -54,8 +54,16 @@ export function useAutoSave() {
       if (!b || b.id !== scopedBoardId) return;
       if (!b.autoExport?.enabled || !b.autoExport.outputPath) return;
 
-      // Content-only fingerprint: elements + image versions
+      // Content-only fingerprint: elements + image versions for THIS board's images only
       // Does NOT include zoom, pan, selection, or viewport state
+      const boardImagePaths = new Set(
+        b.elements.filter(e => e.source?.path).map(e => e.source!.path)
+      );
+      const relevantVersions: Record<string, number> = {};
+      for (const [path, ver] of Object.entries(state.imageVersions)) {
+        if (boardImagePaths.has(path)) relevantVersions[path] = ver;
+      }
+
       const fp = JSON.stringify({
         els: b.elements.map(e => ({
           id: e.id, x: e.x, y: e.y, w: e.width, h: e.height,
@@ -64,12 +72,15 @@ export function useAutoSave() {
           crop: e.crop, meta: e.metadata, pts: e.points,
         })),
         bg: b.canvas.background,
-        iv: state.imageVersions,
+        iv: relevantVersions,
       });
 
       if (fp !== lastExportFingerprintRef.current) {
         lastExportFingerprintRef.current = fp;
-        state.triggerAutoExport();
+        // Pass the board snapshot directly to avoid TOCTOU race:
+        // the store state could change between this check and
+        // triggerAutoExport reading it.
+        state.triggerAutoExport(b);
       }
     };
 

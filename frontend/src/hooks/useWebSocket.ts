@@ -55,15 +55,22 @@ export function useWebSocket() {
             time: new Date().toISOString(),
           });
           // Trigger auto-export after a short delay (let image re-render first)
+          // Only if the changed file is relevant to the current board's images
           if (boardState.board?.autoExport?.enabled) {
-            if (exportTimeoutRef.current) clearTimeout(exportTimeoutRef.current);
-            const currentBoardId = boardState.board.id;
-            exportTimeoutRef.current = window.setTimeout(() => {
-              const state = useBoardStore.getState();
-              if (state.board?.id === currentBoardId) {
-                state.triggerAutoExport();
-              }
-            }, 500);
+            const isRelevant = boardState.board.elements.some(
+              e => e.source?.path === data.path
+            );
+            if (isRelevant) {
+              if (exportTimeoutRef.current) clearTimeout(exportTimeoutRef.current);
+              const currentBoardId = boardState.board.id;
+              exportTimeoutRef.current = window.setTimeout(() => {
+                const state = useBoardStore.getState();
+                if (state.board?.id === currentBoardId) {
+                  // Pass board snapshot to avoid TOCTOU race
+                  state.triggerAutoExport(state.board!);
+                }
+              }, 500);
+            }
           }
         }
       } catch {

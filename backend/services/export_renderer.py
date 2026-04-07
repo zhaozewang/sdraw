@@ -1,482 +1,395 @@
 """Server-side board rendering for auto-export.
 
-Renders a board to an image purely from its data model, independent of
-any browser viewport state. This ensures exports are deterministic and
-consistent regardless of zoom/pan/selection.
+Uses SVG serialisation + cairosvg rasterisation (the tldraw approach):
+each element is converted to its SVG equivalent, assembled into a single
+SVG document, and rasterised by cairosvg.  This mirrors the browser's
+native SVG renderer and produces pixel-perfect output for arrows (markers,
+orient="auto"), shapes, and text.
 """
 
 import base64
 import hashlib
+import html as html_mod
 import io
 import logging
 import math
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
 
-def _hex_to_rgba(color: str, opacity: float = 1.0) -> tuple[int, int, int, int]:
-    """Convert CSS hex color to RGBA tuple."""
-    if not color or color == 'transparent':
-        return (0, 0, 0, 0)
-    color = color.strip().lstrip('#')
-    if len(color) == 3:
-        color = ''.join(c * 2 for c in color)
-    if len(color) == 6:
-        r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
-        return (r, g, b, int(opacity * 255))
-    return (0, 0, 0, int(opacity * 255))
+# -----------------------------------------------------------------------
+#  Path building — mirrors frontend ArrowNode.tsx exactly
+# -----------------------------------------------------------------------
+
+def _default_ctrl(p0, p1, lt):
+    mx = (p0[0] + p1[0]) / 2
+    my = (p0[1] + p1[1]) / 2
+    dx = p1[0] - p0[0]
+    dy = p1[1] - p0[1]
+    ln = math.sqrt(dx * dx + dy * dy) or 1
+    ox = (-dy / ln) * ln * 0.3
+    oy = (dx / ln) * ln * 0.3
+    if lt in ('quadratic', 'arc'):
+        return [(mx + ox, my + oy)]
+    if lt == 'smooth':
+        return [(mx + ox * 0.4, my + oy * 0.4)]
+    if lt == 'cubic':
+        return [
+            (p0[0] + dx * 0.25 + ox, p0[1] + dy * 0.25 + oy),
+            (p0[0] + dx * 0.75 - ox, p0[1] + dy * 0.75 - oy),
+        ]
+    return []
 
 
-def _load_image_from_path(path: str) -> Optional[Image.Image]:
-    """Load an image from a filesystem path."""
-    try:
-        p = Path(path)
-        if p.exists() and p.is_file():
-            img = Image.open(p)
-            img.load()
-            return img.convert('RGBA')
-    except Exception as e:
-        logger.warning("Failed to load image %s: %s", path, e)
-    return None
+def _build_path(p0, p1, lt, ctrl):
+    if lt in ('quadratic', 'arc'):
+        c = ctrl[0] if ctrl else ((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2)
+        return f"M {p0[0]},{p0[1]} Q {c[0]},{c[1]} {p1[0]},{p1[1]}"
+    if lt == 'smooth':
+        if ctrl:
+            c = ctrl[0]
+            return f"M {p0[0]},{p0[1]} Q {c[0]},{c[1]} {p1[0]},{p1[1]}"
+        dx = p1[0] - p0[0]
+        dy = p1[1] - p0[1]
+        t = min(abs(dx), abs(dy)) * 0.5 + abs(dx) * 0.25
+        return f"M {p0[0]},{p0[1]} C {p0[0] + t},{p0[1]} {p1[0] - t},{p1[1]} {p1[0]},{p1[1]}"
+    if lt == 'cubic':
+        c1 = ctrl[0] if ctrl else (p0[0] + (p1[0] - p0[0]) * 0.25, p0[1])
+        c2 = ctrl[1] if len(ctrl) > 1 else (p0[0] + (p1[0] - p0[0]) * 0.75, p1[1])
+        return f"M {p0[0]},{p0[1]} C {c1[0]},{c1[1]} {c2[0]},{c2[1]} {p1[0]},{p1[1]}"
+    if lt == 'step':
+        mx = (p0[0] + p1[0]) / 2
+        return f"M {p0[0]},{p0[1]} L {mx},{p0[1]} L {mx},{p1[1]} L {p1[0]},{p1[1]}"
+    if lt == 'step-rounded':
+        mx = (p0[0] + p1[0]) / 2
+        dy = p1[1] - p0[1]
+        max_r = min(abs(mx - p0[0]), abs(dy) / 2, 20)
+        r = max(max_r, 0)
+        if r < 1:
+            return f"M {p0[0]},{p0[1]} L {mx},{p0[1]} L {mx},{p1[1]} L {p1[0]},{p1[1]}"
+        sy = 1 if dy > 0 else -1
+        return ' '.join([
+            f"M {p0[0]},{p0[1]}", f"L {mx - r},{p0[1]}",
+            f"Q {mx},{p0[1]} {mx},{p0[1] + r * sy}",
+            f"L {mx},{p1[1] - r * sy}",
+            f"Q {mx},{p1[1]} {mx + r * (1 if p1[0] > p0[0] else -1)},{p1[1]}",
+            f"L {p1[0]},{p1[1]}",
+        ])
+    return f"M {p0[0]},{p0[1]} L {p1[0]},{p1[1]}"
 
 
-def _load_image_from_base64(data: str) -> Optional[Image.Image]:
-    """Load an image from a base64 string."""
-    try:
-        raw = base64.b64decode(data)
-        img = Image.open(io.BytesIO(raw))
-        img.load()
-        return img.convert('RGBA')
-    except Exception as e:
-        logger.warning("Failed to decode base64 image: %s", e)
-    return None
+# -----------------------------------------------------------------------
+#  Arrowhead drawing — cairosvg does NOT implement orient="auto" on
+#  markers, so we draw arrowheads as manually rotated polygons.
+# -----------------------------------------------------------------------
+
+def _path_tangent_at_end(p0, p1, lt, ctrl):
+    """Return (dx, dy) tangent direction at the END of the path (p1)."""
+    if lt in ('quadratic', 'arc', 'smooth') and ctrl:
+        # Tangent at end of Q curve = direction from control point to p1
+        return (p1[0] - ctrl[0][0], p1[1] - ctrl[0][1])
+    if lt == 'cubic' and len(ctrl) >= 2:
+        return (p1[0] - ctrl[1][0], p1[1] - ctrl[1][1])
+    if lt == 'cubic' and len(ctrl) == 1:
+        return (p1[0] - ctrl[0][0], p1[1] - ctrl[0][1])
+    # straight / step: tangent is last segment direction
+    return (p1[0] - p0[0], p1[1] - p0[1])
 
 
-def _draw_arrow_svg(element: dict, scale: float) -> Optional[Image.Image]:
-    """Render an arrow element to an image using cairosvg."""
-    try:
-        import svgwrite
-        import cairosvg
+def _path_tangent_at_start(p0, p1, lt, ctrl):
+    """Return (dx, dy) tangent direction at the START of the path (p0).
+    Direction points INTO the path (away from p0)."""
+    if lt in ('quadratic', 'arc', 'smooth') and ctrl:
+        return (ctrl[0][0] - p0[0], ctrl[0][1] - p0[1])
+    if lt == 'cubic' and len(ctrl) >= 1:
+        return (ctrl[0][0] - p0[0], ctrl[0][1] - p0[1])
+    return (p1[0] - p0[0], p1[1] - p0[1])
 
-        style = element.get('style', {})
-        metadata = element.get('metadata', {})
-        points = element.get('points', [])
-        w = element.get('width', 1)
-        h = element.get('height', 1)
 
-        if len(points) < 2:
-            return None
+def _arrowhead_svg(tip, tangent_dx, tangent_dy, mtype, color, stroke_width, head_size, is_start):
+    """Draw an arrowhead at `tip` pointing in the direction of (tangent_dx, tangent_dy).
+    For start markers, the arrowhead points AWAY from the path (opposite direction)."""
+    angle = math.degrees(math.atan2(tangent_dy, tangent_dx))
+    if is_start:
+        angle += 180  # start marker points backward
+    s = head_size
+    # Size proportional to stroke width (matches markerUnits="strokeWidth")
+    sw = stroke_width
+    tx, ty = tip
 
-        stroke_color = style.get('strokeColor', '#333333')
-        stroke_width = style.get('strokeWidth', 2)
-        stroke_style = style.get('strokeStyle', 'solid')
-        opacity = style.get('opacity', 1)
-        line_type = metadata.get('lineType', 'straight')
-        ctrl = metadata.get('controlPoints', [])
-        head_size = metadata.get('arrowHeadSize', 1)
-        start_marker = metadata.get('startMarker', 'none')
-        end_marker = metadata.get('endMarker', 'arrow') if metadata.get('arrowHead') is not False else 'none'
-        if 'endMarker' in metadata:
-            end_marker = metadata['endMarker']
-
-        # Add padding for markers and stroke
-        pad = max(stroke_width * 5 * head_size, 15)
-        svg_w = w + pad * 2
-        svg_h = h + pad * 2
-
-        p0 = points[0]
-        p1 = points[1]
-
-        # Build path
-        sx, sy = p0['x'] + pad, p0['y'] + pad
-        ex, ey = p1['x'] + pad, p1['y'] + pad
-
-        if line_type == 'straight':
-            path_d = f"M {sx},{sy} L {ex},{ey}"
-        elif line_type in ('quadratic', 'arc', 'smooth'):
-            if ctrl:
-                cx, cy = ctrl[0]['x'] + pad, ctrl[0]['y'] + pad
-                path_d = f"M {sx},{sy} Q {cx},{cy} {ex},{ey}"
-            else:
-                mx, my = (sx + ex) / 2, (sy + ey) / 2
-                dx, dy = ex - sx, ey - sy
-                length = math.sqrt(dx * dx + dy * dy) or 1
-                off_x = (-dy / length) * length * 0.3
-                off_y = (dx / length) * length * 0.3
-                if line_type == 'smooth':
-                    off_x *= 0.4
-                    off_y *= 0.4
-                cx, cy = mx + off_x, my + off_y
-                path_d = f"M {sx},{sy} Q {cx},{cy} {ex},{ey}"
-        elif line_type == 'cubic':
-            if len(ctrl) >= 2:
-                c1x, c1y = ctrl[0]['x'] + pad, ctrl[0]['y'] + pad
-                c2x, c2y = ctrl[1]['x'] + pad, ctrl[1]['y'] + pad
-                path_d = f"M {sx},{sy} C {c1x},{c1y} {c2x},{c2y} {ex},{ey}"
-            else:
-                dx, dy = ex - sx, ey - sy
-                length = math.sqrt(dx * dx + dy * dy) or 1
-                off_x = (-dy / length) * length * 0.3
-                off_y = (dx / length) * length * 0.3
-                c1x, c1y = sx + dx * 0.25 + off_x, sy + dy * 0.25 + off_y
-                c2x, c2y = sx + dx * 0.75 - off_x, sy + dy * 0.75 - off_y
-                path_d = f"M {sx},{sy} C {c1x},{c1y} {c2x},{c2y} {ex},{ey}"
-        elif line_type == 'step':
-            mx = (sx + ex) / 2
-            path_d = f"M {sx},{sy} L {mx},{sy} L {mx},{ey} L {ex},{ey}"
-        elif line_type == 'step-rounded':
-            mx = (sx + ex) / 2
-            dy_val = ey - sy
-            desired_r = metadata.get('stepRadius', 20)
-            max_r = min(abs(mx - sx), abs(dy_val) / 2, desired_r)
-            r = max(max_r, 0)
-            if r < 1:
-                path_d = f"M {sx},{sy} L {mx},{sy} L {mx},{ey} L {ex},{ey}"
-            else:
-                s_y = 1 if dy_val > 0 else -1
-                path_d = (
-                    f"M {sx},{sy} L {mx - r},{sy} "
-                    f"Q {mx},{sy} {mx},{sy + r * s_y} "
-                    f"L {mx},{ey - r * s_y} "
-                    f"Q {mx},{ey} {mx + r * (1 if ex > sx else -1)},{ey} "
-                    f"L {ex},{ey}"
-                )
+    if mtype in ('arrow', 'arrow-open'):
+        # Triangle: tip at (0,0), base at (-length, ±half_width)
+        # In the browser, markerUnits="strokeWidth" scales the marker viewport
+        # but the visual polygon size is markerWidth in viewport coordinates.
+        # The effective pixel size is roughly markerWidth * strokeWidth^0.5.
+        length = 10 * s * max(sw * 0.5, 1)
+        half_w = 4 * s * max(sw * 0.5, 1)
+        if mtype == 'arrow':
+            return (f'<polygon points="0,0 {-length},{-half_w} {-length},{half_w}" '
+                    f'fill="{color}" '
+                    f'transform="translate({tx},{ty}) rotate({angle})"/>')
         else:
-            path_d = f"M {sx},{sy} L {ex},{ey}"
-
-        # Build SVG
-        dwg = svgwrite.Drawing(size=(f"{svg_w}px", f"{svg_h}px"))
-        dwg.viewbox(0, 0, svg_w, svg_h)
-
-        # Define markers
-        marker_w = 10 * head_size
-        marker_h = 8 * head_size
-        marker_mid = 4 * head_size
-
-        def add_arrow_marker(marker_id: str, is_start: bool):
-            marker = dwg.marker(
-                id=marker_id,
-                insert=(0 if is_start else marker_w, marker_mid),
-                size=(marker_w, marker_h),
-                orient='auto',
-                markerUnits='strokeWidth',
-            )
-            if is_start:
-                marker.add(dwg.polygon(points=[(marker_w, 0), (0, marker_mid), (marker_w, marker_h)], fill=stroke_color))
-            else:
-                marker.add(dwg.polygon(points=[(0, 0), (marker_w, marker_mid), (0, marker_h)], fill=stroke_color))
-            dwg.defs.add(marker)
-            return marker
-
-        def add_dot_marker(marker_id: str):
-            d = 6 * head_size
-            c = 3 * head_size
-            marker = dwg.marker(id=marker_id, insert=(c, c), size=(d, d), orient='auto', markerUnits='strokeWidth')
-            marker.add(dwg.circle(center=(c, c), r=2.5 * head_size, fill=stroke_color))
-            dwg.defs.add(marker)
-            return marker
-
-        def add_diamond_marker(marker_id: str):
-            d = 8 * head_size
-            mid = 4 * head_size
-            marker = dwg.marker(id=marker_id, insert=(mid, mid), size=(d, d), orient='auto', markerUnits='strokeWidth')
-            marker.add(dwg.polygon(points=[(mid, 0), (d, mid), (mid, d), (0, mid)], fill=stroke_color))
-            dwg.defs.add(marker)
-            return marker
-
-        def add_bar_marker(marker_id: str):
-            bw = 2 * head_size
-            bh = 8 * head_size
-            marker = dwg.marker(id=marker_id, insert=(head_size, bh / 2), size=(bw, bh), orient='auto', markerUnits='strokeWidth')
-            marker.add(dwg.line(start=(head_size, 0), end=(head_size, bh), stroke=stroke_color, stroke_width=2 * head_size))
-            dwg.defs.add(marker)
-            return marker
-
-        marker_start_url = None
-        marker_end_url = None
-
-        for mtype, suffix, is_start in [(start_marker, 'start', True), (end_marker, 'end', False)]:
-            if mtype == 'none':
-                continue
-            mid = f"m-{suffix}"
-            if mtype == 'arrow':
-                add_arrow_marker(mid, is_start)
-            elif mtype == 'arrow-open':
-                add_arrow_marker(mid, is_start)  # simplified
-            elif mtype == 'dot':
-                add_dot_marker(mid)
-            elif mtype == 'diamond':
-                add_diamond_marker(mid)
-            elif mtype == 'bar':
-                add_bar_marker(mid)
-            else:
-                continue
-            url = f"url(#{mid})"
-            if is_start:
-                marker_start_url = url
-            else:
-                marker_end_url = url
-
-        # Stroke dash
-        dasharray = None
-        if stroke_style == 'dashed':
-            dasharray = "8,4"
-        elif stroke_style == 'dotted':
-            dasharray = "2,4"
-
-        path_kwargs = {
-            'd': path_d,
-            'fill': 'none',
-            'stroke': stroke_color,
-            'stroke_width': stroke_width,
-            'opacity': opacity,
-        }
-        if dasharray:
-            path_kwargs['stroke_dasharray'] = dasharray
-        path_el = dwg.path(**path_kwargs)
-        if marker_start_url:
-            path_el['marker-start'] = marker_start_url
-        if marker_end_url:
-            path_el['marker-end'] = marker_end_url
-        dwg.add(path_el)
-
-        # Render SVG to PNG
-        svg_bytes = dwg.tostring().encode('utf-8')
-        png_bytes = cairosvg.svg2png(
-            bytestring=svg_bytes,
-            output_width=int(svg_w * scale),
-            output_height=int(svg_h * scale),
-        )
-        img = Image.open(io.BytesIO(png_bytes)).convert('RGBA')
-        return img
-
-    except Exception as e:
-        logger.warning("Failed to render arrow SVG: %s", e)
-        return None
+            return (f'<polyline points="{-length},{-half_w} 0,0 {-length},{half_w}" '
+                    f'fill="none" stroke="{color}" stroke-width="{1.5 * s}" '
+                    f'transform="translate({tx},{ty}) rotate({angle})"/>')
+    if mtype == 'dot':
+        r = 2.5 * s * sw
+        return f'<circle cx="{tx}" cy="{ty}" r="{r}" fill="{color}"/>'
+    if mtype == 'diamond':
+        d = 4 * s * sw
+        return (f'<polygon points="{d},0 0,{-d} {-d},0 0,{d}" fill="{color}" '
+                f'transform="translate({tx},{ty}) rotate({angle})"/>')
+    if mtype == 'bar':
+        h = 4 * s * sw
+        return (f'<line x1="0" y1="{-h}" x2="0" y2="{h}" '
+                f'stroke="{color}" stroke-width="{2 * s}" '
+                f'transform="translate({tx},{ty}) rotate({angle})"/>')
+    return ''
 
 
-def render_board(board_data: dict, output_path: str) -> dict:
-    """Render a board to an image file.
+# -----------------------------------------------------------------------
+#  Board → SVG document
+# -----------------------------------------------------------------------
 
-    Returns dict with path, size, content_hash.
-    """
-    canvas = board_data.get('canvas', {})
-    elements = board_data.get('elements', [])
-    auto_export = board_data.get('autoExport', {})
+def _board_to_svg(board_data: dict, transparent: bool, dpi: int) -> str:
+    """Convert board data to a self-contained SVG string."""
+    elements = [e for e in board_data.get('elements', []) if e.get('visible', True)]
+    if not elements:
+        return ''
 
-    fmt = auto_export.get('format', 'png')
-    dpi = auto_export.get('dpi', 2)
-    transparent = auto_export.get('transparent', False) and fmt == 'png'
-    size_mode = auto_export.get('sizeMode', 'fit')
-    fixed_w = auto_export.get('fixedWidth', 1920)
-    fixed_h = auto_export.get('fixedHeight', 1080)
+    elements.sort(key=lambda e: e.get('z_index', 0))
+    renderable = [e for e in elements if e.get('type', '') != 'group']
+    if not renderable:
+        return ''
 
-    visible_elements = [e for e in elements if e.get('visible', True)]
-    if not visible_elements:
-        return {"path": output_path, "size": 0, "content_hash": "", "skipped": True}
-
-    # Sort by z_index
-    visible_elements.sort(key=lambda e: e.get('z_index', 0))
-
-    # Compute content bounds
     pad = 20
-    min_x = min(e['x'] for e in visible_elements) - pad
-    min_y = min(e['y'] for e in visible_elements) - pad
-    max_x = max(e['x'] + e.get('width', 0) for e in visible_elements) + pad
-    max_y = max(e['y'] + e.get('height', 0) for e in visible_elements) + pad
+    min_x = min(e['x'] for e in renderable) - pad
+    min_y = min(e['y'] for e in renderable) - pad
+    max_x = max(e['x'] + e.get('width', 0) for e in renderable) + pad
+    max_y = max(e['y'] + e.get('height', 0) for e in renderable) + pad
+    cw = max_x - min_x
+    ch = max_y - min_y
 
-    content_w = max_x - min_x
-    content_h = max_y - min_y
+    auto_export = board_data.get('autoExport', {})
+    size_mode = auto_export.get('sizeMode', 'fit')
 
-    # Determine output size
-    if size_mode == 'fixed':
-        out_w, out_h = fixed_w, fixed_h
-    elif size_mode == 'canvas':
-        out_w = canvas.get('width', 2400)
-        out_h = canvas.get('height', 1600)
+    if size_mode == 'canvas':
+        vb_x, vb_y = 0, 0
+        vb_w = board_data.get('canvas', {}).get('width', 2400)
+        vb_h = board_data.get('canvas', {}).get('height', 1600)
+    elif size_mode == 'fixed':
+        vb_x, vb_y = min_x, min_y
+        vb_w, vb_h = cw, ch
     else:  # fit
-        out_w = content_w
-        out_h = content_h
+        vb_x, vb_y = min_x, min_y
+        vb_w, vb_h = cw, ch
 
-    # Scale to DPI
-    render_w = int(out_w * dpi)
-    render_h = int(out_h * dpi)
+    if size_mode == 'fixed':
+        svg_w = (auto_export.get('fixedWidth', 1920)) * dpi
+        svg_h = (auto_export.get('fixedHeight', 1080)) * dpi
+    else:
+        svg_w = vb_w * dpi
+        svg_h = vb_h * dpi
 
-    # Create output image
-    bg_color = (0, 0, 0, 0) if transparent else _hex_to_rgba(canvas.get('background', '#ffffff'))
-    output = Image.new('RGBA', (render_w, render_h), bg_color)
+    defs_parts: list[str] = []
+    body_parts: list[str] = []
+    used_markers: set[str] = set()
 
-    # Compute offset: map content coords to output coords
-    if size_mode == 'fit':
-        off_x = -min_x
-        off_y = -min_y
-        render_scale = dpi
-    elif size_mode == 'canvas':
-        off_x = 0
-        off_y = 0
-        render_scale = dpi
-    else:  # fixed
-        # Center content in fixed size
-        scale_x = out_w / content_w if content_w > 0 else 1
-        scale_y = out_h / content_h if content_h > 0 else 1
-        fit_scale = min(scale_x, scale_y, 1)  # don't upscale
-        off_x = -min_x + (out_w - content_w * fit_scale) / (2 * fit_scale)
-        off_y = -min_y + (out_h - content_h * fit_scale) / (2 * fit_scale)
-        render_scale = dpi * fit_scale
-
-    # Render each element
-    for el in visible_elements:
+    for el in elements:
         el_type = el.get('type', '')
         style = el.get('style', {})
+        meta = el.get('metadata', {})
         opacity = style.get('opacity', 1)
-        ex = int((el['x'] + off_x) * render_scale)
-        ey = int((el['y'] + off_y) * render_scale)
-        ew = max(1, int(el.get('width', 0) * render_scale))
-        eh = max(1, int(el.get('height', 0) * render_scale))
 
-        if el_type == 'image':
+        if el_type == 'rectangle':
+            shape = meta.get('shape', 'rect')
+            fill = style.get('fill', 'transparent')
+            stroke = style.get('strokeColor', 'transparent')
+            sw = style.get('strokeWidth', 0)
+            br = style.get('borderRadius', 0)
+            x, y, w, h = el['x'], el['y'], el['width'], el['height']
+
+            if shape == 'triangle':
+                pts = f"{x + w / 2},{y} {x + w},{y + h} {x},{y + h}"
+                body_parts.append(
+                    f'<polygon points="{pts}" fill="{fill}" stroke="{stroke}" '
+                    f'stroke-width="{sw}" opacity="{opacity}"/>')
+            elif shape == 'diamond':
+                pts = f"{x + w / 2},{y} {x + w},{y + h / 2} {x + w / 2},{y + h} {x},{y + h / 2}"
+                body_parts.append(
+                    f'<polygon points="{pts}" fill="{fill}" stroke="{stroke}" '
+                    f'stroke-width="{sw}" opacity="{opacity}"/>')
+            else:
+                r = min(br, w / 2, h / 2)
+                body_parts.append(
+                    f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{r}" '
+                    f'fill="{fill}" stroke="{stroke}" stroke-width="{sw}" opacity="{opacity}"/>')
+
+        elif el_type == 'arrow':
+            pts = el.get('points', [])
+            if len(pts) < 2:
+                continue
+            lt = meta.get('lineType', 'straight')
+            ctrl_raw = meta.get('controlPoints', [])
+            hs = meta.get('arrowHeadSize', 1)
+            sm = meta.get('startMarker', 'none')
+            em = meta.get('endMarker', 'arrow') if meta.get('arrowHead') is not False else 'none'
+            if 'endMarker' in meta:
+                em = meta['endMarker']
+
+            p0 = (el['x'] + pts[0]['x'], el['y'] + pts[0]['y'])
+            p1 = (el['x'] + pts[1]['x'], el['y'] + pts[1]['y'])
+            has_curve = lt in ('quadratic', 'cubic', 'arc', 'smooth')
+            if has_curve and not ctrl_raw:
+                ectrl = [
+                    (el['x'] + c[0], el['y'] + c[1])
+                    for c in _default_ctrl(
+                        (pts[0]['x'], pts[0]['y']),
+                        (pts[1]['x'], pts[1]['y']), lt)
+                ]
+            else:
+                ectrl = [(el['x'] + c['x'], el['y'] + c['y']) for c in ctrl_raw]
+
+            path_d = _build_path(p0, p1, lt, ectrl)
+            sc = style.get('strokeColor', '#333333')
+            sw = style.get('strokeWidth', 2)
+            da = 'stroke-dasharray="8,4" ' if style.get('strokeStyle') == 'dashed' else (
+                 'stroke-dasharray="2,4" ' if style.get('strokeStyle') == 'dotted' else '')
+
+            # Draw the path (no markers — cairosvg breaks orient="auto")
+            body_parts.append(
+                f'<path d="{path_d}" fill="none" stroke="{sc}" stroke-width="{sw}" '
+                f'{da}opacity="{opacity}"/>')
+
+            # Draw arrowheads as manually rotated polygons
+            if sm != 'none':
+                tdx, tdy = _path_tangent_at_start(p0, p1, lt, ectrl)
+                body_parts.append(
+                    _arrowhead_svg(p0, tdx, tdy, sm, sc, sw, hs, True))
+            if em != 'none':
+                tdx, tdy = _path_tangent_at_end(p0, p1, lt, ectrl)
+                body_parts.append(
+                    _arrowhead_svg(p1, tdx, tdy, em, sc, sw, hs, False))
+
+        elif el_type == 'text':
+            txt = el.get('text', '')
+            if not txt:
+                continue
+            fs = style.get('fontSize', 14)
+            color = style.get('color', '#111111')
+            bg = style.get('background', 'transparent')
+            padding = style.get('padding', 4)
+            ta = style.get('textAlign', 'left')
+            anchor = 'middle' if ta == 'center' else 'end' if ta == 'right' else 'start'
+            tx = (el['x'] + el['width'] / 2 if ta == 'center'
+                  else el['x'] + el['width'] - padding if ta == 'right'
+                  else el['x'] + padding)
+
+            if bg and bg != 'transparent':
+                body_parts.append(
+                    f'<rect x="{el["x"]}" y="{el["y"]}" width="{el["width"]}" '
+                    f'height="{el["height"]}" fill="{bg}"/>')
+
+            lines = txt.split('\n')
+            tspans = ''.join(
+                f'<tspan x="{tx}" dy="{0 if i == 0 else "1.2em"}">'
+                f'{html_mod.escape(l)}</tspan>'
+                for i, l in enumerate(lines)
+            )
+            body_parts.append(
+                f'<text x="{tx}" y="{el["y"] + padding + fs * 0.85}" '
+                f'font-family="system-ui,-apple-system,sans-serif" font-size="{fs}" '
+                f'fill="{color}" text-anchor="{anchor}" opacity="{opacity}">'
+                f'{tspans}</text>')
+
+        elif el_type == 'image':
             source = el.get('source', {})
             path = source.get('path', '')
             if not path:
                 continue
-            img = _load_image_from_path(path)
-            if not img:
+            p = Path(path)
+            if not p.exists():
                 continue
-            img = img.resize((ew, eh), Image.Resampling.LANCZOS)
-            if opacity < 1:
-                alpha = img.split()[3]
-                alpha = alpha.point(lambda a: int(a * opacity))
-                img.putalpha(alpha)
-            output.paste(img, (ex, ey), img)
+            raw = p.read_bytes()
+            suffix = p.suffix.lower()
+            mime = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                    'gif': 'image/gif', 'webp': 'image/webp', 'svg': 'image/svg+xml'
+                    }.get(suffix.lstrip('.'), 'image/png')
+            b64 = base64.b64encode(raw).decode()
+            body_parts.append(
+                f'<image x="{el["x"]}" y="{el["y"]}" width="{el["width"]}" '
+                f'height="{el["height"]}" href="data:{mime};base64,{b64}" '
+                f'preserveAspectRatio="none" opacity="{opacity}"/>')
 
         elif el_type == 'plot':
-            last_output = el.get('metadata', {}).get('lastOutput')
+            last_output = meta.get('lastOutput')
             if not last_output:
                 continue
-            img = _load_image_from_base64(last_output)
-            if not img:
-                continue
-            img = img.resize((ew, eh), Image.Resampling.LANCZOS)
-            if opacity < 1:
-                alpha = img.split()[3]
-                alpha = alpha.point(lambda a: int(a * opacity))
-                img.putalpha(alpha)
-            output.paste(img, (ex, ey), img)
+            body_parts.append(
+                f'<image x="{el["x"]}" y="{el["y"]}" width="{el["width"]}" '
+                f'height="{el["height"]}" href="data:image/png;base64,{last_output}" '
+                f'preserveAspectRatio="none" opacity="{opacity}"/>')
 
-        elif el_type == 'rectangle':
-            metadata = el.get('metadata', {})
-            shape = metadata.get('shape')
-            fill = style.get('fill', 'transparent')
-            stroke_color = style.get('strokeColor', '#333333')
-            stroke_width = int((style.get('strokeWidth', 2)) * render_scale / dpi)
-            border_radius = int((style.get('borderRadius', 0)) * render_scale / dpi)
+    bg_color = board_data.get('canvas', {}).get('background', '#ffffff')
+    bg_rect = '' if transparent else (
+        f'<rect x="{vb_x}" y="{vb_y}" width="{vb_w}" height="{vb_h}" fill="{bg_color}"/>')
 
-            layer = Image.new('RGBA', (ew, eh), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(layer)
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'width="{svg_w}" height="{svg_h}" viewBox="{vb_x} {vb_y} {vb_w} {vb_h}">\n'
+        f'<defs>{"".join(defs_parts)}</defs>\n'
+        f'{bg_rect}\n'
+        f'{"".join(body_parts)}\n'
+        f'</svg>'
+    )
 
-            fill_rgba = _hex_to_rgba(fill, opacity)
-            stroke_rgba = _hex_to_rgba(stroke_color, opacity)
 
-            if shape == 'triangle':
-                pts = [(ew // 2, 0), (ew, eh), (0, eh)]
-                if fill_rgba[3] > 0:
-                    draw.polygon(pts, fill=fill_rgba)
-                if stroke_width > 0:
-                    draw.polygon(pts, outline=stroke_rgba, width=stroke_width)
-            elif shape == 'diamond':
-                pts = [(ew // 2, 0), (ew, eh // 2), (ew // 2, eh), (0, eh // 2)]
-                if fill_rgba[3] > 0:
-                    draw.polygon(pts, fill=fill_rgba)
-                if stroke_width > 0:
-                    draw.polygon(pts, outline=stroke_rgba, width=stroke_width)
-            else:
-                if border_radius > 0:
-                    if fill_rgba[3] > 0:
-                        draw.rounded_rectangle([0, 0, ew - 1, eh - 1], radius=border_radius, fill=fill_rgba)
-                    if stroke_width > 0:
-                        draw.rounded_rectangle([0, 0, ew - 1, eh - 1], radius=border_radius, outline=stroke_rgba, width=stroke_width)
-                else:
-                    if fill_rgba[3] > 0:
-                        draw.rectangle([0, 0, ew - 1, eh - 1], fill=fill_rgba)
-                    if stroke_width > 0:
-                        draw.rectangle([0, 0, ew - 1, eh - 1], outline=stroke_rgba, width=stroke_width)
+# -----------------------------------------------------------------------
+#  Public API
+# -----------------------------------------------------------------------
 
-            output.paste(layer, (ex, ey), layer)
+def render_board(board_data: dict, output_path: str) -> dict:
+    """Render a board to an image file using SVG serialisation + cairosvg.
 
-        elif el_type == 'arrow':
-            arrow_img = _draw_arrow_svg(el, render_scale / dpi)
-            if arrow_img:
-                # The arrow image has padding built in
-                metadata = el.get('metadata', {})
-                head_size = metadata.get('arrowHeadSize', 1)
-                arrow_pad = max(int(style.get('strokeWidth', 2) * 5 * head_size * render_scale / dpi), int(15 * render_scale / dpi))
-                paste_x = ex - arrow_pad
-                paste_y = ey - arrow_pad
-                if opacity < 1:
-                    alpha = arrow_img.split()[3]
-                    alpha = alpha.point(lambda a: int(a * opacity))
-                    arrow_img.putalpha(alpha)
-                output.paste(arrow_img, (paste_x, paste_y), arrow_img)
+    Returns dict with path, size, content_hash.
+    """
+    import cairosvg
 
-        elif el_type == 'text':
-            text = el.get('text', '')
-            if not text:
-                continue
-            font_size = int((style.get('fontSize', 14)) * render_scale / dpi)
-            font_color = _hex_to_rgba(style.get('color', '#111111'), opacity)
-            bg = style.get('background', 'transparent')
-            padding = int((style.get('padding', 4)) * render_scale / dpi)
+    board_id = board_data.get('id', 'unknown')
+    board_name = board_data.get('name', 'unknown')
+    auto_export = board_data.get('autoExport', {})
+    fmt = auto_export.get('format', 'png')
+    dpi = auto_export.get('dpi', 2)
+    transparent = auto_export.get('transparent', False) and fmt == 'png'
 
-            layer = Image.new('RGBA', (ew, eh), (0, 0, 0, 0))
+    logger.info("render_board: board=%s (%s), output=%s", board_name, board_id, output_path)
 
-            if bg and bg != 'transparent':
-                bg_draw = ImageDraw.Draw(layer)
-                bg_draw.rectangle([0, 0, ew - 1, eh - 1], fill=_hex_to_rgba(bg, opacity))
+    svg_str = _board_to_svg(board_data, transparent, dpi)
+    if not svg_str:
+        return {"path": output_path, "size": 0, "content_hash": "", "skipped": True}
 
-            draw = ImageDraw.Draw(layer)
-            try:
-                font = ImageFont.truetype("DejaVuSans.ttf", font_size)
-            except (OSError, IOError):
-                try:
-                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size)
-                except (OSError, IOError):
-                    font = ImageFont.load_default()
+    # Rasterise SVG → PNG via cairosvg
+    png_bytes = cairosvg.svg2png(bytestring=svg_str.encode('utf-8'))
 
-            text_align = style.get('textAlign', 'left')
-            draw.multiline_text(
-                (padding, padding),
-                text,
-                fill=font_color,
-                font=font,
-                align=text_align,
-            )
-            output.paste(layer, (ex, ey), layer)
+    # Convert format if needed
+    if fmt == 'jpg':
+        img = Image.open(io.BytesIO(png_bytes)).convert('RGB')
+        buf = io.BytesIO()
+        img.save(buf, 'JPEG', quality=95)
+        raw = buf.getvalue()
+    elif fmt == 'pdf':
+        raw = cairosvg.svg2pdf(bytestring=svg_str.encode('utf-8'))
+    else:
+        raw = png_bytes
 
-        # group type has no visual rendering in export
-
-    # Convert for output format
     p = Path(output_path).resolve()
     p.parent.mkdir(parents=True, exist_ok=True)
-
-    buf = io.BytesIO()
-    if fmt == 'jpg':
-        rgb = Image.new('RGB', output.size, (255, 255, 255))
-        rgb.paste(output, mask=output.split()[3] if output.mode == 'RGBA' else None)
-        rgb.save(buf, 'JPEG', quality=95)
-    elif fmt == 'pdf':
-        rgb = Image.new('RGB', output.size, (255, 255, 255))
-        rgb.paste(output, mask=output.split()[3] if output.mode == 'RGBA' else None)
-        rgb.save(buf, 'PDF')
-    else:  # png
-        output.save(buf, 'PNG')
-
-    raw = buf.getvalue()
-    content_hash = hashlib.sha256(raw).hexdigest()
     p.write_bytes(raw)
 
+    content_hash = hashlib.sha256(raw).hexdigest()
     logger.info("Rendered export: %s (%d bytes, hash=%s)", p, len(raw), content_hash[:12])
     return {"path": str(p), "size": len(raw), "content_hash": content_hash}
