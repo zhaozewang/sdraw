@@ -128,6 +128,7 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
 
   const addArrow = (key: string, isStart: boolean) => {
     const w = 10 * s, h = 8 * s, mid = 4 * s;
+    // refX exactly at the tip — arrowhead is precisely at the endpoint
     markers.push(
       <marker
         key={key}
@@ -533,7 +534,7 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
           }}
         />
 
-        {/* Visible path */}
+        {/* Visible path with stroke and markers */}
         <path
           d={pathD}
           fill="none"

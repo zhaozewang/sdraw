@@ -1,9 +1,10 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 
 export function useKeyboardShortcuts() {
   const board = useBoardStore(s => s.board);
+  const nudgeTimerRef = useRef<number>();
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const target = e.target as HTMLElement;
@@ -128,6 +129,11 @@ export function useKeyboardShortcuts() {
             },
           }))
         );
+        // Debounce history push — group rapid arrow presses into one undo entry
+        if (nudgeTimerRef.current) clearTimeout(nudgeTimerRef.current);
+        nudgeTimerRef.current = window.setTimeout(() => {
+          useBoardStore.getState().pushHistory('Nudge');
+        }, 500);
       }
       return;
     }

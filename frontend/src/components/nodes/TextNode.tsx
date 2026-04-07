@@ -93,6 +93,10 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
     if (e.key === 'Escape') {
       setEditing(false);
       textareaRef.current?.blur();
+    } else if (e.key === 'Enter' && !e.shiftKey) {
+      // Enter alone: unfocus. Shift+Enter: newline (default behavior).
+      e.preventDefault();
+      textareaRef.current?.blur();
     }
     e.stopPropagation();
   }, []);

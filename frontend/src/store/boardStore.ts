@@ -250,266 +250,25 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     useUIStore.getState().setExportStatus('exporting');
 
     try {
-      const { default: html2canvas } = await import('html2canvas');
-      const rfEl = document.querySelector('.react-flow') as HTMLElement;
-      const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
-      if (!rfEl || !viewport) { useUIStore.getState().setExportStatus('error'); return; }
-
-      const fmt = board.autoExport.format || 'png';
-      const isTransparent = board.autoExport.transparent && fmt === 'png';
-      const scale = board.autoExport.dpi || 2;
-      const sizeMode = board.autoExport.sizeMode || 'fit';
-
-      // Compute content bounds from data model (viewport-independent)
-      const pad = 20;
-      const visibleEls = board.elements.filter(e => e.visible);
-      const minX = Math.min(...visibleEls.map(e => e.x)) - pad;
-      const minY = Math.min(...visibleEls.map(e => e.y)) - pad;
-      const maxX = Math.max(...visibleEls.map(e => e.x + e.width)) + pad;
-      const maxY = Math.max(...visibleEls.map(e => e.y + e.height)) + pad;
-      const contentW = maxX - minX;
-      const contentH = maxY - minY;
-
-      // Determine target size
-      let targetW = contentW;
-      let targetH = contentH;
-      if (sizeMode === 'fixed' && board.autoExport.fixedWidth && board.autoExport.fixedHeight) {
-        targetW = board.autoExport.fixedWidth;
-        targetH = board.autoExport.fixedHeight;
-      } else if (sizeMode === 'canvas') {
-        targetW = board.canvas.width;
-        targetH = board.canvas.height;
-      }
-
-      // Save current viewport transform to restore later
-      const origTransform = viewport.style.transform;
-      const rfRect = rfEl.getBoundingClientRect();
-
-      // Compute zoom to fit content into the RF container
-      const fitZoom = Math.min(rfRect.width / contentW, rfRect.height / contentH, 1);
-      // Set viewport: translate so content starts at (0,0) in screen space, scaled to fit
-      const tx = -minX * fitZoom;
-      const ty = -minY * fitZoom;
-      viewport.style.transform = `translate(${tx}px, ${ty}px) scale(${fitZoom})`;
-      // Force a synchronous layout reflow so html2canvas sees the new viewport
-      void viewport.offsetHeight;
-
-      // Clear selection
-      const prevSelection = useUIStore.getState().selectedIds;
-      useUIStore.getState().setSelectedIds([]);
-
-      // Hide UI overlays
-      const hideSelectors = [
-        '.react-flow__minimap', '.react-flow__panel', '.react-flow__controls',
-        '.react-flow__attribution', '.react-flow__background',
-        '.react-flow__selection', '.react-flow__nodesselection',
-      ];
-      const hidden: HTMLElement[] = [];
-      for (const sel of hideSelectors) {
-        rfEl.querySelectorAll(sel).forEach(node => {
-          const htmlNode = node as HTMLElement;
-          if (htmlNode.style.display !== 'none') {
-            hidden.push(htmlNode);
-            htmlNode.style.display = 'none';
-          }
-        });
-      }
-
-      // Handle transparent background
-      const origBg = rfEl.style.backgroundColor;
-      if (isTransparent) {
-        rfEl.style.backgroundColor = 'transparent';
-        rfEl.classList.remove('bg-canvas-bg');
-      }
-
-      // Collect arrow SVG data BEFORE hiding them for html2canvas.
-      // We render arrows separately via SVG→Image→Canvas to avoid html2canvas clipping.
-      const arrowSvgData: Array<{
-        svgMarkup: string; bboxX: number; bboxY: number; bboxW: number; bboxH: number;
-        elX: number; elY: number;
-      }> = [];
-      rfEl.querySelectorAll('.react-flow__node-arrow').forEach(node => {
-        const wrapper = node as HTMLElement;
-        const svg = wrapper.querySelector('svg.overflow-visible') as SVGSVGElement | null;
-        if (!svg) return;
-        try {
-          const bbox = svg.getBBox();
-          if (!bbox || (bbox.width === 0 && bbox.height === 0)) return;
-          const m = wrapper.style.transform.match(/translate\((.+?)px,\s*(.+?)px\)/);
-          const elX = m ? parseFloat(m[1]) : 0;
-          const elY = m ? parseFloat(m[2]) : 0;
-
-          const pad = 5;
-          const vbX = bbox.x - pad, vbY = bbox.y - pad;
-          const vbW = bbox.width + pad * 2, vbH = bbox.height + pad * 2;
-
-          // Clone SVG and clean it for standalone rendering
-          const clonedSvg = svg.cloneNode(true) as SVGSVGElement;
-          // Remove transparent hit-test paths and any elements with pointer-events handlers
-          clonedSvg.querySelectorAll('[stroke="transparent"]').forEach(el => el.remove());
-          // Remove React event handler attributes
-          const removeAttrs = (el: Element) => {
-            for (const attr of Array.from(el.attributes)) {
-              if (attr.name.startsWith('on') || attr.name === 'class' || attr.name === 'style') {
-                el.removeAttribute(attr.name);
-              }
-            }
-            for (const child of Array.from(el.children)) removeAttrs(child);
-          };
-          removeAttrs(clonedSvg);
-          // Set proper SVG attributes
-          clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-          clonedSvg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
-          clonedSvg.setAttribute('width', String(Math.ceil(vbW)));
-          clonedSvg.setAttribute('height', String(Math.ceil(vbH)));
-          // Copy the opacity from the original SVG
-          const opacity = svg.style.opacity;
-          if (opacity && opacity !== '1') clonedSvg.setAttribute('opacity', opacity);
-
-          const svgMarkup = new XMLSerializer().serializeToString(clonedSvg);
-          arrowSvgData.push({ svgMarkup, bboxX: vbX, bboxY: vbY, bboxW: vbW, bboxH: vbH, elX, elY });
-        } catch (e) { console.warn('Arrow SVG collect failed:', e); }
+      // Use server-side rendering — completely independent of the DOM.
+      // This ensures the correct board's data is rendered even if the user
+      // has switched to a different board in the UI.
+      const res = await fetch('/api/export/render', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          board,
+          image_versions: get().imageVersions,
+        }),
       });
 
-      // Hide arrow nodes during html2canvas capture
-      const arrowNodes: HTMLElement[] = [];
-      rfEl.querySelectorAll('.react-flow__node-arrow').forEach(node => {
-        const wrapper = node as HTMLElement;
-        if (wrapper.style.display !== 'none') {
-          arrowNodes.push(wrapper);
-          wrapper.style.display = 'none';
-        }
-      });
-
-      let dataUrl: string;
-      try {
-        // Step 1: Capture everything except arrows with html2canvas
-        const capturedCanvas = await html2canvas(rfEl, {
-          scale,
-          backgroundColor: isTransparent ? null : (board.canvas.background || '#ffffff'),
-          useCORS: true,
-          allowTaint: true,
-          logging: false,
-          width: rfRect.width,
-          height: rfRect.height,
-        });
-
-        // Step 2: Crop to content area
-        const cropW = Math.round(contentW * fitZoom * scale);
-        const cropH = Math.round(contentH * fitZoom * scale);
-        let resultCanvas: HTMLCanvasElement;
-
-        if (sizeMode === 'fit') {
-          resultCanvas = document.createElement('canvas');
-          resultCanvas.width = cropW;
-          resultCanvas.height = cropH;
-          resultCanvas.getContext('2d')!.drawImage(capturedCanvas, 0, 0, cropW, cropH, 0, 0, cropW, cropH);
-        } else if (sizeMode === 'fixed') {
-          const fw = targetW * scale;
-          const fh = targetH * scale;
-          resultCanvas = document.createElement('canvas');
-          resultCanvas.width = fw;
-          resultCanvas.height = fh;
-          const ctx = resultCanvas.getContext('2d')!;
-          if (!isTransparent) {
-            ctx.fillStyle = board.canvas.background || '#ffffff';
-            ctx.fillRect(0, 0, fw, fh);
-          }
-          const s = Math.min(fw / cropW, fh / cropH);
-          const dx = (fw - cropW * s) / 2;
-          const dy = (fh - cropH * s) / 2;
-          ctx.drawImage(capturedCanvas, 0, 0, cropW, cropH, dx, dy, cropW * s, cropH * s);
-        } else {
-          resultCanvas = capturedCanvas;
-        }
-
-        // Step 3: Composite arrows on top via SVG→Image→Canvas
-        // Arrow wrapper positions (elX, elY) are in canvas coords.
-        // Our viewport was set to: translate(-minX*fitZoom, -minY*fitZoom) scale(fitZoom)
-        // So canvas coord C maps to screen pixel: (C - minX) * fitZoom
-        // In the captured image at DPI scale: (C - minX) * fitZoom * scale
-        // For 'fit' mode, we cropped from (0,0) so this is the final position.
-        const rctx = resultCanvas.getContext('2d')!;
-        for (const arrow of arrowSvgData) {
-          try {
-            const blob = new Blob([arrow.svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-              const i = new window.Image();
-              i.onload = () => resolve(i);
-              i.onerror = (e) => { console.warn('Arrow SVG image load failed', e); reject(e); };
-              i.src = url;
-            });
-
-            // Arrow bbox origin in canvas coords
-            const canvasX = arrow.elX + arrow.bboxX;
-            const canvasY = arrow.elY + arrow.bboxY;
-
-            if (sizeMode === 'fit') {
-              const drawX = (canvasX - minX) * fitZoom * scale;
-              const drawY = (canvasY - minY) * fitZoom * scale;
-              const drawW = arrow.bboxW * fitZoom * scale;
-              const drawH = arrow.bboxH * fitZoom * scale;
-              rctx.drawImage(img, drawX, drawY, drawW, drawH);
-            } else if (sizeMode === 'canvas') {
-              const drawX = canvasX * fitZoom * scale;
-              const drawY = canvasY * fitZoom * scale;
-              const drawW = arrow.bboxW * fitZoom * scale;
-              const drawH = arrow.bboxH * fitZoom * scale;
-              rctx.drawImage(img, drawX, drawY, drawW, drawH);
-            } else {
-              // fixed mode — same as fit but with centering offset
-              const fw = targetW * scale;
-              const fh = targetH * scale;
-              const s = Math.min(fw / cropW, fh / cropH);
-              const offX = (fw - cropW * s) / 2;
-              const offY = (fh - cropH * s) / 2;
-              const drawX = offX + (canvasX - minX) * fitZoom * scale * s;
-              const drawY = offY + (canvasY - minY) * fitZoom * scale * s;
-              const drawW = arrow.bboxW * fitZoom * scale * s;
-              const drawH = arrow.bboxH * fitZoom * scale * s;
-              rctx.drawImage(img, drawX, drawY, drawW, drawH);
-            }
-            URL.revokeObjectURL(url);
-          } catch (e) {
-            console.warn('Failed to render arrow for export:', e);
-          }
-        }
-
-        const mimeType = fmt === 'jpg' ? 'image/jpeg' : 'image/png';
-        dataUrl = resultCanvas.toDataURL(mimeType, 0.95);
-      } finally {
-        // Restore everything
-        viewport.style.transform = origTransform;
-        void viewport.offsetHeight;
-        for (const node of arrowNodes) node.style.display = '';
-        for (const node of hidden) node.style.display = '';
-        if (isTransparent) {
-          rfEl.style.backgroundColor = origBg;
-          rfEl.classList.add('bg-canvas-bg');
-        }
-        useUIStore.getState().setSelectedIds(prevSelection);
-      }
-
-      // Board switched during capture — discard
       if (signal?.aborted || get().board?.id !== exportBoardId) {
         useUIStore.getState().setExportStatus('idle');
         return;
       }
 
-      const res = await fetch('/api/export/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path: board.autoExport.outputPath,
-          data_url: dataUrl,
-        }),
-      });
-
-      if (signal?.aborted || get().board?.id !== exportBoardId) return;
-
       if (!res.ok) {
-        console.error('Auto-export save failed:', await res.text());
+        console.error('Auto-export render failed:', await res.text());
         useUIStore.getState().setExportStatus('error');
       } else {
         useUIStore.getState().setExportStatus('success');
@@ -739,6 +498,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       expandedIds.has(el.id) ? { ...el, locked: !allLocked } : el
     );
     set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory('Toggle lock');
   },
 
   alignElements: (ids: string[], alignment) => {

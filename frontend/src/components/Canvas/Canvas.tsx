@@ -479,6 +479,7 @@ export function Canvas() {
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: { nodes: Node[] }) => {
     const b = boardRef.current;
     if (!b) return;
+
     // If a child of a group is selected, select the group instead
     const ids = selectedNodes.map(n => {
       const el = b.elements.find(e => e.id === n.id);
@@ -487,7 +488,32 @@ export function Canvas() {
       }
       return n.id;
     });
-    // Deduplicate
+
+    // Also include passthrough nodes (arrows, triangles, diamonds) that overlap
+    // the selection bounds. React Flow skips them because selectable=false.
+    if (selectedNodes.length >= 1) {
+      const selMinX = Math.min(...selectedNodes.map(n => n.position.x));
+      const selMinY = Math.min(...selectedNodes.map(n => n.position.y));
+      const selMaxX = Math.max(...selectedNodes.map(n => n.position.x + (n.width || 0)));
+      const selMaxY = Math.max(...selectedNodes.map(n => n.position.y + (n.height || 0)));
+
+      for (const el of b.elements) {
+        if (ids.includes(el.id)) continue;
+        if (!el.visible) continue;
+        const isArrow = el.type === 'arrow';
+        const shape = el.metadata?.shape as string | undefined;
+        const isNonRect = el.type === 'rectangle' && (shape === 'triangle' || shape === 'diamond');
+        if (!isArrow && !isNonRect) continue;
+
+        // Check overlap
+        const eR = el.x + el.width;
+        const eB = el.y + el.height;
+        if (el.x < selMaxX && eR > selMinX && el.y < selMaxY && eB > selMinY) {
+          ids.push(el.metadata?.groupId ? el.metadata.groupId as string : el.id);
+        }
+      }
+    }
+
     setSelectedIds([...new Set(ids)]);
   }, [setSelectedIds]);
 
@@ -745,6 +771,7 @@ export function Canvas() {
         elevateNodesOnSelect={false}
         deleteKeyCode={null}
         multiSelectionKeyCode="Shift"
+        disableKeyboardA11y
         className="bg-canvas-bg"
         proOptions={{ hideAttribution: true }}
       >

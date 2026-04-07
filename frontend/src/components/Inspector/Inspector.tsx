@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useRef } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import type { BoardElement, ElementStyle, CanvasSettings } from '@/types/board';
@@ -294,22 +294,24 @@ function CompactField({ label, children }: { label: string; children: React.Reac
   );
 }
 
-function NumberInput({ value, onChange, min, max, step, className }: {
-  value: number;
+function NumberInput({ value, onChange, min, max, step, className, placeholder }: {
+  value: number | undefined;
   onChange: (v: number) => void;
   min?: number;
   max?: number;
   step?: number;
   className?: string;
+  placeholder?: string;
 }) {
   return (
     <input
       type="number"
-      value={Math.round(value * 100) / 100}
-      onChange={e => onChange(Number(e.target.value))}
+      value={value !== undefined ? Math.round(value * 100) / 100 : ''}
+      onChange={e => { if (e.target.value !== '') onChange(Number(e.target.value)); }}
       min={min}
       max={max}
       step={step || 1}
+      placeholder={placeholder || (value === undefined ? 'mixed' : undefined)}
       className={`w-full min-w-[40px] px-1 py-px text-2xs border border-gray-200 dark:border-border rounded bg-white dark:bg-surface-tertiary dark:text-on-surface-primary focus:border-accent focus:outline-none ${className || ''}`}
     />
   );
@@ -337,13 +339,16 @@ function ColorInput({ value, onChange }: { value: string; onChange: (v: string) 
   const isTransparent = !value || value === 'transparent';
   const [recentColors, setRecentColors] = useState<string[]>(getRecentColors);
 
-  const handleChange = useCallback((color: string) => {
-    onChange(color);
+  // Refresh recent colors from localStorage when any picker commits
+  const refreshRecent = useCallback(() => setRecentColors(getRecentColors()), []);
+
+  // Commit a color to the recent history (only on deliberate actions, not while dragging)
+  const commitColor = useCallback((color: string) => {
     if (color && color !== 'transparent') {
       addRecentColor(color);
-      setRecentColors(getRecentColors());
+      refreshRecent();
     }
-  }, [onChange]);
+  }, [refreshRecent]);
 
   return (
     <div className="space-y-0.5">
@@ -357,12 +362,13 @@ function ColorInput({ value, onChange }: { value: string; onChange: (v: string) 
           <input
             type="color"
             value={value && value !== 'transparent' ? value : '#000000'}
-            onChange={e => handleChange(e.target.value)}
+            onChange={e => onChange(e.target.value)}
+            onBlur={e => commitColor(e.target.value)}
             className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
           />
         </div>
         <button
-          onClick={() => handleChange(isTransparent ? '#ffffff' : 'transparent')}
+          onClick={() => { onChange(isTransparent ? '#ffffff' : 'transparent'); commitColor(isTransparent ? '#ffffff' : ''); }}
           className={`shrink-0 px-1 py-px text-2xs rounded border ${isTransparent ? 'border-accent text-accent bg-accent/5' : 'border-gray-200 dark:border-border text-gray-400 dark:text-on-surface-muted hover:border-gray-300'}`}
           title={isTransparent ? 'Set to white' : 'Set to transparent'}
         >
@@ -371,7 +377,8 @@ function ColorInput({ value, onChange }: { value: string; onChange: (v: string) 
         <input
           type="text"
           value={value || ''}
-          onChange={e => handleChange(e.target.value)}
+          onChange={e => onChange(e.target.value)}
+          onBlur={e => commitColor(e.target.value)}
           className="flex-1 min-w-[30px] px-1 py-px text-2xs border border-gray-200 dark:border-border rounded bg-white dark:bg-surface-tertiary dark:text-on-surface-primary focus:border-accent focus:outline-none font-mono"
           placeholder="transparent"
         />
@@ -381,7 +388,7 @@ function ColorInput({ value, onChange }: { value: string; onChange: (v: string) 
           {recentColors.map((c, i) => (
             <button
               key={`${c}-${i}`}
-              onClick={() => handleChange(c)}
+              onClick={() => { onChange(c); commitColor(c); }}
               className="w-3 h-3 rounded-sm border border-gray-300 dark:border-border hover:scale-125 transition-transform"
               style={{ backgroundColor: c }}
               title={c}
@@ -536,9 +543,16 @@ function ElementInspector({ element }: { element: BoardElement }) {
     updateElement(element.id, changes);
   }, [element.id, updateElement]);
 
+  const historyTimer = useRef<number>();
+  const debouncedHistory = useCallback((desc: string) => {
+    if (historyTimer.current) clearTimeout(historyTimer.current);
+    historyTimer.current = window.setTimeout(() => pushHistory(desc), 500);
+  }, [pushHistory]);
+
   const updateStyle = useCallback((styleChanges: Partial<ElementStyle>) => {
     update({ style: { ...element.style, ...styleChanges } });
-  }, [element.style, update]);
+    debouncedHistory('Style change');
+  }, [element.style, update, debouncedHistory]);
 
   return (
     <>
@@ -628,7 +642,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
           })()}
           <Field label="Z-Index">
             <div className="flex items-center gap-1">
-              <NumberInput value={element.z_index} onChange={v => update({ z_index: v })} />
+              <NumberInput value={element.z_index} onChange={v => { update({ z_index: v }); debouncedHistory('Z-index'); }} />
               <button onClick={() => bringToFront([element.id])} className="px-1.5 py-px text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary shrink-0" title="Bring to front">Top</button>
               <button onClick={() => sendToBack([element.id])} className="px-1.5 py-px text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary shrink-0" title="Send to back">Btm</button>
             </div>
@@ -641,16 +655,34 @@ function ElementInspector({ element }: { element: BoardElement }) {
         <Section title="Position & Size">
           <div className="grid grid-cols-2 gap-1.5">
             <CompactField label="X">
-              <NumberInput value={element.x} onChange={v => { pushHistory('Move'); update({ x: v }); }} />
+              <NumberInput value={element.x} onChange={v => { update({ x: v }); debouncedHistory('Move'); }} />
             </CompactField>
             <CompactField label="Y">
-              <NumberInput value={element.y} onChange={v => { pushHistory('Move'); update({ y: v }); }} />
+              <NumberInput value={element.y} onChange={v => { update({ y: v }); debouncedHistory('Move'); }} />
             </CompactField>
             <CompactField label="W">
-              <NumberInput value={element.width} onChange={v => { pushHistory('Resize'); update({ width: v }); }} min={10} />
+              <NumberInput value={element.width} onChange={v => {
+                const locked = element.type === 'image' || !!element.metadata?.lockAspectRatio;
+                if (locked && element.width > 0) {
+                  const ratio = element.height / element.width;
+                  update({ width: v, height: Math.round(v * ratio) });
+                } else {
+                  update({ width: v });
+                }
+                debouncedHistory('Resize');
+              }} min={10} />
             </CompactField>
             <CompactField label="H">
-              <NumberInput value={element.height} onChange={v => { pushHistory('Resize'); update({ height: v }); }} min={10} />
+              <NumberInput value={element.height} onChange={v => {
+                const locked = element.type === 'image' || !!element.metadata?.lockAspectRatio;
+                if (locked && element.height > 0) {
+                  const ratio = element.width / element.height;
+                  update({ height: v, width: Math.round(v * ratio) });
+                } else {
+                  update({ height: v });
+                }
+                debouncedHistory('Resize');
+              }} min={10} />
             </CompactField>
           </div>
           {element.type !== 'image' && (
@@ -659,7 +691,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
                 <input
                   type="checkbox"
                   checked={!!element.metadata?.lockAspectRatio}
-                  onChange={e => update({ metadata: { ...element.metadata, lockAspectRatio: e.target.checked } })}
+                  onChange={e => { pushHistory('Lock aspect'); update({ metadata: { ...element.metadata, lockAspectRatio: e.target.checked } }); }}
                   className="rounded"
                 />
                 Lock aspect ratio
@@ -668,13 +700,13 @@ function ElementInspector({ element }: { element: BoardElement }) {
           )}
           <Field label="Z-Index">
             <div className="flex items-center gap-1">
-              <NumberInput value={element.z_index} onChange={v => update({ z_index: v })} />
+              <NumberInput value={element.z_index} onChange={v => { update({ z_index: v }); debouncedHistory('Z-index'); }} />
               <button onClick={() => bringToFront([element.id])} className="px-1.5 py-px text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary shrink-0" title="Bring to front">Top</button>
               <button onClick={() => sendToBack([element.id])} className="px-1.5 py-px text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary shrink-0" title="Send to back">Btm</button>
             </div>
           </Field>
           <Field label="Rotation">
-            <NumberInput value={element.rotation} onChange={v => update({ rotation: v })} min={0} max={360} />
+            <NumberInput value={element.rotation} onChange={v => { update({ rotation: v }); debouncedHistory('Rotate'); }} min={0} max={360} />
           </Field>
           <Field label="Opacity">
             <NumberInput value={element.style.opacity ?? 1} onChange={v => updateStyle({ opacity: v })} min={0} max={1} step={0.1} />
@@ -705,7 +737,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
               <input
                 type="checkbox"
                 checked={element.source.autoRefresh}
-                onChange={e => update({ source: { ...element.source!, autoRefresh: e.target.checked } })}
+                onChange={e => { pushHistory('Auto refresh'); update({ source: { ...element.source!, autoRefresh: e.target.checked } }); }}
                 className="rounded"
               />
               Auto-refresh
@@ -886,7 +918,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
           <Field label="Head Size">
             <NumberInput
               value={(element.metadata?.arrowHeadSize as number) ?? 1}
-              onChange={v => update({ metadata: { ...element.metadata, arrowHeadSize: v } })}
+              onChange={v => { update({ metadata: { ...element.metadata, arrowHeadSize: v } }); debouncedHistory('Head size'); }}
               min={0.5}
               max={5}
               step={0.25}
@@ -910,8 +942,19 @@ function ElementInspector({ element }: { element: BoardElement }) {
   );
 }
 
+/** Get a shared value across multiple elements. Returns the value if all match, undefined if mixed. */
+function getShared<T>(elements: BoardElement[], getter: (e: BoardElement) => T): T | undefined {
+  if (elements.length === 0) return undefined;
+  const first = getter(elements[0]);
+  for (let i = 1; i < elements.length; i++) {
+    if (getter(elements[i]) !== first) return undefined;
+  }
+  return first;
+}
+
 function MultiSelectInspector({ ids }: { ids: string[] }) {
   const board = useBoardStore(s => s.board);
+  const pushHistory = useBoardStore(s => s.pushHistory);
   const alignElements = useBoardStore(s => s.alignElements);
   const distributeElements = useBoardStore(s => s.distributeElements);
   const groupElements = useBoardStore(s => s.groupElements);
@@ -922,11 +965,35 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
   const updateElements = useBoardStore(s => s.updateElements);
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
 
+  const elements = ids.map(id => board?.elements.find(e => e.id === id)).filter(Boolean) as BoardElement[];
+
   const groupsInSelection = ids.filter(id =>
     board?.elements.find(e => e.id === id)?.type === 'group'
   );
 
   const allLocked = ids.every(id => board?.elements.find(e => e.id === id)?.locked);
+
+  // Helper to update a style property on all selected elements
+  const updateAllStyle = (styleChanges: Partial<ElementStyle>) => {
+    pushHistory('Style change');
+    updateElements(ids.map(id => {
+      const el = board?.elements.find(e => e.id === id);
+      return { id, changes: { style: { ...el?.style, ...styleChanges } } };
+    }));
+  };
+
+  // Helper to update element-level properties on all selected
+  const updateAll = (changes: Partial<BoardElement>) => {
+    updateElements(ids.map(id => ({ id, changes })));
+  };
+
+  // Determine which element types are in the selection
+  const types = new Set(elements.map(e => e.type));
+  const hasImages = types.has('image');
+  const hasText = types.has('text');
+  const hasRects = types.has('rectangle');
+  const hasArrows = types.has('arrow');
+  const hasPlots = types.has('plot');
 
   const btnClass = "px-2 py-1 text-2xs bg-gray-50 dark:bg-surface-tertiary hover:bg-gray-100 dark:hover:bg-toolbar-hover rounded border border-gray-200 dark:border-border text-gray-600 dark:text-on-surface-secondary disabled:opacity-40 disabled:cursor-not-allowed";
 
@@ -1020,6 +1087,100 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
             </button>
           </div>
         </div>
+      </Section>
+
+      {/* Shared properties */}
+      <Section title="Properties">
+        {/* Opacity — applies to all element types */}
+        <Field label="Opacity">
+          <NumberInput
+            value={getShared(elements, e => e.style.opacity ?? 1)}
+            onChange={v => updateAllStyle({ opacity: v })}
+            min={0} max={1} step={0.1}
+          />
+        </Field>
+
+        <Field label="Rotation">
+          <NumberInput
+            value={getShared(elements, e => e.rotation)}
+            onChange={v => { pushHistory('Rotate'); updateAll({ rotation: v }); }}
+            min={0} max={360}
+          />
+        </Field>
+
+        {/* Border/stroke — for rects, images, plots */}
+        {(hasRects || hasImages || hasPlots) && !hasArrows && (
+          <>
+            <Field label="Border">
+              <ColorInput
+                value={getShared(elements, e => e.style.borderColor || e.style.strokeColor || '') ?? ''}
+                onChange={v => updateAllStyle(hasRects ? { strokeColor: v } : { borderColor: v })}
+              />
+            </Field>
+            <Field label="B. Width">
+              <NumberInput
+                value={getShared(elements, e => e.style.borderWidth ?? e.style.strokeWidth ?? 0) ?? 0}
+                onChange={v => updateAllStyle(hasRects ? { strokeWidth: v } : { borderWidth: v })}
+                min={0} max={20}
+              />
+            </Field>
+            <Field label="Radius">
+              <NumberInput
+                value={getShared(elements, e => e.style.borderRadius ?? 0) ?? 0}
+                onChange={v => updateAllStyle({ borderRadius: v })}
+                min={0} max={100}
+              />
+            </Field>
+          </>
+        )}
+
+        {/* Fill — for rectangles */}
+        {hasRects && !hasImages && !hasArrows && (
+          <Field label="Fill">
+            <ColorInput
+              value={getShared(elements.filter(e => e.type === 'rectangle'), e => e.style.fill || 'transparent') ?? ''}
+              onChange={v => updateAllStyle({ fill: v })}
+            />
+          </Field>
+        )}
+
+        {/* Stroke — for arrows */}
+        {hasArrows && !hasRects && !hasImages && (
+          <>
+            <Field label="Color">
+              <ColorInput
+                value={getShared(elements, e => e.style.strokeColor || '#333333') ?? ''}
+                onChange={v => updateAllStyle({ strokeColor: v })}
+              />
+            </Field>
+            <Field label="Width">
+              <NumberInput
+                value={getShared(elements, e => e.style.strokeWidth ?? 2) ?? 2}
+                onChange={v => updateAllStyle({ strokeWidth: v })}
+                min={1} max={20}
+              />
+            </Field>
+          </>
+        )}
+
+        {/* Text — for text elements */}
+        {hasText && !hasRects && !hasArrows && (
+          <>
+            <Field label="Font Size">
+              <NumberInput
+                value={getShared(elements.filter(e => e.type === 'text'), e => e.style.fontSize ?? 14) ?? 14}
+                onChange={v => updateAllStyle({ fontSize: v })}
+                min={6} max={200}
+              />
+            </Field>
+            <Field label="Color">
+              <ColorInput
+                value={getShared(elements.filter(e => e.type === 'text'), e => e.style.color || '#111111') ?? ''}
+                onChange={v => updateAllStyle({ color: v })}
+              />
+            </Field>
+          </>
+        )}
       </Section>
     </>
   );
