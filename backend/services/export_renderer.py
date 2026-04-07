@@ -126,8 +126,8 @@ def _arrowhead_svg(tip, tangent_dx, tangent_dy, mtype, color, stroke_width, head
         # In the browser, markerUnits="strokeWidth" scales the marker viewport
         # but the visual polygon size is markerWidth in viewport coordinates.
         # The effective pixel size is roughly markerWidth * strokeWidth^0.5.
-        length = 10 * s * max(sw * 0.5, 1)
-        half_w = 4 * s * max(sw * 0.5, 1)
+        length = 10 * s * max(sw * 0.75, 1)
+        half_w = 4 * s * max(sw * 0.75, 1)
         if mtype == 'arrow':
             return (f'<polygon points="0,0 {-length},{-half_w} {-length},{half_w}" '
                     f'fill="{color}" '
