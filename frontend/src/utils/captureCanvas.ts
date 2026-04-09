@@ -232,7 +232,9 @@ function elementToSvg(el: BoardElement, markerDefs: string[], markerIds: Set<str
         bgRect = `<rect x="${el.x}" y="${el.y}" width="${el.width}" height="${el.height}" fill="${bg}"/>`;
       }
 
-      // Use SVG <text> — works when SVG is loaded as an image (foreignObject doesn't)
+      // NOTE: foreignObject would give pixel-perfect text but taints the canvas
+      // (browser security restriction), so we use SVG <text> as fallback.
+      // The primary export path uses captureOffscreen.ts (html2canvas) instead.
       const lines = text.split('\n');
       const tspans = lines.map((line, i) =>
         `<tspan x="${tx}" dy="${i === 0 ? 0 : '1.2em'}">${esc(line)}</tspan>`
@@ -251,7 +253,8 @@ function elementToSvg(el: BoardElement, markerDefs: string[], markerIds: Set<str
     case 'plot': {
       const lastOutput = (meta.lastOutput as string);
       if (!lastOutput) return '';
-      return `<image x="${el.x}" y="${el.y}" width="${el.width}" height="${el.height}" href="data:image/png;base64,${lastOutput}" preserveAspectRatio="none" opacity="${opacity}"/>`;
+      // xMidYMid meet = object-fit:contain (matches PlotNode.tsx)
+      return `<image x="${el.x}" y="${el.y}" width="${el.width}" height="${el.height}" href="data:image/png;base64,${lastOutput}" preserveAspectRatio="xMidYMid meet" opacity="${opacity}"/>`;
     }
 
     default:

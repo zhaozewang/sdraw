@@ -259,10 +259,10 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     try {
       // Off-screen DOM rendering: build a hidden container with DOM elements
       // that mirror the React component visual output, then capture with
-      // html2canvas.  This uses the browser's own CSS engine for layout,
-      // text, and image scaling — pixel-perfect match to the canvas.
-      // The board snapshot is rendered in isolation, so there is no
-      // cross-board contamination regardless of which board is visible.
+      // html2canvas.  The board snapshot is rendered in isolation, so there
+      // is no cross-board contamination regardless of which board is visible.
+      // NOTE: SVG foreignObject would give pixel-perfect text but the canvas
+      // becomes "tainted" (security restriction), so we use html2canvas.
       const { captureOffscreen } = await import('@/utils/captureOffscreen');
 
       if (signal?.aborted || get().board?.id !== exportBoardId) {

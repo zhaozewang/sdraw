@@ -393,31 +393,33 @@ function buildTextElement(el: BoardElement, ox: number, oy: number): HTMLElement
   const text = el.text || '';
   const fontFamily = style.fontFamily || 'Inter, sans-serif';
 
-  // Matches the exact 3-level nesting on canvas:
-  // Level 1: React Flow node wrapper (no padding, no border)
-  // Level 2: TextNode outer div (padding + border, matches w-full h-full)
-  // Level 3: TextNode inner text div (text styles, fills remaining space)
-  // All elements use border-box (global CSS: * { box-sizing: border-box })
+  // Position text at the exact pixel offset it appears on canvas.
+  // On canvas: React Flow node at (el.x, el.y), TextNode outer div adds
+  // padding (default 4px), text content starts inside that padding.
+  // We position a single div at the padded offset, avoiding nested
+  // box-model interactions that html2canvas renders slightly differently.
+  const padding = style.padding ?? 4;
+
   const wrapper = document.createElement('div');
   wrapper.style.cssText = `
     position: absolute;
     left: ${el.x - ox}px; top: ${el.y - oy}px;
     width: ${el.width}px; height: ${el.height}px;
     z-index: ${el.z_index};
-  `;
-
-  const outerDiv = document.createElement('div');
-  outerDiv.style.cssText = `
-    width: 100%; height: 100%;
-    background-color: ${style.background || 'transparent'};
-    padding: ${style.padding ?? 4}px;
-    border: 1px solid transparent;
     opacity: ${style.opacity ?? 1};
   `;
 
+  // Background fills the full element area
+  if (style.background && style.background !== 'transparent') {
+    wrapper.style.backgroundColor = style.background;
+  }
+
+  // Text positioned at padding offset, no nested padding/border
   const textDiv = document.createElement('div');
   textDiv.style.cssText = `
-    width: 100%; height: 100%;
+    position: absolute;
+    left: ${padding}px; top: ${padding}px;
+    right: ${padding}px; bottom: ${padding}px;
     font-size: ${style.fontSize ?? 14}px;
     font-weight: ${style.fontWeight ?? 400};
     font-family: ${fontFamily};
@@ -427,7 +429,7 @@ function buildTextElement(el: BoardElement, ox: number, oy: number): HTMLElement
     font-style: ${style.italic ? 'italic' : 'normal'};
     white-space: pre-wrap;
     word-break: break-word;
-    user-select: none;
+    overflow: visible;
   `;
 
   // Handle math rendering (KaTeX)
@@ -466,8 +468,7 @@ function buildTextElement(el: BoardElement, ox: number, oy: number): HTMLElement
     textDiv.textContent = text;
   }
 
-  outerDiv.appendChild(textDiv);
-  wrapper.appendChild(outerDiv);
+  wrapper.appendChild(textDiv);
   return wrapper;
 }
 
@@ -528,7 +529,8 @@ export async function captureOffscreen(
   document.body.appendChild(container);
 
   try {
-    // Build DOM elements for each board element (arrows handled separately)
+    // Build DOM elements for each board element (text and arrows handled separately)
+    const textElements: BoardElement[] = [];
     for (const el of sorted) {
       let domEl: HTMLElement | null = null;
 
@@ -544,7 +546,21 @@ export async function captureOffscreen(
           domEl = buildRectangleElement(el, ox, oy);
           break;
         case 'text':
-          domEl = buildTextElement(el, ox, oy);
+          // Collect text elements — drawn directly on canvas after html2canvas
+          // to avoid html2canvas's text positioning approximation.
+          textElements.push(el);
+          // Still build background rect if needed
+          if (el.style?.background && el.style.background !== 'transparent') {
+            const bgDiv = document.createElement('div');
+            bgDiv.style.cssText = `
+              position: absolute;
+              left: ${el.x - ox}px; top: ${el.y - oy}px;
+              width: ${el.width}px; height: ${el.height}px;
+              background-color: ${el.style.background};
+              z-index: ${el.z_index};
+            `;
+            container.appendChild(bgDiv);
+          }
           break;
         // arrows handled below as a single SVG overlay
       }
@@ -558,7 +574,9 @@ export async function captureOffscreen(
     const arrowSvg = buildArrowOverlay(arrows, ox, oy, captureW, captureH);
     if (arrowSvg) container.appendChild(arrowSvg);
 
-    // Wait for all images to load
+    // Wait for fonts + images before capturing
+    await document.fonts.ready;
+
     const images = container.querySelectorAll('img');
     if (images.length > 0) {
       await Promise.all(Array.from(images).map(img =>
@@ -571,7 +589,7 @@ export async function captureOffscreen(
       ));
     }
 
-    // Capture with html2canvas
+    // Capture non-text elements with html2canvas
     const { default: html2canvas } = await import('html2canvas');
     const canvas = await html2canvas(container, {
       scale: opts.scale,
@@ -583,7 +601,67 @@ export async function captureOffscreen(
       height: captureH,
     });
 
-    return canvas;
+    // Draw text directly using the native Canvas 2D API on a fresh canvas.
+    // This uses the browser's own font rendering — no html2canvas approximation.
+    // We composite onto a new canvas to avoid any state html2canvas may have set.
+    const finalCanvas = document.createElement('canvas');
+    finalCanvas.width = canvas.width;
+    finalCanvas.height = canvas.height;
+    const ctx = finalCanvas.getContext('2d')!;
+
+    // Draw html2canvas result (shapes, images, arrows) as base layer
+    ctx.drawImage(canvas, 0, 0);
+
+    // Draw text on top
+    const scale = opts.scale;
+    for (const el of textElements) {
+      const style = el.style || {};
+      const text = el.text || '';
+      if (!text) continue;
+
+      const fontSize = style.fontSize ?? 14;
+      const fontWeight = style.fontWeight ?? 400;
+      const fontFamily = style.fontFamily || 'Inter, sans-serif';
+      const color = style.color || '#111111';
+      const textAlign = (style.textAlign || 'left') as CanvasTextAlign;
+      const lineHeight = (style.lineHeight ?? 1.4) * fontSize;
+      const fontStyle = style.italic ? 'italic' : 'normal';
+      const padding = style.padding ?? 4;
+      const opacity = style.opacity ?? 1;
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = opacity;
+      ctx.font = `${fontStyle} ${fontWeight} ${fontSize * scale}px ${fontFamily}`;
+      ctx.fillStyle = color;
+      ctx.textAlign = textAlign;
+      ctx.textBaseline = 'top';
+
+      // Text position within the element (matches TextNode padding + border)
+      const border = 1; // 1px transparent border in TextNode
+      const inset = (padding + border) * scale;
+      const elX = (el.x - ox) * scale;
+      const elY = (el.y - oy) * scale;
+
+      let tx: number;
+      if (textAlign === 'center') {
+        tx = elX + (el.width * scale) / 2;
+      } else if (textAlign === 'right') {
+        tx = elX + el.width * scale - inset;
+      } else {
+        tx = elX + inset;
+      }
+
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const ly = elY + inset + i * lineHeight * scale;
+        ctx.fillText(lines[i], tx, ly);
+      }
+
+      ctx.restore();
+    }
+
+    return finalCanvas;
   } finally {
     document.body.removeChild(container);
   }
