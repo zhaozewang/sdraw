@@ -6,6 +6,7 @@ import {
   DEFAULT_RECT_STYLE,
   DEFAULT_ARROW_STYLE,
   DEFAULT_PLOT_STYLE,
+  DEFAULT_PEN_STYLE,
 } from '@/types/board';
 
 export function generateId(): string {
@@ -21,8 +22,8 @@ export function createElement(
     type,
     x: 100,
     y: 100,
-    width: type === 'arrow' ? 200 : type === 'text' ? 120 : type === 'plot' ? 480 : 300,
-    height: type === 'arrow' ? 0 : type === 'text' ? 40 : type === 'plot' ? 520 : 200,
+    width: type === 'arrow' || type === 'pen' ? 200 : type === 'text' ? 120 : type === 'plot' ? 480 : 300,
+    height: type === 'arrow' ? 0 : type === 'pen' ? 1 : type === 'text' ? 40 : type === 'plot' ? 520 : 200,
     z_index: 0,
     locked: false,
     visible: true,
@@ -80,6 +81,10 @@ export function createElement(
     };
   }
 
+  if (type === 'pen') {
+    defaults.points = [];
+  }
+
   if (type === 'group') {
     defaults.children = [];
   }
@@ -93,6 +98,7 @@ export function getDefaultStyle(type: ElementType): ElementStyle {
     case 'text': return { ...DEFAULT_TEXT_STYLE };
     case 'rectangle': return { ...DEFAULT_RECT_STYLE };
     case 'arrow': return { ...DEFAULT_ARROW_STYLE };
+    case 'pen': return { ...DEFAULT_PEN_STYLE };
     case 'plot': return { ...DEFAULT_PLOT_STYLE };
     case 'group': return { opacity: 1 };
     default: return {};

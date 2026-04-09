@@ -32,10 +32,11 @@ function elementToNode(element: BoardElement): Node {
   // so that clicks in empty space pass through. The SVG content inside
   // handles its own click events to trigger selection.
   const isArrow = element.type === 'arrow';
+  const isPen = element.type === 'pen';
   const shape = element.metadata?.shape as string | undefined;
   const isNonRectShape = element.type === 'rectangle'
     && (shape === 'triangle' || shape === 'diamond');
-  const passThrough = isArrow || isNonRectShape;
+  const passThrough = isArrow || isPen || isNonRectShape;
 
   return {
     id: element.id,
@@ -476,6 +477,26 @@ export function Canvas() {
     }
   }, [onNodesChangeBase, updateElement, pushHistory]);
 
+  // Track the drag-selection rectangle in canvas coordinates so we can
+  // also select passthrough elements (arrows, triangles, diamonds) that
+  // React Flow skips because they have selectable=false.
+  const selectionRectRef = useRef<{ x: number; y: number; x2: number; y2: number } | null>(null);
+  const { screenToFlowPosition } = useReactFlow();
+
+  const onSelectionStart = useCallback((event: React.MouseEvent) => {
+    // Record the starting corner in flow/canvas coordinates
+    const pos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    selectionRectRef.current = { x: pos.x, y: pos.y, x2: pos.x, y2: pos.y };
+  }, [screenToFlowPosition]);
+
+  const onSelectionEnd = useCallback((event: React.MouseEvent) => {
+    if (selectionRectRef.current) {
+      const pos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      selectionRectRef.current.x2 = pos.x;
+      selectionRectRef.current.y2 = pos.y;
+    }
+  }, [screenToFlowPosition]);
+
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: { nodes: Node[] }) => {
     const b = boardRef.current;
     if (!b) return;
@@ -491,26 +512,81 @@ export function Canvas() {
 
     // Also include passthrough nodes (arrows, triangles, diamonds) that overlap
     // the selection bounds. React Flow skips them because selectable=false.
-    if (selectedNodes.length >= 1) {
-      const selMinX = Math.min(...selectedNodes.map(n => n.position.x));
-      const selMinY = Math.min(...selectedNodes.map(n => n.position.y));
-      const selMaxX = Math.max(...selectedNodes.map(n => n.position.x + (n.width || 0)));
-      const selMaxY = Math.max(...selectedNodes.map(n => n.position.y + (n.height || 0)));
+    // Use the tracked drag rectangle when available (covers the full area the
+    // user dragged, not just the bounds of already-selected nodes).
+    const rect = selectionRectRef.current;
+    const hasDragRect = rect && (rect.x !== rect.x2 || rect.y !== rect.y2);
 
-      for (const el of b.elements) {
-        if (ids.includes(el.id)) continue;
-        if (!el.visible) continue;
-        const isArrow = el.type === 'arrow';
-        const shape = el.metadata?.shape as string | undefined;
-        const isNonRect = el.type === 'rectangle' && (shape === 'triangle' || shape === 'diamond');
-        if (!isArrow && !isNonRect) continue;
+    let selMinX: number, selMinY: number, selMaxX: number, selMaxY: number;
+    if (hasDragRect) {
+      selMinX = Math.min(rect.x, rect.x2);
+      selMinY = Math.min(rect.y, rect.y2);
+      selMaxX = Math.max(rect.x, rect.x2);
+      selMaxY = Math.max(rect.y, rect.y2);
+    } else if (selectedNodes.length >= 1) {
+      selMinX = Math.min(...selectedNodes.map(n => n.position.x));
+      selMinY = Math.min(...selectedNodes.map(n => n.position.y));
+      selMaxX = Math.max(...selectedNodes.map(n => n.position.x + (n.width || 0)));
+      selMaxY = Math.max(...selectedNodes.map(n => n.position.y + (n.height || 0)));
+    } else {
+      setSelectedIds([]);
+      return;
+    }
 
-        // Check overlap
-        const eR = el.x + el.width;
-        const eB = el.y + el.height;
-        if (el.x < selMaxX && eR > selMinX && el.y < selMaxY && eB > selMinY) {
-          ids.push(el.metadata?.groupId ? el.metadata.groupId as string : el.id);
+    for (const el of b.elements) {
+      if (ids.includes(el.id)) continue;
+      if (!el.visible) continue;
+      const isArrow = el.type === 'arrow';
+      const isPenEl = el.type === 'pen';
+      const shape = el.metadata?.shape as string | undefined;
+      const isNonRect = el.type === 'rectangle' && (shape === 'triangle' || shape === 'diamond');
+      if (!isArrow && !isPenEl && !isNonRect) continue;
+
+      // For arrows, compute visual bounds including curve control points
+      let eMinX = el.x, eMinY = el.y;
+      let eMaxX = el.x + el.width, eMaxY = el.y + el.height;
+
+      if (isArrow) {
+        const pts = el.points && el.points.length >= 2
+          ? el.points
+          : [{ x: 0, y: el.height / 2 }, { x: el.width, y: el.height / 2 }];
+        const storedCtrl = el.metadata?.controlPoints as Array<{ x: number; y: number }> | undefined;
+        const lineType = (el.metadata?.lineType as string) || 'straight';
+        // Auto-generate control points for curves (same logic as ArrowNode)
+        let ctrl = storedCtrl || [];
+        const hasCurve = lineType === 'quadratic' || lineType === 'cubic' || lineType === 'arc' || lineType === 'smooth';
+        if (ctrl.length === 0 && hasCurve) {
+          const p0 = pts[0], p1 = pts[1];
+          const mx = (p0.x + p1.x) / 2;
+          const my = (p0.y + p1.y) / 2;
+          const dx = p1.x - p0.x;
+          const dy = p1.y - p0.y;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          const offX = (-dy / len) * len * 0.3;
+          const offY = (dx / len) * len * 0.3;
+          if (lineType === 'quadratic' || lineType === 'arc') {
+            ctrl = [{ x: mx + offX, y: my + offY }];
+          } else if (lineType === 'smooth') {
+            ctrl = [{ x: mx + offX * 0.4, y: my + offY * 0.4 }];
+          } else if (lineType === 'cubic') {
+            ctrl = [
+              { x: p0.x + dx * 0.25 + offX, y: p0.y + dy * 0.25 + offY },
+              { x: p0.x + dx * 0.75 - offX, y: p0.y + dy * 0.75 - offY },
+            ];
+          }
         }
+        // Expand bounds to include all points and control points
+        for (const p of [...pts, ...ctrl]) {
+          eMinX = Math.min(eMinX, el.x + p.x);
+          eMinY = Math.min(eMinY, el.y + p.y);
+          eMaxX = Math.max(eMaxX, el.x + p.x);
+          eMaxY = Math.max(eMaxY, el.y + p.y);
+        }
+      }
+
+      // AABB overlap check
+      if (eMinX < selMaxX && eMaxX > selMinX && eMinY < selMaxY && eMaxY > selMinY) {
+        ids.push(el.metadata?.groupId ? el.metadata.groupId as string : el.id);
       }
     }
 
@@ -563,6 +639,7 @@ export function Canvas() {
 
     const isRect = payload.type === 'rectangle';
     const isArrow = payload.type === 'arrow';
+    const isPen = payload.type === 'pen';
 
     // Snap start point for arrows
     let startX = coords.x, startY = coords.y;
@@ -581,7 +658,7 @@ export function Canvas() {
 
     drawStartRef.current = { canvasX: startX, canvasY: startY };
 
-    if (!isArrow) {
+    if (!isArrow && !isPen) {
       setDrawPreview({ x: coords.x, y: coords.y, w: 0, h: 0 });
     }
 
@@ -595,6 +672,9 @@ export function Canvas() {
     if (isArrow) {
       initialOverrides.points = [{ x: 0, y: 0 }, { x: 1, y: 0 }];
     }
+    if (isPen) {
+      initialOverrides.points = [{ x: 0, y: 0 }];
+    }
     const el = useBoardStore.getState().addElement(payload.type, initialOverrides);
     drawElementIdRef.current = el.id;
     useUIStore.getState().setSelectedIds([el.id]);
@@ -606,7 +686,30 @@ export function Canvas() {
       const cur = clientToCanvas(ev.clientX, ev.clientY);
       if (!cur) return;
 
-      if (isArrow) {
+      if (isPen) {
+        // Pen: accumulate points, expand bounding box
+        const sx = start.canvasX, sy = start.canvasY;
+        const newPt = { x: cur.x - sx, y: cur.y - sy };
+        const el = useBoardStore.getState().board?.elements.find(e => e.id === elId);
+        const pts = el?.points ? [...el.points, newPt] : [{ x: 0, y: 0 }, newPt];
+        // Compute bounding box of all points
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const p of pts) {
+          if (p.x < minX) minX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y > maxY) maxY = p.y;
+        }
+        const w = Math.max(maxX - minX, 1);
+        const h = Math.max(maxY - minY, 1);
+        // Shift points so they're relative to the new origin
+        const shiftedPts = pts.map(p => ({ x: p.x - minX, y: p.y - minY }));
+        useBoardStore.getState().updateElement(elId, {
+          x: Math.round(sx + minX), y: Math.round(sy + minY),
+          width: Math.round(w), height: Math.round(h),
+          points: shiftedPts,
+        });
+      } else if (isArrow) {
         // Lines/arrows: start→end point logic with snap-to-shape
         const sx = start.canvasX, sy = start.canvasY;
         let ex = cur.x, ey = cur.y;
@@ -675,6 +778,12 @@ export function Canvas() {
       const MIN_DRAW = 10;
 
       if (dist < MIN_DRAW) {
+        if (isPen) {
+          // Too small for a pen stroke — remove it
+          useBoardStore.getState().removeElements([elId]);
+          useUIStore.getState().setInsertPayload(null);
+          return;
+        }
         // Barely dragged — apply defaults
         if (isArrow) {
           useBoardStore.getState().updateElement(elId, {
@@ -755,6 +864,8 @@ export function Canvas() {
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onSelectionChange={onSelectionChange}
+        onSelectionStart={onSelectionStart}
+        onSelectionEnd={onSelectionEnd}
         onPaneClick={onPaneClick}
         onMoveEnd={onMoveEnd}
         selectionMode={SelectionMode.Partial}

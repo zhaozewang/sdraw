@@ -1,16 +1,12 @@
 /**
  * Off-screen DOM rendering for pixel-perfect board export.
  *
- * Instead of building a separate SVG from the data model (which inevitably
- * drifts from the React component rendering), this module creates a hidden
- * DOM tree that mirrors the visual output of each node component, then
- * captures it with html2canvas.
- *
- * Advantages over the SVG-builder approach:
- * - Uses the browser's own CSS engine for layout, text, and image scaling
- * - Images load via native <img> tags (no fetch + base64 conversion)
- * - Text renders identically (same CSS properties, same font metrics)
- * - Arrow SVG markers render natively (no manual polygon workarounds)
+ * Creates a hidden DOM tree mirroring each node component's visual output.
+ * Non-text elements (images, shapes, plots) are captured with html2canvas.
+ * Text elements are pre-rasterized via SVG foreignObject (data URI), which
+ * uses the browser's own rendering engine — giving pixel-perfect text with
+ * KaTeX math, line breaks, and all CSS properties. The two layers are
+ * composited into the final export.
  *
  * The board snapshot is rendered in an isolated container, so there is no
  * cross-board contamination regardless of which board is currently visible.
@@ -315,6 +311,57 @@ function buildRectangleElement(el: BoardElement, ox: number, oy: number): HTMLEl
  * Uses absolute coordinates so that arrows are not clipped by small bounding
  * boxes (html2canvas ignores overflow:visible on SVG elements).
  */
+function buildPenOverlay(
+  strokes: BoardElement[], ox: number, oy: number, w: number, h: number,
+): SVGSVGElement | null {
+  const valid = strokes.filter(el => (el.points?.length ?? 0) >= 2);
+  if (valid.length === 0) return null;
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.style.cssText = `
+    position: absolute;
+    left: 0; top: 0;
+    width: ${w}px; height: ${h}px;
+    pointer-events: none;
+    z-index: 999998;
+  `;
+
+  for (const el of valid) {
+    const style = el.style || {};
+    const pts = el.points!;
+    const strokeColor = style.strokeColor || '#333333';
+    const strokeWidth = style.strokeWidth ?? 2;
+    const dashArray = style.strokeStyle === 'dashed' ? '8,4' : style.strokeStyle === 'dotted' ? '2,4' : '';
+
+    let d = `M ${el.x - ox + pts[0].x},${el.y - oy + pts[0].y}`;
+    for (let i = 1; i < pts.length; i++) {
+      d += ` L ${el.x - ox + pts[i].x},${el.y - oy + pts[i].y}`;
+    }
+
+    const g = document.createElementNS(SVG_NS, 'g');
+    g.style.opacity = String(style.opacity ?? 1);
+    if (el.rotation) {
+      const cx = el.x - ox + el.width / 2;
+      const cy = el.y - oy + el.height / 2;
+      g.setAttribute('transform', `rotate(${el.rotation} ${cx} ${cy})`);
+    }
+
+    const path = createSvgElement('path', {
+      d,
+      fill: 'none',
+      stroke: strokeColor,
+      'stroke-width': strokeWidth,
+      'stroke-linecap': 'round',
+      'stroke-linejoin': 'round',
+    });
+    if (dashArray) path.setAttribute('stroke-dasharray', dashArray);
+    g.appendChild(path);
+    svg.appendChild(g);
+  }
+
+  return svg;
+}
+
 function buildArrowOverlay(
   arrows: BoardElement[], ox: number, oy: number, w: number, h: number,
 ): SVGSVGElement | null {
@@ -388,38 +435,38 @@ function buildArrowOverlay(
   return svg;
 }
 
-function buildTextElement(el: BoardElement, ox: number, oy: number): HTMLElement {
+function buildTextElement(el: BoardElement, ox: number, oy: number, katexModule?: any): HTMLElement {
   const style = el.style || {};
   const text = el.text || '';
   const fontFamily = style.fontFamily || 'Inter, sans-serif';
-
-  // Position text at the exact pixel offset it appears on canvas.
-  // On canvas: React Flow node at (el.x, el.y), TextNode outer div adds
-  // padding (default 4px), text content starts inside that padding.
-  // We position a single div at the padded offset, avoiding nested
-  // box-model interactions that html2canvas renders slightly differently.
   const padding = style.padding ?? 4;
 
+  // On the live canvas TextNode renders:
+  //   outer div: w-full h-full, background, padding, border: 1px solid transparent
+  //   inner div: w-full h-full, text styles
+  // The 1px transparent border exists only to prevent layout shift on selection
+  // and must NOT be in the export — it causes html2canvas to offset text by ~1px.
+  // Instead we account for the border space by adding 1px to the padding.
   const wrapper = document.createElement('div');
+  wrapper.setAttribute('data-text-element', 'true');
   wrapper.style.cssText = `
     position: absolute;
     left: ${el.x - ox}px; top: ${el.y - oy}px;
     width: ${el.width}px; height: ${el.height}px;
     z-index: ${el.z_index};
+    box-sizing: border-box;
+    background-color: ${(style.background && style.background !== 'transparent') ? style.background : 'transparent'};
+    padding: ${padding + 1}px;
     opacity: ${style.opacity ?? 1};
   `;
-
-  // Background fills the full element area
-  if (style.background && style.background !== 'transparent') {
-    wrapper.style.backgroundColor = style.background;
+  if (el.rotation) {
+    wrapper.style.transform = `rotate(${el.rotation}deg)`;
   }
 
-  // Text positioned at padding offset, no nested padding/border
   const textDiv = document.createElement('div');
   textDiv.style.cssText = `
-    position: absolute;
-    left: ${padding}px; top: ${padding}px;
-    right: ${padding}px; bottom: ${padding}px;
+    width: 100%; height: 100%;
+    box-sizing: border-box;
     font-size: ${style.fontSize ?? 14}px;
     font-weight: ${style.fontWeight ?? 400};
     font-family: ${fontFamily};
@@ -432,35 +479,12 @@ function buildTextElement(el: BoardElement, ox: number, oy: number): HTMLElement
     overflow: visible;
   `;
 
-  // Handle math rendering (KaTeX)
-  if (/\$/.test(text)) {
+  // Render KaTeX math if text contains $ delimiters
+  const hasMath = /\$/.test(text);
+  if (hasMath && katexModule) {
     try {
-      const katex = (window as any).katex;
-      if (katex) {
-        // Parse text with $...$ and $$...$$ delimiters
-        let html = '';
-        const regex = /(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g;
-        let lastIndex = 0;
-        let match;
-        while ((match = regex.exec(text)) !== null) {
-          if (match.index > lastIndex) {
-            html += escapeHtml(text.slice(lastIndex, match.index));
-          }
-          const mathStr = match[0];
-          const isDisplay = mathStr.startsWith('$$');
-          const tex = isDisplay ? mathStr.slice(2, -2) : mathStr.slice(1, -1);
-          html += katex.renderToString(tex, {
-            displayMode: isDisplay, throwOnError: false, output: 'html',
-          });
-          lastIndex = match.index + mathStr.length;
-        }
-        if (lastIndex < text.length) {
-          html += escapeHtml(text.slice(lastIndex));
-        }
-        textDiv.innerHTML = html;
-      } else {
-        textDiv.textContent = text;
-      }
+      const html = renderMathHtml(text, katexModule);
+      textDiv.innerHTML = html;
     } catch {
       textDiv.textContent = text;
     }
@@ -472,8 +496,106 @@ function buildTextElement(el: BoardElement, ox: number, oy: number): HTMLElement
   return wrapper;
 }
 
+function renderMathHtml(text: string, katex: any): string {
+  let html = '';
+  const regex = /(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      html += escapeHtml(text.slice(lastIndex, match.index));
+    }
+    const mathStr = match[0];
+    const isDisplay = mathStr.startsWith('$$');
+    const tex = isDisplay ? mathStr.slice(2, -2) : mathStr.slice(1, -1);
+    html += katex.renderToString(tex, {
+      displayMode: isDisplay, throwOnError: false, output: 'html',
+    });
+    lastIndex = match.index + mathStr.length;
+  }
+  if (lastIndex < text.length) {
+    html += escapeHtml(text.slice(lastIndex));
+  }
+  return html;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// -----------------------------------------------------------------------
+//  foreignObject text rendering helpers
+// -----------------------------------------------------------------------
+
+/** Recursively inline all computed styles from original onto clone. */
+function inlineAllStyles(original: Element, clone: Element) {
+  if (original instanceof HTMLElement && clone instanceof HTMLElement) {
+    const computed = getComputedStyle(original);
+    clone.removeAttribute('class');
+    for (let i = 0; i < computed.length; i++) {
+      const prop = computed[i];
+      clone.style.setProperty(prop, computed.getPropertyValue(prop), computed.getPropertyPriority(prop));
+    }
+  }
+  const origChildren = Array.from(original.children);
+  const cloneChildren = Array.from(clone.children);
+  for (let i = 0; i < Math.min(origChildren.length, cloneChildren.length); i++) {
+    inlineAllStyles(origChildren[i], cloneChildren[i]);
+  }
+}
+
+/** Collect used font families from a set of DOM nodes. */
+function getUsedFontFamilies(nodes: HTMLElement[]): Set<string> {
+  const families = new Set<string>();
+  function walk(el: Element) {
+    if (el instanceof HTMLElement) {
+      const ff = getComputedStyle(el).fontFamily;
+      ff.split(',').forEach(f => families.add(f.trim().replace(/["']/g, '').toLowerCase()));
+    }
+    for (const child of Array.from(el.children)) walk(child);
+  }
+  for (const node of nodes) walk(node);
+  return families;
+}
+
+/** Embed only the @font-face rules whose families are in `usedFamilies`. */
+async function embedUsedFonts(usedFamilies: Set<string>): Promise<string> {
+  const rules: string[] = [];
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      if (!sheet.cssRules) continue;
+      for (const rule of Array.from(sheet.cssRules)) {
+        if (!(rule instanceof CSSFontFaceRule)) continue;
+        const family = rule.style.getPropertyValue('font-family').replace(/["']/g, '').toLowerCase();
+        if (!usedFamilies.has(family)) continue;
+
+        let cssText = rule.cssText;
+        const urlRegex = /url\(["']?([^"')]+)["']?\)/g;
+        let match;
+        const replacements: [string, string][] = [];
+        while ((match = urlRegex.exec(cssText)) !== null) {
+          const url = match[1];
+          if (url.startsWith('data:')) continue; // already embedded
+          try {
+            const resp = await fetch(url);
+            if (!resp.ok) continue;
+            const blob = await resp.blob();
+            const b64 = await new Promise<string>(resolve => {
+              const r = new FileReader();
+              r.onload = () => resolve(r.result as string);
+              r.readAsDataURL(blob);
+            });
+            replacements.push([match[0], `url(${b64})`]);
+          } catch { /* skip */ }
+        }
+        for (const [orig, repl] of replacements) {
+          cssText = cssText.replace(orig, repl);
+        }
+        rules.push(cssText);
+      }
+    } catch { /* cross-origin */ }
+  }
+  return rules.join('\n');
 }
 
 // -----------------------------------------------------------------------
@@ -529,8 +651,27 @@ export async function captureOffscreen(
   document.body.appendChild(container);
 
   try {
-    // Build DOM elements for each board element (text and arrows handled separately)
-    const textElements: BoardElement[] = [];
+    // Import KaTeX for math rendering in text elements
+    let katexModule: any = null;
+    try {
+      katexModule = (await import('katex')).default;
+    } catch { /* KaTeX not available — math will render as raw text */ }
+
+    // Inject ALL page stylesheets into the off-screen container so
+    // html2canvas renders text with the same CSS as the live page
+    // (Tailwind preflight, KaTeX fonts, font-face rules, etc.)
+    for (const sheet of Array.from(document.styleSheets)) {
+      try {
+        if (!sheet.cssRules) continue;
+        const style = document.createElement('style');
+        style.textContent = Array.from(sheet.cssRules).map(r => r.cssText).join('\n');
+        container.appendChild(style);
+      } catch {
+        // Cross-origin stylesheets can't be read — skip
+      }
+    }
+
+    // Build DOM elements for each board element
     for (const el of sorted) {
       let domEl: HTMLElement | null = null;
 
@@ -546,23 +687,9 @@ export async function captureOffscreen(
           domEl = buildRectangleElement(el, ox, oy);
           break;
         case 'text':
-          // Collect text elements — drawn directly on canvas after html2canvas
-          // to avoid html2canvas's text positioning approximation.
-          textElements.push(el);
-          // Still build background rect if needed
-          if (el.style?.background && el.style.background !== 'transparent') {
-            const bgDiv = document.createElement('div');
-            bgDiv.style.cssText = `
-              position: absolute;
-              left: ${el.x - ox}px; top: ${el.y - oy}px;
-              width: ${el.width}px; height: ${el.height}px;
-              background-color: ${el.style.background};
-              z-index: ${el.z_index};
-            `;
-            container.appendChild(bgDiv);
-          }
+          domEl = buildTextElement(el, ox, oy, katexModule);
           break;
-        // arrows handled below as a single SVG overlay
+        // arrows and pen strokes handled below as SVG overlays
       }
 
       if (domEl) container.appendChild(domEl);
@@ -574,6 +701,11 @@ export async function captureOffscreen(
     const arrowSvg = buildArrowOverlay(arrows, ox, oy, captureW, captureH);
     if (arrowSvg) container.appendChild(arrowSvg);
 
+    // Build pen stroke overlay
+    const penStrokes = sorted.filter(e => e.type === 'pen');
+    const penSvg = buildPenOverlay(penStrokes, ox, oy, captureW, captureH);
+    if (penSvg) container.appendChild(penSvg);
+
     // Wait for fonts + images before capturing
     await document.fonts.ready;
 
@@ -584,12 +716,113 @@ export async function captureOffscreen(
           ? Promise.resolve()
           : new Promise<void>(resolve => {
               img.onload = () => resolve();
-              img.onerror = () => resolve(); // Don't block on failed images
+              img.onerror = () => resolve();
             })
       ));
     }
 
-    // Capture non-text elements with html2canvas
+    // Pre-rasterize text elements via manual SVG foreignObject.
+    // The browser's own renderer draws the foreignObject content — giving
+    // pixel-perfect text, KaTeX math subscripts, and line breaks.
+    // We inline all computed styles and embed fonts as base64 so the SVG
+    // is fully self-contained when loaded as a data URI.
+
+    // Step 1: Embed only fonts used by text elements (not ALL page fonts)
+    const allTextNodes = Array.from(container.querySelectorAll<HTMLElement>('[data-text-element]'));
+    const usedFamilies = getUsedFontFamilies(allTextNodes);
+    const fontCSS = await embedUsedFonts(usedFamilies);
+
+    // Step 2: For each text element, render via foreignObject → data URI → img
+    // Rasterize each text element via SVG foreignObject → data URI → Image.
+    // The browser's own renderer draws the foreignObject content, giving
+    // pixel-perfect text with KaTeX math and proper line breaks.
+    const textNodes = Array.from(container.querySelectorAll<HTMLElement>('[data-text-element]'));
+    for (const textNode of textNodes) {
+      const w = textNode.offsetWidth;
+      const h = textNode.offsetHeight;
+      if (w === 0 || h === 0) continue;
+
+      try {
+        // Clone and inline all computed styles
+        const clone = textNode.cloneNode(true) as HTMLElement;
+        inlineAllStyles(textNode, clone);
+        clone.style.position = 'static';
+        clone.style.left = '0';
+        clone.style.top = '0';
+        clone.style.transform = 'none';
+        clone.style.margin = '0';
+        clone.removeAttribute('data-text-element');
+
+        // Add padding around the SVG so KaTeX subscripts/superscripts
+        // that overflow the element bounds don't get clipped
+        const pad = 20;
+        const svgW = w + pad * 2;
+        const svgH = h + pad * 2;
+
+        const wrapper = document.createElement('div');
+        wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+        wrapper.style.cssText = `width:${w}px;height:${h}px;overflow:visible;margin:${pad}px;`;
+        wrapper.appendChild(clone);
+
+        const xhtml = new XMLSerializer().serializeToString(wrapper);
+
+        const svgStr = [
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}">`,
+          `<defs><style type="text/css">${fontCSS.replace(/</g, '&lt;')}</style></defs>`,
+          `<foreignObject x="0" y="0" width="${svgW}" height="${svgH}">`,
+          xhtml,
+          `</foreignObject></svg>`,
+        ].join('');
+
+        // Use data URI (not blob URL) to avoid canvas taint from foreignObject
+        const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+
+        const svgImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = (e) => reject(new Error(`SVG load failed: ${e}`));
+          img.src = dataUri;
+        });
+
+        // Rasterize at requested scale (full padded SVG)
+        const textCanvas = document.createElement('canvas');
+        textCanvas.width = Math.ceil(svgW * opts.scale);
+        textCanvas.height = Math.ceil(svgH * opts.scale);
+        const tctx = textCanvas.getContext('2d')!;
+        tctx.scale(opts.scale, opts.scale);
+        tctx.drawImage(svgImg, 0, 0, svgW, svgH);
+
+        const imgDataUrl = textCanvas.toDataURL('image/png');
+
+        // Position the padded image so the content aligns with original bounds
+        const origLeft = parseFloat(textNode.style.left) || 0;
+        const origTop = parseFloat(textNode.style.top) || 0;
+        const img = document.createElement('img');
+        img.src = imgDataUrl;
+        img.style.position = textNode.style.position;
+        img.style.left = `${origLeft - pad}px`;
+        img.style.top = `${origTop - pad}px`;
+        img.style.width = `${svgW}px`;
+        img.style.height = `${svgH}px`;
+        img.style.zIndex = textNode.style.zIndex;
+        if (textNode.style.transform && textNode.style.transform !== 'none') {
+          img.style.transform = textNode.style.transform;
+        }
+        textNode.replaceWith(img);
+
+        if (!img.complete) {
+          await new Promise<void>(resolve => {
+            img.onload = () => resolve();
+            img.onerror = () => resolve();
+          });
+        }
+      } catch (e) {
+        // On failure, leave text node for html2canvas fallback
+        console.warn('[export] foreignObject text failed:', e);
+      }
+    }
+
+    // Final capture: html2canvas for images/shapes/arrows + pre-rasterized text
     const { default: html2canvas } = await import('html2canvas');
     const canvas = await html2canvas(container, {
       scale: opts.scale,
@@ -601,67 +834,7 @@ export async function captureOffscreen(
       height: captureH,
     });
 
-    // Draw text directly using the native Canvas 2D API on a fresh canvas.
-    // This uses the browser's own font rendering — no html2canvas approximation.
-    // We composite onto a new canvas to avoid any state html2canvas may have set.
-    const finalCanvas = document.createElement('canvas');
-    finalCanvas.width = canvas.width;
-    finalCanvas.height = canvas.height;
-    const ctx = finalCanvas.getContext('2d')!;
-
-    // Draw html2canvas result (shapes, images, arrows) as base layer
-    ctx.drawImage(canvas, 0, 0);
-
-    // Draw text on top
-    const scale = opts.scale;
-    for (const el of textElements) {
-      const style = el.style || {};
-      const text = el.text || '';
-      if (!text) continue;
-
-      const fontSize = style.fontSize ?? 14;
-      const fontWeight = style.fontWeight ?? 400;
-      const fontFamily = style.fontFamily || 'Inter, sans-serif';
-      const color = style.color || '#111111';
-      const textAlign = (style.textAlign || 'left') as CanvasTextAlign;
-      const lineHeight = (style.lineHeight ?? 1.4) * fontSize;
-      const fontStyle = style.italic ? 'italic' : 'normal';
-      const padding = style.padding ?? 4;
-      const opacity = style.opacity ?? 1;
-
-      ctx.save();
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = opacity;
-      ctx.font = `${fontStyle} ${fontWeight} ${fontSize * scale}px ${fontFamily}`;
-      ctx.fillStyle = color;
-      ctx.textAlign = textAlign;
-      ctx.textBaseline = 'top';
-
-      // Text position within the element (matches TextNode padding + border)
-      const border = 1; // 1px transparent border in TextNode
-      const inset = (padding + border) * scale;
-      const elX = (el.x - ox) * scale;
-      const elY = (el.y - oy) * scale;
-
-      let tx: number;
-      if (textAlign === 'center') {
-        tx = elX + (el.width * scale) / 2;
-      } else if (textAlign === 'right') {
-        tx = elX + el.width * scale - inset;
-      } else {
-        tx = elX + inset;
-      }
-
-      const lines = text.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const ly = elY + inset + i * lineHeight * scale;
-        ctx.fillText(lines[i], tx, ly);
-      }
-
-      ctx.restore();
-    }
-
-    return finalCanvas;
+    return canvas;
   } finally {
     document.body.removeChild(container);
   }

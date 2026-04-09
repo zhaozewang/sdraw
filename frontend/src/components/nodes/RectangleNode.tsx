@@ -38,9 +38,10 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const { style, metadata } = element;
   const shape = metadata?.shape as string | undefined;
   const invZoom = 1 / Math.max(zoom, 0.1);
+  const rotation = element.rotation || 0;
 
   return (
-    <>
+    <div style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
       <Resizer
         isVisible={selected && !element.locked}
         nodeId={id}
@@ -149,7 +150,7 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
           )}
         </>
       )}
-    </>
+    </div>
   );
 }
 

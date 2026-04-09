@@ -16,6 +16,7 @@ class ElementType(str, Enum):
     RECTANGLE = "rectangle"
     ARROW = "arrow"
     GROUP = "group"
+    PEN = "pen"
 
 
 class ImageMode(str, Enum):

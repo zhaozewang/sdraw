@@ -141,6 +141,8 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
 
   if (!element || element.type !== 'text') return null;
 
+  const rotation = element.rotation || 0;
+
   const textStyles: React.CSSProperties = {
     fontSize: style!.fontSize ?? 14,
     fontWeight: style!.fontWeight ?? 400,
@@ -154,7 +156,7 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
   };
 
   return (
-    <>
+    <div style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
       <Resizer
         isVisible={(selected || isSelectedInStore) && !element.locked}
         nodeId={id}
@@ -203,7 +205,7 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 

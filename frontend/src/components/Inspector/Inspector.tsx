@@ -706,7 +706,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
             </div>
           </Field>
           <Field label="Rotation">
-            <NumberInput value={element.rotation} onChange={v => { update({ rotation: v }); debouncedHistory('Rotate'); }} min={0} max={360} />
+            <NumberInput value={element.rotation} onChange={v => { update({ rotation: v }); debouncedHistory('Rotate'); }} min={-180} max={180} />
           </Field>
           <Field label="Opacity">
             <NumberInput value={element.style.opacity ?? 1} onChange={v => updateStyle({ opacity: v })} min={0} max={1} step={0.1} />
@@ -1104,7 +1104,7 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
           <NumberInput
             value={getShared(elements, e => e.rotation)}
             onChange={v => { pushHistory('Rotate'); updateAll({ rotation: v }); }}
-            min={0} max={360}
+            min={-180} max={180}
           />
         </Field>
 

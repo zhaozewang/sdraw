@@ -3,7 +3,7 @@ import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import type { DirEntry, FileInfo } from '@/types/board';
-import { Type, Square, ArrowRight, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw, Circle, Triangle, Diamond, Minus, Image as ImageIcon, FolderPlus, Spline, CornerDownRight, Code2 } from 'lucide-react';
+import { Type, Square, ArrowRight, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw, Circle, Triangle, Diamond, Minus, Image as ImageIcon, FolderPlus, Spline, CornerDownRight, Code2, Pencil } from 'lucide-react';
 import { getFileName, getLastDirectory, saveLastDirectory, fetchUserHome } from '@/utils/helpers';
 
 function InsertButton({ icon: Icon, label, onClick }: { icon: any; label: string; onClick: () => void }) {
@@ -418,7 +418,7 @@ export function InsertPanel() {
   };
 
   /** Enter drag-to-draw mode for shapes */
-  const startDraw = (type: 'rectangle' | 'arrow', overrides: any = {}) => {
+  const startDraw = (type: 'rectangle' | 'arrow' | 'pen', overrides: any = {}) => {
     setInsertPayload({ type, overrides });
   };
 
@@ -457,6 +457,7 @@ export function InsertPanel() {
           <InsertButton icon={Spline} label="Smooth" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'smooth' } })} />
           <InsertButton icon={Spline} label="Curve" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'quadratic' } })} />
           <InsertButton icon={CornerDownRight} label="Step" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'step' } })} />
+          <InsertButton icon={Pencil} label="Pen" onClick={() => startDraw('pen', {})} />
         </InsertGroup>
 
         <div className="py-0.5">

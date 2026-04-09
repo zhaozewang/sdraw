@@ -58,8 +58,10 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
 
   const { source, style } = element;
 
+  const rotation = element.rotation || 0;
+
   return (
-    <>
+    <div style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
       <Resizer
         isVisible={selected && !element.locked}
         nodeId={id}
@@ -136,7 +138,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 

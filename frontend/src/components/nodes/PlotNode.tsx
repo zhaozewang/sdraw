@@ -40,9 +40,10 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
   const { style, metadata } = element;
   const lastOutput = metadata?.lastOutput as string | null;
   const lastError = metadata?.lastError as string | null;
+  const rotation = element.rotation || 0;
 
   return (
-    <>
+    <div style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
       <Resizer
         isVisible={selected && !element.locked}
         nodeId={id}
@@ -98,7 +99,7 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 

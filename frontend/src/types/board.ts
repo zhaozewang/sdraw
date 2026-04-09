@@ -1,4 +1,4 @@
-export type ElementType = 'image' | 'text' | 'rectangle' | 'arrow' | 'group' | 'plot';
+export type ElementType = 'image' | 'text' | 'rectangle' | 'arrow' | 'group' | 'plot' | 'pen';
 export type FitMode = 'contain' | 'cover' | 'stretch' | 'center';
 export type ImageMode = 'exact' | 'relative' | 'glob';
 export type StrokeStyle = 'solid' | 'dashed' | 'dotted';
@@ -197,5 +197,12 @@ export const DEFAULT_PLOT_STYLE: ElementStyle = {
   borderRadius: 0,
   shadow: false,
   background: 'transparent',
+  opacity: 1,
+};
+
+export const DEFAULT_PEN_STYLE: ElementStyle = {
+  strokeColor: '#333333',
+  strokeWidth: 2,
+  strokeStyle: 'solid',
   opacity: 1,
 };

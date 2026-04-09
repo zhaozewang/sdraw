@@ -13,7 +13,6 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAutoSave } from '@/hooks/useAutoSave';
 import { api } from '@/api/client';
-import html2canvas from 'html2canvas';
 import type { DirEntry } from '@/types/board';
 import { getLastDirectory, saveLastDirectory, fetchUserHome, getLastDirectoryOrHome } from '@/utils/helpers';
 import {
