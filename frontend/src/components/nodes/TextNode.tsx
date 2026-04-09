@@ -11,8 +11,9 @@ interface TextNodeData {
   [key: string]: unknown;
 }
 
-/** Parse text with $...$ (inline) and $$...$$ (display) math delimiters. */
-function renderMathText(text: string, color: string): React.ReactNode[] {
+/** Parse text with $...$ (inline) and $$...$$ (display) math delimiters.
+ *  fontSize is passed so we can force KaTeX to render at matching size. */
+function renderMathText(text: string, color: string, fontSize: number): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
   const regex = /(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g;
   let lastIndex = 0;
@@ -31,11 +32,16 @@ function renderMathText(text: string, color: string): React.ReactNode[] {
         throwOnError: false,
         output: 'html',
       });
+      // Force the KaTeX container to render at the parent font size.
+      // KaTeX's CSS `font: normal 1.21em ...` resets font-size; we
+      // override it with an explicit px value via inline style on the
+      // .katex element wrapper.
       parts.push(
         <span
           key={match.index}
           dangerouslySetInnerHTML={{ __html: html }}
-          style={{ color, display: 'inline-block', willChange: 'transform' }}
+          className="katex-override"
+          style={{ color, display: 'inline-block', willChange: 'transform', fontSize: `${fontSize}px` }}
         />
       );
     } catch {
@@ -136,8 +142,8 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
 
   const renderedContent = useMemo(() => {
     if (!text || !hasMath) return null;
-    return renderMathText(text, style?.color || '#111111');
-  }, [text, hasMath, style?.color]);
+    return renderMathText(text, style?.color || '#111111', style?.fontSize ?? 14);
+  }, [text, hasMath, style?.color, style?.fontSize]);
 
   if (!element || element.type !== 'text') return null;
 

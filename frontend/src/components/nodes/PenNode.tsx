@@ -15,6 +15,7 @@ function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const pushHistory = useBoardStore(s => s.pushHistory);
   const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
   const selected = rfSelected || isSelectedInStore;
+  const zoom = useUIStore(s => s.zoom);
 
   if (!element || element.type !== 'pen') return null;
 
@@ -48,7 +49,7 @@ function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
             d={pathD}
             fill="none"
             stroke="transparent"
-            strokeWidth={Math.max(14, strokeWidth * 4)}
+            strokeWidth={Math.max(14, strokeWidth * 4) / Math.max(zoom, 0.1)}
             strokeLinecap="round"
             strokeLinejoin="round"
             style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
@@ -86,13 +87,13 @@ function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
             }}
           />
         )}
-        {/* Selection highlight — thicker semi-transparent stroke behind the main path */}
+        {/* Selection highlight — scale-invariant glow behind the main path */}
         {selected && pathD && (
           <path
             d={pathD}
             fill="none"
             stroke="#3b82f6"
-            strokeWidth={strokeWidth + 4}
+            strokeWidth={(strokeWidth + 4) / Math.max(zoom, 0.1)}
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeOpacity={0.4}

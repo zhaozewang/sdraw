@@ -133,9 +133,10 @@ body {
   border: 1px solid rgba(59, 130, 246, 0.4) !important;
 }
 
-/* KaTeX zoom stability */
-.katex {
-  font-size: 1em !important;
+/* KaTeX_Main glyphs are visually ~30% smaller than Inter at the same
+   px size. Scale up to compensate so inline math matches surrounding text. */
+.katex-override .katex {
+  font-size: 1.35em !important;
 }
 
 .katex-html {

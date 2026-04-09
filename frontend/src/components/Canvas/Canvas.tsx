@@ -490,12 +490,46 @@ export function Canvas() {
   }, [screenToFlowPosition]);
 
   const onSelectionEnd = useCallback((event: React.MouseEvent) => {
-    if (selectionRectRef.current) {
-      const pos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      selectionRectRef.current.x2 = pos.x;
-      selectionRectRef.current.y2 = pos.y;
+    if (!selectionRectRef.current) return;
+    const pos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    selectionRectRef.current.x2 = pos.x;
+    selectionRectRef.current.y2 = pos.y;
+
+    // When the selection rectangle covers ONLY passthrough elements (pens,
+    // arrows, unfilled shapes), ReactFlow never fires onSelectionChange
+    // because no selectable nodes changed state. Run the passthrough check
+    // here so those elements still get selected.
+    const rect = selectionRectRef.current;
+    const b = boardRef.current;
+    if (!b) return;
+    const currentSel = useUIStore.getState().selectedIds;
+    if (currentSel.length > 0) return; // onSelectionChange already handled it
+
+    const selMinX = Math.min(rect.x, rect.x2);
+    const selMinY = Math.min(rect.y, rect.y2);
+    const selMaxX = Math.max(rect.x, rect.x2);
+    const selMaxY = Math.max(rect.y, rect.y2);
+    if (Math.abs(selMaxX - selMinX) < 2 && Math.abs(selMaxY - selMinY) < 2) return;
+
+    const ids: string[] = [];
+    for (const el of b.elements) {
+      if (!el.visible) continue;
+      const isArrow = el.type === 'arrow';
+      const isPenEl = el.type === 'pen';
+      const shape = el.metadata?.shape as string | undefined;
+      const isNonRect = el.type === 'rectangle' && (shape === 'triangle' || shape === 'diamond');
+      if (!isArrow && !isPenEl && !isNonRect) continue;
+
+      const eR = el.x + el.width;
+      const eB = el.y + el.height;
+      if (el.x < selMaxX && eR > selMinX && el.y < selMaxY && eB > selMinY) {
+        ids.push(el.metadata?.groupId ? el.metadata.groupId as string : el.id);
+      }
     }
-  }, [screenToFlowPosition]);
+    if (ids.length > 0) {
+      setSelectedIds([...new Set(ids)]);
+    }
+  }, [screenToFlowPosition, setSelectedIds]);
 
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: { nodes: Node[] }) => {
     const b = boardRef.current;
