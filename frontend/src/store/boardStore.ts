@@ -257,11 +257,13 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     useUIStore.getState().setExportStatus('exporting');
 
     try {
-      // Use browser-side canvas capture — this rasterises the actual DOM
-      // so the export is pixel-perfect relative to what the user sees.
-      // This avoids the impossible task of re-implementing every rendering
-      // detail in a separate Python renderer.
-      const { captureCanvasForExport } = await import('@/utils/captureCanvas');
+      // Off-screen DOM rendering: build a hidden container with DOM elements
+      // that mirror the React component visual output, then capture with
+      // html2canvas.  This uses the browser's own CSS engine for layout,
+      // text, and image scaling — pixel-perfect match to the canvas.
+      // The board snapshot is rendered in isolation, so there is no
+      // cross-board contamination regardless of which board is visible.
+      const { captureOffscreen } = await import('@/utils/captureOffscreen');
 
       if (signal?.aborted || get().board?.id !== exportBoardId) {
         useUIStore.getState().setExportStatus('idle');
@@ -269,13 +271,13 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       }
 
       const ae = board.autoExport;
-      const canvas = await captureCanvasForExport({
+      const canvas = await captureOffscreen(board, {
         scale: ae.dpi || 2,
         transparent: ae.transparent && ae.format === 'png',
         mode: ae.sizeMode || 'fit',
         fixedW: ae.fixedWidth,
         fixedH: ae.fixedHeight,
-      }, board);
+      });
 
       if (signal?.aborted || get().board?.id !== exportBoardId) {
         useUIStore.getState().setExportStatus('idle');
@@ -284,7 +286,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
       const mimeType = ae.format === 'jpg' ? 'image/jpeg' : 'image/png';
       const dataUrl = canvas.toDataURL(mimeType, 0.95);
-
       const res = await fetch('/api/export/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

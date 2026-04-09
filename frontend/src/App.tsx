@@ -872,8 +872,11 @@ function ExportDialog() {
     scale: number; transparent: boolean; mode: 'fit' | 'fixed' | 'canvas';
     fixedW?: number; fixedH?: number;
   }) => {
-    const { captureCanvasForExport } = await import('@/utils/captureCanvas');
-    return captureCanvasForExport(opts);
+    const { captureOffscreen } = await import('@/utils/captureOffscreen');
+    const { useBoardStore } = await import('@/store/boardStore');
+    const board = useBoardStore.getState().board;
+    if (!board) throw new Error('No board loaded');
+    return captureOffscreen(board, opts);
   };
 
   const handleDownload = async () => {

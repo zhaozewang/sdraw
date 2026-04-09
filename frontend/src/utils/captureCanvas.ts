@@ -310,7 +310,7 @@ async function boardToSvg(board: Board, opts: CaptureOptions): Promise<string> {
     const placeholder = `__IMAGE_${el.id}__`;
     if (!body.includes(placeholder)) continue;
     try {
-      const res = await fetch(`/api/files/image?path=${encodeURIComponent(el.source!.path)}`);
+      const res = await fetch(`/api/image?path=${encodeURIComponent(el.source!.path)}`);
       if (res.ok) {
         const blob = await res.blob();
         const dataUrl = await new Promise<string>((resolve) => {
