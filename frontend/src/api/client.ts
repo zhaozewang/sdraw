@@ -51,6 +51,12 @@ export const api = {
       body: JSON.stringify({ path }),
     }),
 
+  boardSummary: (path: string) =>
+    request<WorkspaceBoardSummary>('/boards/summary', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+
   deleteBoardFile: (path: string) =>
     request<{ deleted: string }>('/boards/delete-file', {
       method: 'POST',

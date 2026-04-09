@@ -654,12 +654,34 @@ function WelcomeScreen() {
     }
   }, [deleteTarget]);
 
+  // Load summaries (including thumbnails) for recent boards opened from external files
+  const [recentSummaries, setRecentSummaries] = useState<Map<string, WorkspaceBoardSummary>>(new Map());
+  useEffect(() => {
+    const wsPathSet = new Set(workspaceBoards.map(b => b.path));
+    const externalRecent = recentBoards.filter(b => !wsPathSet.has(b.path));
+    if (externalRecent.length === 0) return;
+
+    const loadSummaries = async () => {
+      const entries: [string, WorkspaceBoardSummary][] = [];
+      for (const b of externalRecent) {
+        try {
+          const summary = await api.boardSummary(b.path);
+          entries.push([b.path, summary]);
+        } catch {
+          // File may have been deleted — skip
+        }
+      }
+      setRecentSummaries(new Map(entries));
+    };
+    loadSummaries();
+  }, [recentBoards, workspaceBoards]);
+
   // Merge all boards into a single list: workspace boards first, then recent-only boards as cards
   const allBoardCards = useMemo(() => {
     const wsPathSet = new Set(workspaceBoards.map(b => b.path));
     const recentOnly = recentBoards
       .filter(b => !wsPathSet.has(b.path))
-      .map(b => ({
+      .map(b => recentSummaries.get(b.path) || ({
         id: b.path,
         name: b.name,
         updated_at: b.openedAt,
@@ -669,7 +691,7 @@ function WelcomeScreen() {
         canvas: {},
       } as WorkspaceBoardSummary));
     return [...workspaceBoards, ...recentOnly];
-  }, [workspaceBoards, recentBoards]);
+  }, [workspaceBoards, recentBoards, recentSummaries]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-gradient-to-br from-gray-50 to-gray-100 dark:from-[#1e1f22] dark:to-[#2b2d31] overflow-auto">

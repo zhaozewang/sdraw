@@ -99,6 +99,34 @@ async def open_board_from_file(body: OpenBoardFromFileRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+class SummaryRequest(BaseModel):
+    path: str
+
+
+@router.post("/summary")
+async def board_summary(body: SummaryRequest):
+    """Return lightweight summary (thumbnail, element count) for a .sdraw file."""
+    p = Path(body.path).resolve()
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Board file not found")
+    try:
+        data = json.loads(p.read_text())
+        elements = data.get("elements", [])
+        image_count = sum(1 for e in elements if e.get("type") == "image")
+        return {
+            "id": data.get("id", p.stem),
+            "name": data.get("name", "Untitled"),
+            "updated_at": data.get("updated_at", ""),
+            "path": str(p),
+            "element_count": len(elements),
+            "image_count": image_count,
+            "canvas": data.get("canvas", {}),
+            "thumbnail": data.get("thumbnail"),
+        }
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 class DeleteBoardFileRequest(BaseModel):
     path: str
 

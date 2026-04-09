@@ -11,35 +11,17 @@ import { toRelativeAnchor, fromRelativeAnchor } from '@/utils/snapToShape';
  * get deduplicated during DOM cloning, causing identical renders.
  * html2canvas rasterizes directly from the live DOM, avoiding this.
  */
-async function captureCanvas(bg: string, scale = 0.3): Promise<string | undefined> {
-  const { default: html2canvas } = await import('html2canvas');
-  const el = document.querySelector('.react-flow') as HTMLElement;
-  if (!el) return undefined;
-
-  // Hide overlays
-  const selectors = ['.react-flow__minimap', '.react-flow__panel', '.react-flow__controls', '.react-flow__attribution'];
-  const hidden: HTMLElement[] = [];
-  for (const sel of selectors) {
-    el.querySelectorAll(sel).forEach(node => {
-      const htmlNode = node as HTMLElement;
-      if (htmlNode.style.display !== 'none') {
-        hidden.push(htmlNode);
-        htmlNode.style.display = 'none';
-      }
-    });
-  }
-
+async function captureThumbnail(board: Board): Promise<string | undefined> {
+  const { captureOffscreen } = await import('@/utils/captureOffscreen');
   try {
-    const canvas = await html2canvas(el, {
-      scale,
-      backgroundColor: bg,
-      useCORS: true,
-      allowTaint: true,
-      logging: false,
+    const canvas = await captureOffscreen(board, {
+      scale: 0.5, // low res for thumbnail
+      transparent: false,
+      mode: 'fit', // shows all elements regardless of current viewport
     });
     return canvas.toDataURL('image/png');
-  } finally {
-    for (const node of hidden) node.style.display = '';
+  } catch {
+    return undefined;
   }
 }
 
@@ -168,7 +150,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     // Capture thumbnail from the canvas
     let thumbnail: string | undefined;
     try {
-      thumbnail = await captureCanvas(board.canvas.background || '#ffffff', 0.3);
+      thumbnail = await captureThumbnail(board);
     } catch {
       // Thumbnail capture is best-effort
     }
@@ -212,7 +194,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const { board, boardFilePath, isDirty } = get();
     if (board && boardFilePath && isDirty) {
       try {
-        const thumbnail = await captureCanvas(board.canvas.background || '#ffffff', 0.3);
+        const thumbnail = await captureThumbnail(board);
         if (thumbnail) {
           const updated = { ...board, updated_at: new Date().toISOString(), thumbnail };
           await api.saveBoardToFile(updated, boardFilePath);
