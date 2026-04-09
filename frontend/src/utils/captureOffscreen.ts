@@ -612,7 +612,7 @@ export async function captureOffscreen(
   const sorted = [...elements].sort((a, b) => (a.z_index || 0) - (b.z_index || 0));
   const renderable = sorted.filter(e => e.type !== 'group');
 
-  // Compute content bounds
+  // Compute content bounds from element positions
   const pad = 20;
   const minX = Math.min(...renderable.map(e => e.x)) - pad;
   const minY = Math.min(...renderable.map(e => e.y)) - pad;

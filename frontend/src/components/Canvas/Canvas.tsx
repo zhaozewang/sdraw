@@ -786,10 +786,15 @@ export function Canvas() {
         }
       }
 
-      // Finalize pen stroke: compute tight bounding box and normalize points
+      // Finalize pen stroke: remove if too few points, else compute tight bbox
       if (isPen) {
         const el = useBoardStore.getState().board?.elements.find(e => e.id === elId);
-        if (el?.points && el.points.length >= 2) {
+        if (!el?.points || el.points.length < 2) {
+          useBoardStore.getState().removeElements([elId]);
+          useUIStore.getState().setInsertPayload(null);
+          return;
+        }
+        if (el.points.length >= 2) {
           const pts = el.points;
           let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
           for (const p of pts) {
