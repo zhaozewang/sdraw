@@ -687,28 +687,15 @@ export function Canvas() {
       if (!cur) return;
 
       if (isPen) {
-        // Pen: accumulate points, expand bounding box
+        // Pen: just accumulate points relative to start position.
+        // Don't recalculate bounding box during drawing — that shifts the
+        // element origin and makes the stroke jump around. The bbox is
+        // computed once on pointer up.
         const sx = start.canvasX, sy = start.canvasY;
         const newPt = { x: cur.x - sx, y: cur.y - sy };
         const el = useBoardStore.getState().board?.elements.find(e => e.id === elId);
         const pts = el?.points ? [...el.points, newPt] : [{ x: 0, y: 0 }, newPt];
-        // Compute bounding box of all points
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const p of pts) {
-          if (p.x < minX) minX = p.x;
-          if (p.y < minY) minY = p.y;
-          if (p.x > maxX) maxX = p.x;
-          if (p.y > maxY) maxY = p.y;
-        }
-        const w = Math.max(maxX - minX, 1);
-        const h = Math.max(maxY - minY, 1);
-        // Shift points so they're relative to the new origin
-        const shiftedPts = pts.map(p => ({ x: p.x - minX, y: p.y - minY }));
-        useBoardStore.getState().updateElement(elId, {
-          x: Math.round(sx + minX), y: Math.round(sy + minY),
-          width: Math.round(w), height: Math.round(h),
-          points: shiftedPts,
-        });
+        useBoardStore.getState().updateElement(elId, { points: pts });
       } else if (isArrow) {
         // Lines/arrows: start→end point logic with snap-to-shape
         const sx = start.canvasX, sy = start.canvasY;
@@ -795,6 +782,31 @@ export function Canvas() {
           useBoardStore.getState().updateElement(elId, {
             x: Math.round(start.canvasX), y: Math.round(start.canvasY),
             width: 150, height: 150,
+          });
+        }
+      }
+
+      // Finalize pen stroke: compute tight bounding box and normalize points
+      if (isPen) {
+        const el = useBoardStore.getState().board?.elements.find(e => e.id === elId);
+        if (el?.points && el.points.length >= 2) {
+          const pts = el.points;
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const p of pts) {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+          }
+          const w = Math.max(maxX - minX, 1);
+          const h = Math.max(maxY - minY, 1);
+          const shifted = pts.map(p => ({ x: p.x - minX, y: p.y - minY }));
+          useBoardStore.getState().updateElement(elId, {
+            x: Math.round(el.x + minX),
+            y: Math.round(el.y + minY),
+            width: Math.round(w),
+            height: Math.round(h),
+            points: shifted,
           });
         }
       }

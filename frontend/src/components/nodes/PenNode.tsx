@@ -1,8 +1,7 @@
-import { memo, useCallback } from 'react';
+import { memo } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
-import { Resizer } from './Resizer';
 
 interface PenNodeData {
   elementId: string;
@@ -16,28 +15,6 @@ function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const pushHistory = useBoardStore(s => s.pushHistory);
   const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
   const selected = rfSelected || isSelectedInStore;
-
-  const onResizeAbsolute = useCallback((x: number, y: number, w: number, h: number) => {
-    if (!element) return;
-    const oldW = element.width || 1;
-    const oldH = element.height || 1;
-    const scaleX = w / oldW;
-    const scaleY = h / oldH;
-    const scaledPoints = (element.points || []).map(p => ({
-      x: p.x * scaleX,
-      y: p.y * scaleY,
-    }));
-    updateElement(elementId, { x, y, width: w, height: h, points: scaledPoints });
-  }, [elementId, element, updateElement]);
-
-  const onResizeEnd = useCallback(() => {
-    pushHistory('Resize');
-  }, [pushHistory]);
-
-  const getRect = useCallback(() => {
-    const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
-    return el ? { x: el.x, y: el.y, width: el.width, height: el.height } : { x: 0, y: 0, width: 100, height: 100 };
-  }, [elementId]);
 
   if (!element || element.type !== 'pen') return null;
 
@@ -60,20 +37,12 @@ function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
 
   return (
     <div style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
-      <Resizer
-        isVisible={selected && !element.locked}
-        nodeId={id}
-        minWidth={10}
-        minHeight={10}
-        onResizeAbsolute={onResizeAbsolute}
-        onResizeEnd={onResizeEnd}
-        getRect={getRect}
-      />
+      <div className="absolute inset-0 pointer-events-none" style={{ minHeight: 16, minWidth: 16 }} />
       <svg
         className="overflow-visible absolute inset-0"
         style={{ opacity: style.opacity ?? 1, width: '100%', height: '100%', pointerEvents: 'none' }}
       >
-        {/* Invisible thick path for easier selection */}
+        {/* Invisible thick path for easier selection + drag */}
         {pathD && (
           <path
             d={pathD}
@@ -92,7 +61,41 @@ function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
               } else if (!sel.includes(elementId)) {
                 useUIStore.getState().setSelectedIds([elementId]);
               }
+              // Drag support
+              if (element.locked) return;
+              const startX = e.clientX, startY = e.clientY;
+              const origPos = { x: element.x, y: element.y };
+              const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
+              const scale = viewport
+                ? parseFloat(viewport.style.transform.match(/scale\((.+?)\)/)?.[1] || '1')
+                : 1;
+              let moved = false;
+              const onMove = (ev: PointerEvent) => {
+                moved = true;
+                const dx = (ev.clientX - startX) / scale;
+                const dy = (ev.clientY - startY) / scale;
+                updateElement(elementId, { x: origPos.x + dx, y: origPos.y + dy });
+              };
+              const onUp = () => {
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                if (moved) pushHistory('Move');
+              };
+              document.addEventListener('pointermove', onMove);
+              document.addEventListener('pointerup', onUp);
             }}
+          />
+        )}
+        {/* Selection highlight — thicker semi-transparent stroke behind the main path */}
+        {selected && pathD && (
+          <path
+            d={pathD}
+            fill="none"
+            stroke="#3b82f6"
+            strokeWidth={strokeWidth + 4}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeOpacity={0.4}
           />
         )}
         {pathD && (
