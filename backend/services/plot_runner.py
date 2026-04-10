@@ -78,13 +78,20 @@ def main():
         pass
 
     # Try plotly if matplotlib didn't produce output
+    plotly_json = None
     if not image_data:
         try:
             import plotly.graph_objects as go
             for val in ns.values():
                 if isinstance(val, go.Figure):
-                    img_bytes = val.to_image(format="png", scale=2)
-                    image_data = base64.b64encode(img_bytes).decode("ascii")
+                    # Capture the figure spec for interactive rendering
+                    plotly_json = val.to_json()
+                    # Also render a static fallback
+                    try:
+                        img_bytes = val.to_image(format="png", scale=2)
+                        image_data = base64.b64encode(img_bytes).decode("ascii")
+                    except Exception:
+                        pass  # kaleido not available; frontend will capture
                     break
         except (ImportError, Exception):
             pass
@@ -94,6 +101,7 @@ def main():
         "image": image_data,
         "stdout": stdout_text,
         "error": exec_error,
+        "plotly_json": plotly_json,
     }
     old_stdout.write(json.dumps(result))
 

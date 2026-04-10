@@ -2,7 +2,8 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
-import { Play, Square, Loader2, X, Code2 } from 'lucide-react';
+import { Play, Square, Loader2, X, Code2, Camera } from 'lucide-react';
+import Plotly from 'plotly.js-dist-min';
 
 // CodeMirror imports
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine } from '@codemirror/view';
@@ -35,9 +36,11 @@ export function PlotEditor() {
   const [localOutput, setLocalOutput] = useState<string | null>(null);
   const [localStdout, setLocalStdout] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [plotlyJson, setPlotlyJson] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
+  const plotlyDivRef = useRef<HTMLDivElement>(null);
   const initRef = useRef<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -199,10 +202,12 @@ export function PlotEditor() {
         setLocalOutput(result.image_base64);
         setLocalStdout(result.stdout);
         setLocalError(null);
+        setPlotlyJson(result.plotly_json);
       } else {
         setLocalOutput(result.image_base64);
         setLocalStdout(result.stdout);
         setLocalError(result.error);
+        setPlotlyJson(result.plotly_json);
       }
     } catch (err: any) {
       // Don't show error if it was an abort
@@ -224,19 +229,31 @@ export function PlotEditor() {
     }
   }, [executionId]);
 
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback(async () => {
     // Persist any pending changes immediately
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current);
       persistTimerRef.current = null;
     }
+
+    // Auto-capture plotly view if interactive figure is showing
+    let finalOutput = localOutput;
+    if (plotlyJson && plotlyDivRef.current) {
+      try {
+        const dataUrl = await Plotly.toImage(plotlyDivRef.current, {
+          format: 'png', width: 800, height: 700, scale: 2,
+        });
+        finalOutput = dataUrl.replace(/^data:image\/png;base64,/, '');
+      } catch {}
+    }
+
     if (elementId) {
       const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
       if (el) {
         const code = codeRef.current;
         const changed =
           code !== el.metadata?.code ||
-          localOutput !== el.metadata?.lastOutput ||
+          finalOutput !== el.metadata?.lastOutput ||
           localStdout !== el.metadata?.lastStdout ||
           localError !== el.metadata?.lastError;
         if (changed) {
@@ -244,7 +261,7 @@ export function PlotEditor() {
             metadata: {
               ...el.metadata,
               code,
-              lastOutput: localOutput,
+              lastOutput: finalOutput,
               lastStdout: localStdout,
               lastError: localError,
             },
@@ -255,7 +272,52 @@ export function PlotEditor() {
     }
     initRef.current = null;
     useUIStore.getState().setPlotEditorElementId(null);
-  }, [elementId, localOutput, localStdout, localError, updateElement, pushHistory]);
+  }, [elementId, localOutput, localStdout, localError, plotlyJson, updateElement, pushHistory]);
+
+  // Render plotly figure interactively when plotlyJson changes
+  useEffect(() => {
+    if (!plotlyJson || !plotlyDivRef.current) return;
+    try {
+      const spec = JSON.parse(plotlyJson);
+      const data = spec.data || [];
+      const layout = {
+        ...(spec.layout || {}),
+        autosize: true,
+        margin: spec.layout?.margin || { l: 0, r: 0, t: 30, b: 0 },
+      };
+      Plotly.react(plotlyDivRef.current, data, layout, {
+        responsive: true,
+        displayModeBar: true,
+        modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'],
+      });
+    } catch (e) {
+      console.warn('[PlotEditor] Failed to render plotly:', e);
+    }
+    return () => {
+      if (plotlyDivRef.current) {
+        Plotly.purge(plotlyDivRef.current);
+      }
+    };
+  }, [plotlyJson]);
+
+  // Capture current plotly view as static PNG
+  const captureView = useCallback(async () => {
+    if (!plotlyDivRef.current) return;
+    try {
+      const dataUrl = await Plotly.toImage(plotlyDivRef.current, {
+        format: 'png',
+        width: 800,
+        height: 700,
+        scale: 2,
+      });
+      // Strip data:image/png;base64, prefix
+      const base64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+      setLocalOutput(base64);
+      setPlotlyJson(null); // Switch to static view
+    } catch (e) {
+      console.warn('[PlotEditor] Failed to capture plotly view:', e);
+    }
+  }, []);
 
   // Keep refs current
   handleRunRef.current = handleRun;
@@ -345,8 +407,17 @@ export function PlotEditor() {
 
           {/* Output panel */}
           <div className="w-1/2 flex flex-col">
-            <div className="px-3 py-1.5 border-b border-border bg-inspector-section shrink-0">
+            <div className="px-3 py-1.5 border-b border-border bg-inspector-section shrink-0 flex items-center justify-between">
               <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Output</span>
+              {plotlyJson && (
+                <button
+                  onClick={captureView}
+                  className="flex items-center gap-1 px-1.5 py-0.5 text-2xs text-on-surface-secondary hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors"
+                  title="Capture current view as static image"
+                >
+                  <Camera size={10} /> Capture View
+                </button>
+              )}
             </div>
             <div className="flex-1 overflow-auto bg-surface-primary flex flex-col">
               {isRunning ? (
@@ -358,8 +429,15 @@ export function PlotEditor() {
                 </div>
               ) : (
                 <>
-                  {/* Plot image */}
-                  {localOutput && (
+                  {/* Interactive plotly figure */}
+                  {plotlyJson && (
+                    <div className="flex-1 min-h-0 relative">
+                      <div ref={plotlyDivRef} className="absolute inset-0" />
+                    </div>
+                  )}
+
+                  {/* Static plot image (shown when no interactive figure) */}
+                  {!plotlyJson && localOutput && (
                     <div className="flex-1 flex items-center justify-center p-4 min-h-0">
                       <img
                         src={`data:image/png;base64,${localOutput}`}
@@ -387,7 +465,7 @@ export function PlotEditor() {
 
                   {/* Error */}
                   {localError && (
-                    <div className={`border-t border-border ${!localOutput && !localStdout ? 'flex-1 flex items-start' : ''}`}>
+                    <div className={`border-t border-border ${!plotlyJson && !localOutput && !localStdout ? 'flex-1 flex items-start' : ''}`}>
                       <pre
                         className="p-4 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap break-words w-full"
                         style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}
@@ -398,7 +476,7 @@ export function PlotEditor() {
                   )}
 
                   {/* Empty state */}
-                  {!localOutput && !localStdout && !localError && (
+                  {!plotlyJson && !localOutput && !localStdout && !localError && (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-on-surface-muted select-none">
                       {hasRun ? (
                         <div className="flex flex-col items-center gap-3 px-8 max-w-md">

@@ -76,6 +76,7 @@ class ExecutePlotResponse(BaseModel):
     image_base64: str | None = None
     stdout: str | None = None
     error: str | None = None
+    plotly_json: str | None = None  # interactive plotly figure spec
 
 
 class ValidateEnvRequest(BaseModel):
@@ -169,20 +170,22 @@ async def execute_plot(body: ExecutePlotRequest):
                 image_b64 = parsed.get("image")
                 stdout_text = parsed.get("stdout", "").strip() or None
                 exec_error = parsed.get("error")
+                plotly_json = parsed.get("plotly_json")
 
                 if exec_error:
-                    # Code raised an exception but we still have stdout/image
                     return ExecutePlotResponse(
                         success=False,
                         image_base64=image_b64,
                         stdout=stdout_text,
                         error=exec_error,
+                        plotly_json=plotly_json,
                     )
 
                 return ExecutePlotResponse(
                     success=True,
                     image_base64=image_b64,
                     stdout=stdout_text,
+                    plotly_json=plotly_json,
                 )
             except _json.JSONDecodeError:
                 pass

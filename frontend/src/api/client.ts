@@ -150,7 +150,7 @@ export const api = {
 
   // Plot execution
   executePlot: (code: string, timeout = 30, dpi = 150, pythonPath?: string | null, executionId?: string, cwd?: string | null) =>
-    request<{ success: boolean; image_base64: string | null; stdout: string | null; error: string | null }>(
+    request<{ success: boolean; image_base64: string | null; stdout: string | null; error: string | null; plotly_json: string | null }>(
       '/plot/execute',
       {
         method: 'POST',
