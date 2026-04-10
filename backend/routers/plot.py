@@ -93,8 +93,10 @@ class ValidateEnvResponse(BaseModel):
 @router.post("/execute", response_model=ExecutePlotResponse)
 async def execute_plot(body: ExecutePlotRequest):
     """Execute Python code in a subprocess and capture plot output."""
+    logger.info("execute_plot called with python_path=%r", body.python_path)
     try:
         python = _resolve_python(body.python_path)
+        logger.info("Resolved python: %s", python)
     except FileNotFoundError as exc:
         return ExecutePlotResponse(success=False, error=str(exc))
 
