@@ -75,7 +75,8 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
           <img
             src={`data:image/png;base64,${lastOutput}`}
             alt="Plot output"
-            className="w-full h-full object-contain"
+            className="w-full h-full"
+            style={{ objectFit: 'fill' as const }}
             draggable={false}
           />
         ) : lastStdout ? (
