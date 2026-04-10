@@ -189,13 +189,18 @@ export function PlotEditor() {
     try {
       // Per-board env takes precedence over global
       const pythonEnv = useBoardStore.getState().board?.pythonEnvPath ?? useUIStore.getState().pythonEnvPath;
-      console.log('[PlotEditor] executing with python env:', pythonEnv);
-      const result = await api.executePlot(codeRef.current, 30, 150, pythonEnv, execId);
+      // Use board file's directory as working directory for relative imports
+      const boardPath = useBoardStore.getState().boardFilePath;
+      const cwd = boardPath ? boardPath.replace(/\/[^/]+$/, '') : null;
+      console.log('[PlotEditor] executing with python env:', pythonEnv, 'cwd:', cwd);
+      const result = await api.executePlot(codeRef.current, 30, 150, pythonEnv, execId, cwd);
       if (result.success) {
         setLocalOutput(result.image_base64);
         setLocalStdout(result.stdout);
         setLocalError(null);
       } else {
+        setLocalOutput(result.image_base64);
+        setLocalStdout(result.stdout);
         setLocalError(result.error);
       }
     } catch (err: any) {

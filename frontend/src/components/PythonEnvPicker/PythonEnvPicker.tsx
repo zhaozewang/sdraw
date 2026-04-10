@@ -24,6 +24,7 @@ const SOURCE_LABELS: Record<string, string> = {
   conda: 'conda',
   pyenv: 'pyenv',
   system: 'system',
+  recent: 'recent',
 };
 
 export function PythonEnvPicker() {
@@ -55,6 +56,24 @@ export function PythonEnvPicker() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const isCustom = !!pythonEnvPath;
+
+  // Remembered custom envs (persisted in localStorage)
+  const RECENT_ENVS_KEY = 'sdraw_recent_python_envs';
+  const [recentEnvs, setRecentEnvs] = useState<DiscoveredEnv[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(RECENT_ENVS_KEY) || '[]');
+    } catch { return []; }
+  });
+
+  const addRecentEnv = useCallback((path: string, name?: string) => {
+    setRecentEnvs(prev => {
+      const filtered = prev.filter(e => e.path !== path);
+      const entry: DiscoveredEnv = { name: name || path.split('/').filter(Boolean).pop() || 'Custom', path, source: 'recent' };
+      const updated = [entry, ...filtered].slice(0, 10);
+      try { localStorage.setItem(RECENT_ENVS_KEY, JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+  }, []);
 
   // Get the directory of the current .sdraw file
   const projectDir = boardFilePath ? boardFilePath.replace(/\/[^/]+$/, '') : null;
@@ -118,12 +137,17 @@ export function PythonEnvPicker() {
     try {
       const result = await api.validatePythonEnv(path);
       setCustomEnv(result);
+      // Remember valid envs for future use
+      if (result.valid) {
+        const name = path.split('/').filter(Boolean).pop() || 'Custom';
+        addRecentEnv(path, result.version ? `${name} (${result.version})` : name);
+      }
     } catch {
       setCustomEnv(null);
     } finally {
       setValidating(false);
     }
-  }, [setPythonEnvPath]);
+  }, [setPythonEnvPath, addRecentEnv]);
 
   // Use a ref for inputPath so handleApplyManual always reads the latest value
   const inputPathRef = useRef(inputPath);
@@ -238,15 +262,46 @@ export function PythonEnvPicker() {
               {!isCustom && <CheckCircle2 size={10} className="text-blue-500 shrink-0" />}
             </button>
 
+            {/* Recently used custom envs */}
+            {recentEnvs.length > 0 && (
+              <div>
+                <div className="flex items-center gap-1.5 px-2 py-0.5 bg-inspector-section border-t border-border">
+                  <span className="text-on-surface-muted uppercase tracking-wider font-semibold" style={{ fontSize: 9 }}>
+                    recent
+                  </span>
+                </div>
+                {recentEnvs.map((env) => {
+                  const isActive = pythonEnvPath === env.path;
+                  return (
+                    <button
+                      key={env.path}
+                      onClick={() => handleSelectEnv(env.path)}
+                      className={`w-full text-left px-2 py-1 flex items-center justify-between transition-colors ${
+                        isActive ? 'bg-blue-50/50 dark:bg-blue-900/15' : 'hover:bg-surface-secondary'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isActive ? 'bg-green-500' : 'bg-on-surface-disabled'}`} />
+                        <span className="font-medium text-on-surface-primary shrink-0">{env.name}</span>
+                        <span className="text-on-surface-muted truncate">{env.path}</span>
+                      </div>
+                      {isActive && <CheckCircle2 size={10} className="text-blue-500 shrink-0 ml-1" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Discovered environments grouped by source with dividers */}
             {(() => {
               const sourceOrder = ['conda', 'venv', 'pyenv', 'system'];
+              const discoveredPaths = new Set(recentEnvs.map(e => e.path));
               const groups = sourceOrder
-                .map(source => ({ source, envs: discoveredEnvs.filter(e => e.source === source) }))
+                .map(source => ({ source, envs: discoveredEnvs.filter(e => e.source === source && !discoveredPaths.has(e.path)) }))
                 .filter(g => g.envs.length > 0);
               // Collect any sources not in sourceOrder
               const knownSources = new Set(sourceOrder);
-              const otherEnvs = discoveredEnvs.filter(e => !knownSources.has(e.source));
+              const otherEnvs = discoveredEnvs.filter(e => !knownSources.has(e.source) && !discoveredPaths.has(e.path));
               if (otherEnvs.length > 0) groups.push({ source: 'other', envs: otherEnvs });
 
               return groups.map((group, gi) => (

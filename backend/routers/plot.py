@@ -68,6 +68,7 @@ class ExecutePlotRequest(BaseModel):
     dpi: int = 150
     python_path: str | None = None  # None = use default
     execution_id: str | None = None  # for cancellation tracking
+    cwd: str | None = None  # working directory for execution
 
 
 class ExecutePlotResponse(BaseModel):
@@ -112,6 +113,13 @@ async def execute_plot(body: ExecutePlotRequest):
             "SDRAW_PLOT_DPI": str(body.dpi),
         }
 
+        # Determine working directory for the subprocess
+        cwd = body.cwd
+        if cwd:
+            cwd_path = Path(cwd).expanduser()
+            if not cwd_path.is_dir():
+                cwd = None  # fall back to default
+
         exec_id = body.execution_id
 
         def run():
@@ -121,6 +129,7 @@ async def execute_plot(body: ExecutePlotRequest):
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
+                cwd=cwd,
             )
             if exec_id:
                 _running_procs[exec_id] = proc
@@ -150,32 +159,42 @@ async def execute_plot(body: ExecutePlotRequest):
                 error=f"Execution timed out ({body.timeout}s limit).",
             )
 
+        # Try to parse JSON from stdout (new format)
+        import json as _json
+        raw_output = result.stdout.strip()
+
+        if raw_output:
+            try:
+                parsed = _json.loads(raw_output)
+                image_b64 = parsed.get("image")
+                stdout_text = parsed.get("stdout", "").strip() or None
+                exec_error = parsed.get("error")
+
+                if exec_error:
+                    # Code raised an exception but we still have stdout/image
+                    return ExecutePlotResponse(
+                        success=False,
+                        image_base64=image_b64,
+                        stdout=stdout_text,
+                        error=exec_error,
+                    )
+
+                return ExecutePlotResponse(
+                    success=True,
+                    image_base64=image_b64,
+                    stdout=stdout_text,
+                )
+            except _json.JSONDecodeError:
+                pass
+
+        # Fallback: runner itself crashed (non-JSON output)
         if result.returncode != 0:
             error_msg = result.stderr.strip() or "Unknown error"
             return ExecutePlotResponse(success=False, error=error_msg)
 
-        raw_output = result.stdout.strip()
-        if not raw_output:
-            return ExecutePlotResponse(
-                success=False,
-                error="No output produced by the script.",
-            )
-
-        # Parse JSON output from plot_runner
-        import json as _json
-        try:
-            parsed = _json.loads(raw_output)
-        except _json.JSONDecodeError:
-            # Fallback: treat as raw base64 image (backward compat)
-            return ExecutePlotResponse(success=True, image_base64=raw_output)
-
-        image_b64 = parsed.get("image")
-        stdout_text = parsed.get("stdout", "").strip() or None
-
         return ExecutePlotResponse(
-            success=True,
-            image_base64=image_b64,
-            stdout=stdout_text,
+            success=False,
+            error="No output produced by the script.",
         )
 
     except Exception as exc:

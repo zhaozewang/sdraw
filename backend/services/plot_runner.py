@@ -11,9 +11,10 @@ matplotlib or plotly figure output as a base64-encoded PNG on stdout.
 Text output (print statements) is captured separately.
 
 Output format (JSON on stdout):
-  {"image": "<base64 png or null>", "stdout": "<captured print output>"}
+  {"image": "<base64 png or null>", "stdout": "<captured print output>", "error": "<traceback or null>"}
 
-Errors go to stderr.
+Exit code is always 0 if we produce JSON output (error is in the JSON).
+Non-zero exit only for runner-level failures (can't read file, etc.)
 """
 
 import sys
@@ -21,6 +22,7 @@ import os
 import base64
 import io
 import json
+import traceback
 
 
 def main():
@@ -50,15 +52,19 @@ def main():
 
     # Execute user code
     ns = {"__name__": "__main__"}
+    exec_error = None
     try:
         exec(compile(code, "<plot>", "exec"), ns)
+    except Exception:
+        exec_error = traceback.format_exc()
     finally:
         sys.stdout = old_stdout
 
     stdout_text = captured_stdout.getvalue()
     image_data = None
 
-    # Try matplotlib first
+    # Try to capture plot output even if there was an error
+    # (user might have created a partial plot before the error)
     try:
         import matplotlib.pyplot as plt
         fig = plt.gcf()
@@ -80,13 +86,14 @@ def main():
                     img_bytes = val.to_image(format="png", scale=2)
                     image_data = base64.b64encode(img_bytes).decode("ascii")
                     break
-        except ImportError:
+        except (ImportError, Exception):
             pass
 
-    # Output JSON result
+    # Always output JSON result
     result = {
         "image": image_data,
         "stdout": stdout_text,
+        "error": exec_error,
     }
     old_stdout.write(json.dumps(result))
 
