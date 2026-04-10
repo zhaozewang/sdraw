@@ -32,11 +32,15 @@ def _resolve_python(python_path: str | None) -> str:
     - None or empty or "default" → the backend's own interpreter (sys.executable)
     - A path to a venv directory → find the python inside it
     - A direct path to a python binary → use as-is
+
+    NOTE: We do NOT resolve() symlinks because venv python binaries are
+    typically symlinks to system python, but they still activate the venv's
+    site-packages when invoked via the symlink path.
     """
     if not python_path or python_path == "default":
         return sys.executable
 
-    p = Path(python_path).expanduser().resolve()
+    p = Path(python_path).expanduser()
 
     # If user gave a venv directory, find the python inside
     if p.is_dir():
@@ -47,12 +51,12 @@ def _resolve_python(python_path: str | None) -> str:
             p / "Scripts" / "python.exe",
             p / "Scripts" / "python3.exe",
         ]:
-            if candidate.is_file():
+            if candidate.exists():
                 return str(candidate)
         raise FileNotFoundError(f"No python found in venv: {p}")
 
-    # Direct path to a binary
-    if p.is_file():
+    # Direct path to a binary (don't resolve symlinks!)
+    if p.exists():
         return str(p)
 
     raise FileNotFoundError(f"Python not found: {p}")
