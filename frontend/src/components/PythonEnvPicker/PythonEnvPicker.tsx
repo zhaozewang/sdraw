@@ -35,10 +35,14 @@ export function PythonEnvPicker() {
 
   // Per-board env overrides global
   const pythonEnvPath = boardPythonEnvPath ?? globalPythonEnvPath;
+  const saveBoard = useBoardStore(s => s.saveBoard);
   const setPythonEnvPath = useCallback((path: string | null) => {
-    // Always set per-board when a board is open
+    // Set per-board and also persist to global as fallback
     setBoardPythonEnv(path);
-  }, [setBoardPythonEnv]);
+    setGlobalPythonEnvPath(path);
+    // Auto-save so the env persists across restarts
+    setTimeout(() => saveBoard(), 100);
+  }, [setBoardPythonEnv, setGlobalPythonEnvPath, saveBoard]);
 
   const [open, setOpen] = useState(false);
   const [inputPath, setInputPath] = useState(pythonEnvPath || '');
