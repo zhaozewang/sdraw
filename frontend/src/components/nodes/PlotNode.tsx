@@ -39,6 +39,7 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
 
   const { style, metadata } = element;
   const lastOutput = metadata?.lastOutput as string | null;
+  const lastStdout = metadata?.lastStdout as string | null;
   const lastError = metadata?.lastError as string | null;
   const rotation = element.rotation || 0;
 
@@ -77,6 +78,12 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
             className="w-full h-full object-contain"
             draggable={false}
           />
+        ) : lastStdout ? (
+          <div className="w-full h-full overflow-hidden p-2">
+            <pre className="text-xs text-on-surface-primary whitespace-pre-wrap break-words"
+              style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}
+            >{lastStdout}</pre>
+          </div>
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-400 dark:text-on-surface-muted select-none">
             <Code2 size={24} />

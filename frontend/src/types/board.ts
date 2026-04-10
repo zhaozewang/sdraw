@@ -105,6 +105,7 @@ export interface Board {
   canvas: CanvasSettings;
   elements: BoardElement[];
   autoExport?: AutoExportSettings;
+  pythonEnvPath?: string | null;
   created_at: string;
   updated_at: string;
   app_version: string;

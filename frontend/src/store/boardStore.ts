@@ -53,6 +53,7 @@ interface BoardState {
   setBoardName: (name: string) => void;
   updateAutoExport: (settings: Partial<AutoExportSettings>) => void;
   triggerAutoExport: (boardSnapshot?: Board) => Promise<void>;
+  setBoardPythonEnv: (path: string | null) => void;
 
   // Actions - Canvas
   updateCanvas: (settings: Partial<CanvasSettings>) => void;
@@ -95,6 +96,31 @@ interface BoardState {
 }
 
 const MAX_HISTORY = 50;
+
+/**
+ * Strip heavy blob data (plot base64 output, embedded image data) from elements
+ * before storing in undo history. This prevents memory bloat when boards contain
+ * many plots or large embedded images. The live board state still has the full data.
+ */
+function stripBlobsForHistory(elements: BoardElement[]): BoardElement[] {
+  return elements.map(el => {
+    // Strip plot output blobs from history (they're re-rendered on demand)
+    if (el.type === 'plot' && el.metadata?.lastOutput) {
+      return {
+        ...el,
+        metadata: { ...el.metadata, lastOutput: null, lastStdout: null },
+      };
+    }
+    // Strip embedded image data from history (it's re-embedded on save)
+    if (el.type === 'image' && el.source?.embeddedData) {
+      return {
+        ...el,
+        source: { ...el.source, embeddedData: undefined },
+      };
+    }
+    return el;
+  });
+}
 
 // Abort controller for cancelling in-flight exports on board switch
 let autoExportAbort: AbortController | null = null;
@@ -264,6 +290,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const { board } = get();
     if (!board) return;
     set({ board: { ...board, name }, isDirty: true });
+  },
+
+  setBoardPythonEnv: (path: string | null) => {
+    const { board } = get();
+    if (!board) return;
+    set({ board: { ...board, pythonEnvPath: path }, isDirty: true });
   },
 
   updateAutoExport: (settings: Partial<AutoExportSettings>) => {
@@ -662,7 +694,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const { board, history, historyIndex } = get();
     if (!board) return;
     const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push({ elements: structuredClone(board.elements), description });
+    newHistory.push({ elements: stripBlobsForHistory(structuredClone(board.elements)), description });
     if (newHistory.length > MAX_HISTORY) newHistory.shift();
     set({ history: newHistory, historyIndex: newHistory.length - 1 });
   },

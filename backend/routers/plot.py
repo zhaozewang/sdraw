@@ -22,6 +22,9 @@ _RUNNER_PATH = os.path.join(
     "plot_runner.py",
 )
 
+# Track running subprocesses for cancellation
+_running_procs: dict[str, subprocess.Popen] = {}
+
 
 def _resolve_python(python_path: str | None) -> str:
     """Resolve the Python executable to use.
@@ -60,11 +63,13 @@ class ExecutePlotRequest(BaseModel):
     timeout: int = 30  # seconds
     dpi: int = 150
     python_path: str | None = None  # None = use default
+    execution_id: str | None = None  # for cancellation tracking
 
 
 class ExecutePlotResponse(BaseModel):
     success: bool
     image_base64: str | None = None
+    stdout: str | None = None
     error: str | None = None
 
 
@@ -101,14 +106,35 @@ async def execute_plot(body: ExecutePlotRequest):
             "SDRAW_PLOT_DPI": str(body.dpi),
         }
 
+        exec_id = body.execution_id
+
         def run():
-            return subprocess.run(
+            proc = subprocess.Popen(
                 [python, _RUNNER_PATH, tmp.name],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=body.timeout,
                 env=env,
             )
+            if exec_id:
+                _running_procs[exec_id] = proc
+            try:
+                stdout, stderr = proc.communicate(timeout=body.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+            finally:
+                if exec_id:
+                    _running_procs.pop(exec_id, None)
+
+            class Result:
+                pass
+            r = Result()
+            r.returncode = proc.returncode
+            r.stdout = stdout
+            r.stderr = stderr
+            return r
 
         try:
             result = await asyncio.to_thread(run)
@@ -122,14 +148,29 @@ async def execute_plot(body: ExecutePlotRequest):
             error_msg = result.stderr.strip() or "Unknown error"
             return ExecutePlotResponse(success=False, error=error_msg)
 
-        image_b64 = result.stdout.strip()
-        if not image_b64:
+        raw_output = result.stdout.strip()
+        if not raw_output:
             return ExecutePlotResponse(
                 success=False,
                 error="No output produced by the script.",
             )
 
-        return ExecutePlotResponse(success=True, image_base64=image_b64)
+        # Parse JSON output from plot_runner
+        import json as _json
+        try:
+            parsed = _json.loads(raw_output)
+        except _json.JSONDecodeError:
+            # Fallback: treat as raw base64 image (backward compat)
+            return ExecutePlotResponse(success=True, image_base64=raw_output)
+
+        image_b64 = parsed.get("image")
+        stdout_text = parsed.get("stdout", "").strip() or None
+
+        return ExecutePlotResponse(
+            success=True,
+            image_base64=image_b64,
+            stdout=stdout_text,
+        )
 
     except Exception as exc:
         logger.error("Plot execution failed: %s", exc)
@@ -139,6 +180,23 @@ async def execute_plot(body: ExecutePlotRequest):
             os.unlink(tmp.name)
         except OSError:
             pass
+
+
+class AbortRequest(BaseModel):
+    execution_id: str
+
+
+@router.post("/abort")
+async def abort_execution(body: AbortRequest):
+    """Kill a running plot execution by its execution_id."""
+    proc = _running_procs.pop(body.execution_id, None)
+    if proc is None:
+        return {"aborted": False, "reason": "not_found"}
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    return {"aborted": True}
 
 
 class DiscoveredEnv(BaseModel):

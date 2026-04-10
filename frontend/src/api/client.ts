@@ -149,15 +149,21 @@ export const api = {
     }),
 
   // Plot execution
-  executePlot: (code: string, timeout = 30, dpi = 150, pythonPath?: string | null) =>
-    request<{ success: boolean; image_base64: string | null; error: string | null }>(
+  executePlot: (code: string, timeout = 30, dpi = 150, pythonPath?: string | null, executionId?: string) =>
+    request<{ success: boolean; image_base64: string | null; stdout: string | null; error: string | null }>(
       '/plot/execute',
       {
         method: 'POST',
-        body: JSON.stringify({ code, timeout, dpi, python_path: pythonPath || null }),
+        body: JSON.stringify({ code, timeout, dpi, python_path: pythonPath || null, execution_id: executionId || null }),
       },
       (timeout + 5) * 1000,
     ),
+
+  abortPlot: (executionId: string) =>
+    request<{ aborted: boolean }>('/plot/abort', {
+      method: 'POST',
+      body: JSON.stringify({ execution_id: executionId }),
+    }),
 
   // Python environment
   getDefaultPythonEnv: () =>

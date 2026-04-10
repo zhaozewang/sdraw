@@ -27,9 +27,18 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 export function PythonEnvPicker() {
-  const pythonEnvPath = useUIStore(s => s.pythonEnvPath);
-  const setPythonEnvPath = useUIStore(s => s.setPythonEnvPath);
+  const globalPythonEnvPath = useUIStore(s => s.pythonEnvPath);
+  const setGlobalPythonEnvPath = useUIStore(s => s.setPythonEnvPath);
+  const boardPythonEnvPath = useBoardStore(s => s.board?.pythonEnvPath);
+  const setBoardPythonEnv = useBoardStore(s => s.setBoardPythonEnv);
   const boardFilePath = useBoardStore(s => s.boardFilePath);
+
+  // Per-board env overrides global
+  const pythonEnvPath = boardPythonEnvPath ?? globalPythonEnvPath;
+  const setPythonEnvPath = (path: string | null) => {
+    // Always set per-board when a board is open
+    setBoardPythonEnv(path);
+  };
 
   const [open, setOpen] = useState(false);
   const [inputPath, setInputPath] = useState(pythonEnvPath || '');
@@ -122,7 +131,7 @@ export function PythonEnvPicker() {
     setPythonEnvPath(null);
     setInputPath('');
     setCustomEnv(null);
-  }, [setPythonEnvPath]);
+  }, []);
 
   const handleRescan = useCallback(() => {
     setScanning(true);

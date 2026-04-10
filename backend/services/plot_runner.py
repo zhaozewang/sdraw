@@ -8,6 +8,11 @@ Env vars:
 
 Reads user code from the given file, executes it, and captures any
 matplotlib or plotly figure output as a base64-encoded PNG on stdout.
+Text output (print statements) is captured separately.
+
+Output format (JSON on stdout):
+  {"image": "<base64 png or null>", "stdout": "<captured print output>"}
+
 Errors go to stderr.
 """
 
@@ -15,6 +20,7 @@ import sys
 import os
 import base64
 import io
+import json
 
 
 def main():
@@ -37,10 +43,19 @@ def main():
     except ImportError:
         pass
 
+    # Capture stdout from user code
+    captured_stdout = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = captured_stdout
+
     # Execute user code
     ns = {"__name__": "__main__"}
-    exec(compile(code, "<plot>", "exec"), ns)
+    try:
+        exec(compile(code, "<plot>", "exec"), ns)
+    finally:
+        sys.stdout = old_stdout
 
+    stdout_text = captured_stdout.getvalue()
     image_data = None
 
     # Try matplotlib first
@@ -68,18 +83,12 @@ def main():
         except ImportError:
             pass
 
-    if image_data:
-        sys.stdout.write(image_data)
-    else:
-        print(
-            "No plot output detected.\n\n"
-            "Make sure your code creates a matplotlib or plotly figure.\n"
-            "Example:\n"
-            "  import matplotlib.pyplot as plt\n"
-            "  plt.plot([1, 2, 3], [1, 4, 9])\n",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    # Output JSON result
+    result = {
+        "image": image_data,
+        "stdout": stdout_text,
+    }
+    old_stdout.write(json.dumps(result))
 
 
 if __name__ == "__main__":
