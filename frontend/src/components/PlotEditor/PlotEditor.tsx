@@ -27,6 +27,10 @@ export function PlotEditor() {
   const theme = useUIStore(s => s.theme);
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 
+  const boardPythonEnv = useBoardStore(s => s.board?.pythonEnvPath);
+  const globalPythonEnv = useUIStore(s => s.pythonEnvPath);
+  const activePythonEnv = boardPythonEnv ?? globalPythonEnv;
+
   const [localCode, setLocalCode] = useState('');
   const [localOutput, setLocalOutput] = useState<string | null>(null);
   const [localStdout, setLocalStdout] = useState<string | null>(null);
@@ -184,8 +188,8 @@ export function PlotEditor() {
 
     try {
       // Per-board env takes precedence over global
-      const boardEnv = useBoardStore.getState().board?.pythonEnvPath;
-      const pythonEnv = boardEnv ?? useUIStore.getState().pythonEnvPath;
+      const pythonEnv = useBoardStore.getState().board?.pythonEnvPath ?? useUIStore.getState().pythonEnvPath;
+      console.log('[PlotEditor] executing with python env:', pythonEnv);
       const result = await api.executePlot(codeRef.current, 30, 150, pythonEnv, execId);
       if (result.success) {
         setLocalOutput(result.image_base64);
@@ -269,6 +273,9 @@ export function PlotEditor() {
         <div className="h-10 bg-toolbar-bg border-b border-toolbar-border flex items-center px-3 gap-2 shrink-0 select-none">
           <Code2 size={15} className="text-on-surface-secondary shrink-0" />
           <span className="text-xs font-semibold text-on-surface-primary">Plot Editor</span>
+          <span className="text-2xs text-on-surface-muted truncate max-w-[200px]" title={activePythonEnv || 'default (built-in)'}>
+            [{(activePythonEnv || 'default').split('/').pop()}]
+          </span>
 
           <div className="w-px h-5 bg-toolbar-border mx-1" />
 
