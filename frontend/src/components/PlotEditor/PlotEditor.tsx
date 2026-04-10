@@ -458,17 +458,18 @@ export function PlotEditor() {
               {/* DPI selector */}
               {plotlyJson && (
                 <div className="flex items-center gap-1">
-                  <span className="text-2xs text-on-surface-muted">Scale:</span>
-                  {[1, 2, 3].map(d => (
+                  <span className="text-2xs text-on-surface-muted">Resolution:</span>
+                  {([1, 2, 3] as const).map(d => (
                     <button
                       key={d}
                       onClick={() => setCaptureDpi(d)}
+                      title={`${800 * d} × ${700 * d} px`}
                       className={`px-1 py-0.5 text-2xs rounded transition-colors ${
                         captureDpi === d
                           ? 'bg-blue-500 text-white'
                           : 'text-on-surface-muted hover:bg-toolbar-hover'
                       }`}
-                    >{d}x</button>
+                    >{d === 1 ? 'Low' : d === 2 ? 'Med' : 'High'}</button>
                   ))}
                 </div>
               )}
