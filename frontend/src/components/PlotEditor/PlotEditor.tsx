@@ -36,6 +36,7 @@ export function PlotEditor() {
   const [localStdout, setLocalStdout] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [hasRun, setHasRun] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
   const initRef = useRef<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -210,6 +211,7 @@ export function PlotEditor() {
       }
     } finally {
       setIsRunning(false);
+      setHasRun(true);
       setExecutionId(null);
     }
   }, [elementId, isRunning]);
@@ -398,8 +400,20 @@ export function PlotEditor() {
                   {/* Empty state */}
                   {!localOutput && !localStdout && !localError && (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-on-surface-muted select-none">
-                      <Play size={20} />
-                      <span className="text-sm">Click Run to execute your code</span>
+                      {hasRun ? (
+                        <>
+                          <span className="text-sm">Code executed — no output captured</span>
+                          <span className="text-xs opacity-60 text-center px-8">
+                            Add print() statements to debug, or make sure your code creates a matplotlib/plotly figure
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <Play size={20} />
+                          <span className="text-sm">Click Run to execute your code</span>
+                          <span className="text-xs opacity-60">Cmd+Enter</span>
+                        </>
+                      )}
                     </div>
                   )}
                 </>
