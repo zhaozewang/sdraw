@@ -23,50 +23,147 @@ interface CropRect {
   x: number; y: number; w: number; h: number;
 }
 
-/** Overlay that positions the crop rectangle over the actual rendered image area (respects object-contain) */
-function CropOverlay({ imageRef, cropRect, isCropping }: {
+/** Compute the actual rendered image rect inside a container with object-contain */
+function getRenderedImageRect(img: HTMLImageElement): { left: number; top: number; width: number; height: number } | null {
+  if (!img.parentElement || !img.naturalWidth || !img.naturalHeight) return null;
+  const parent = img.parentElement.getBoundingClientRect();
+  const imgAspect = img.naturalWidth / img.naturalHeight;
+  const containerAspect = parent.width / parent.height;
+  let rw: number, rh: number;
+  if (imgAspect > containerAspect) {
+    rw = parent.width;
+    rh = parent.width / imgAspect;
+  } else {
+    rh = parent.height;
+    rw = parent.height * imgAspect;
+  }
+  return {
+    left: (parent.width - rw) / 2,
+    top: (parent.height - rh) / 2,
+    width: rw,
+    height: rh,
+  };
+}
+
+const HANDLE_SIZE = 8;
+type HandleCorner = 'nw' | 'ne' | 'sw' | 'se';
+const HANDLE_CURSORS: Record<HandleCorner, string> = { nw: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', se: 'nwse-resize' };
+
+/** Overlay with gray mask, blue border, and draggable corner handles */
+function CropOverlay({ imageRef, cropRect, onCropChange }: {
   imageRef: React.RefObject<HTMLImageElement | null>;
   cropRect: CropRect | null;
-  isCropping: boolean;
+  onCropChange: (rect: CropRect) => void;
 }) {
-  const [style, setStyle] = useState<React.CSSProperties>({});
+  const [overlayStyle, setOverlayStyle] = useState<React.CSSProperties>({});
+  const [imgRect, setImgRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const dragRef = useRef<{ corner: HandleCorner; startX: number; startY: number; startCrop: CropRect } | null>(null);
+  const cropRef = useRef(cropRect);
+  cropRef.current = cropRect;
 
   useEffect(() => {
     const update = () => {
       const img = imageRef.current;
-      if (!img || !img.parentElement) return;
-      const parent = img.parentElement.getBoundingClientRect();
-      const nat = { w: img.naturalWidth, h: img.naturalHeight };
-      if (!nat.w || !nat.h) return;
-      const imgAspect = nat.w / nat.h;
-      const containerAspect = parent.width / parent.height;
-      let rw: number, rh: number;
-      if (imgAspect > containerAspect) {
-        rw = parent.width;
-        rh = parent.width / imgAspect;
-      } else {
-        rh = parent.height;
-        rw = parent.height * imgAspect;
-      }
-      setStyle({
+      if (!img) return;
+      const r = getRenderedImageRect(img);
+      if (!r) return;
+      setImgRect(r);
+      setOverlayStyle({
         position: 'absolute',
-        left: (parent.width - rw) / 2,
-        top: (parent.height - rh) / 2,
-        width: rw,
-        height: rh,
-        pointerEvents: 'none',
+        left: r.left,
+        top: r.top,
+        width: r.width,
+        height: r.height,
       });
     };
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [imageRef, cropRect, isCropping]);
+  }, [imageRef, cropRect]);
+
+  // Handle drag on corners
+  const handleMouseDown = useCallback((corner: HandleCorner, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!cropRef.current) return;
+    dragRef.current = { corner, startX: e.clientX, startY: e.clientY, startCrop: { ...cropRef.current } };
+
+    const onMove = (ev: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d || !imgRect) return;
+      const dx = (ev.clientX - d.startX) / imgRect.width;
+      const dy = (ev.clientY - d.startY) / imgRect.height;
+      const c = d.startCrop;
+      let { x, y, w, h } = c;
+
+      if (d.corner === 'nw') {
+        x = Math.max(0, Math.min(c.x + c.w - 0.02, c.x + dx));
+        y = Math.max(0, Math.min(c.y + c.h - 0.02, c.y + dy));
+        w = c.x + c.w - x;
+        h = c.y + c.h - y;
+      } else if (d.corner === 'ne') {
+        w = Math.max(0.02, Math.min(1 - c.x, c.w + dx));
+        y = Math.max(0, Math.min(c.y + c.h - 0.02, c.y + dy));
+        h = c.y + c.h - y;
+      } else if (d.corner === 'sw') {
+        x = Math.max(0, Math.min(c.x + c.w - 0.02, c.x + dx));
+        w = c.x + c.w - x;
+        h = Math.max(0.02, Math.min(1 - c.y, c.h + dy));
+      } else if (d.corner === 'se') {
+        w = Math.max(0.02, Math.min(1 - c.x, c.w + dx));
+        h = Math.max(0.02, Math.min(1 - c.y, c.h + dy));
+      }
+      onCropChange({ x, y, w, h });
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [imgRect, onCropChange]);
+
+  // Drag-to-move the entire crop box
+  const handleMoveDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!cropRef.current || !imgRect) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startCrop = { ...cropRef.current };
+
+    const onMove = (ev: MouseEvent) => {
+      const dx = (ev.clientX - startX) / imgRect.width;
+      const dy = (ev.clientY - startY) / imgRect.height;
+      let nx = startCrop.x + dx;
+      let ny = startCrop.y + dy;
+      // Clamp to image bounds
+      nx = Math.max(0, Math.min(1 - startCrop.w, nx));
+      ny = Math.max(0, Math.min(1 - startCrop.h, ny));
+      onCropChange({ x: nx, y: ny, w: startCrop.w, h: startCrop.h });
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [imgRect, onCropChange]);
 
   if (!cropRect || cropRect.w <= 0) return null;
 
+  const handles: { corner: HandleCorner; cx: number; cy: number }[] = [
+    { corner: 'nw', cx: cropRect.x, cy: cropRect.y },
+    { corner: 'ne', cx: cropRect.x + cropRect.w, cy: cropRect.y },
+    { corner: 'sw', cx: cropRect.x, cy: cropRect.y + cropRect.h },
+    { corner: 'se', cx: cropRect.x + cropRect.w, cy: cropRect.y + cropRect.h },
+  ];
+
   return (
-    <div style={style}>
-      <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1 1">
+    <div style={overlayStyle}>
+      {/* Gray mask with cutout */}
+      <svg className="absolute inset-0 w-full h-full" style={{ pointerEvents: 'none' }} preserveAspectRatio="none" viewBox="0 0 1 1">
         <defs>
           <mask id="crop-mask-static">
             <rect x="0" y="0" width="1" height="1" fill="white" />
@@ -77,6 +174,40 @@ function CropOverlay({ imageRef, cropRect, isCropping }: {
         <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
           fill="none" stroke="#3b82f6" strokeWidth="0.003" />
       </svg>
+      {/* Draggable crop area (move the whole box) */}
+      <div
+        onMouseDown={handleMoveDown}
+        style={{
+          position: 'absolute',
+          left: `${cropRect.x * 100}%`,
+          top: `${cropRect.y * 100}%`,
+          width: `${cropRect.w * 100}%`,
+          height: `${cropRect.h * 100}%`,
+          cursor: 'move',
+          pointerEvents: 'auto',
+          zIndex: 5,
+        }}
+      />
+      {/* Corner handles */}
+      {handles.map(({ corner, cx, cy }) => (
+        <div
+          key={corner}
+          onMouseDown={(e) => handleMouseDown(corner, e)}
+          style={{
+            position: 'absolute',
+            left: `calc(${cx * 100}% - ${HANDLE_SIZE / 2}px)`,
+            top: `calc(${cy * 100}% - ${HANDLE_SIZE / 2}px)`,
+            width: HANDLE_SIZE,
+            height: HANDLE_SIZE,
+            backgroundColor: '#3b82f6',
+            border: '1px solid white',
+            borderRadius: 1,
+            cursor: HANDLE_CURSORS[corner],
+            pointerEvents: 'auto',
+            zIndex: 10,
+          }}
+        />
+      ))}
     </div>
   );
 }
@@ -623,12 +754,22 @@ export function PlotEditor() {
               )}
               {capturedImage && (
                 <>
+                  {cropRect && (
+                    <button
+                      onClick={() => setCapturedImage(null)}
+                      className="flex items-center gap-1 px-2 py-0.5 text-2xs font-medium text-white rounded transition-colors"
+                      style={{ backgroundColor: '#3b82f6' }}
+                      title="Apply crop and return to interactive view"
+                    >
+                      <Crop size={10} /> Apply Crop
+                    </button>
+                  )}
                   <button
-                    onClick={() => setCapturedImage(null)}
+                    onClick={() => { setCapturedImage(null); }}
                     className="flex items-center gap-1 px-1.5 py-0.5 text-2xs text-on-surface-secondary hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors"
                     title="Back to interactive view"
                   >
-                    <RotateCcw size={10} /> Back to Interactive
+                    <RotateCcw size={10} /> Back
                   </button>
                   {cropRect && (
                     <button
@@ -636,7 +777,7 @@ export function PlotEditor() {
                       className="flex items-center gap-1 px-1.5 py-0.5 text-2xs text-red-500 hover:text-red-600 hover:bg-toolbar-hover rounded transition-colors"
                       title="Clear crop"
                     >
-                      <X size={10} /> Clear Crop
+                      <X size={10} /> Clear
                     </button>
                   )}
                 </>
@@ -692,8 +833,8 @@ export function PlotEditor() {
                         style={{ objectFit: 'contain' }}
                         draggable={false}
                       />
-                      {/* Crop overlay — uses CropOverlay to position over actual image area */}
-                      <CropOverlay imageRef={cropImageRef} cropRect={cropRect} isCropping={isCropping} />
+                      {/* Crop overlay with resize handles */}
+                      <CropOverlay imageRef={cropImageRef} cropRect={cropRect} onCropChange={setCropRect} />
                       {!cropRect && !isCropping && (
                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                           <div className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5">
