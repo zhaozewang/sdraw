@@ -53,6 +53,9 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
         onResizeEnd={onResizeEnd}
         getRect={getRect}
         aspectRatio={element.metadata?.lockAspectRatio ? element.width / element.height : undefined}
+        rotation={rotation}
+        onRotate={r => updateElement(elementId, { rotation: r })}
+        onRotateEnd={() => pushHistory('Rotate')}
       />
       <div
         className="w-full h-full relative overflow-hidden"

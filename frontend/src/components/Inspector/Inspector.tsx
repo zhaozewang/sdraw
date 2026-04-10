@@ -303,11 +303,33 @@ function NumberInput({ value, onChange, min, max, step, className, placeholder }
   className?: string;
   placeholder?: string;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const commit = () => {
+    setEditing(false);
+    if (draft === '') return; // don't commit empty
+    let v = Number(draft);
+    if (isNaN(v)) return;
+    if (min !== undefined) v = Math.max(min, v);
+    if (max !== undefined) v = Math.min(max, v);
+    onChange(v);
+  };
+
   return (
     <input
       type="number"
-      value={value !== undefined ? Math.round(value * 100) / 100 : ''}
-      onChange={e => { if (e.target.value !== '') onChange(Number(e.target.value)); }}
+      value={editing ? draft : (value !== undefined ? Math.round(value * 100) / 100 : '')}
+      onFocus={e => { setEditing(true); setDraft(e.target.value); }}
+      onChange={e => {
+        if (editing) {
+          setDraft(e.target.value);
+        } else if (e.target.value !== '') {
+          onChange(Number(e.target.value));
+        }
+      }}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') { commit(); (e.target as HTMLInputElement).blur(); } }}
       min={min}
       max={max}
       step={step || 1}
@@ -662,7 +684,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
             </CompactField>
             <CompactField label="W">
               <NumberInput value={element.width} onChange={v => {
-                const locked = element.type === 'image' || !!element.metadata?.lockAspectRatio;
+                const locked = (element.type === 'image' && element.metadata?.lockAspectRatio !== false) || !!element.metadata?.lockAspectRatio;
                 if (locked && element.width > 0) {
                   const ratio = element.height / element.width;
                   update({ width: v, height: Math.round(v * ratio) });
@@ -674,7 +696,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
             </CompactField>
             <CompactField label="H">
               <NumberInput value={element.height} onChange={v => {
-                const locked = element.type === 'image' || !!element.metadata?.lockAspectRatio;
+                const locked = (element.type === 'image' && element.metadata?.lockAspectRatio !== false) || !!element.metadata?.lockAspectRatio;
                 if (locked && element.height > 0) {
                   const ratio = element.width / element.height;
                   update({ height: v, width: Math.round(v * ratio) });
@@ -685,12 +707,12 @@ function ElementInspector({ element }: { element: BoardElement }) {
               }} min={10} />
             </CompactField>
           </div>
-          {element.type !== 'image' && (
+          {(
             <div className="flex items-center gap-1 mt-1">
               <label className="flex items-center gap-1 text-2xs text-gray-500 dark:text-on-surface-muted cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={!!element.metadata?.lockAspectRatio}
+                  checked={element.type === 'image' ? (element.metadata?.lockAspectRatio !== false) : !!element.metadata?.lockAspectRatio}
                   onChange={e => { pushHistory('Lock aspect'); update({ metadata: { ...element.metadata, lockAspectRatio: e.target.checked } }); }}
                   className="rounded"
                 />
@@ -731,6 +753,29 @@ function ElementInspector({ element }: { element: BoardElement }) {
           </Field>
           {element.source.path && (
             <div className="text-2xs text-gray-400 dark:text-on-surface-muted truncate">{getFileName(element.source.path)}</div>
+          )}
+          {/* Link status */}
+          {element.source.linkStatus && (
+            <div className={`text-2xs flex items-center gap-1 ${
+              element.source.linkStatus === 'linked' ? 'text-green-500' :
+              element.source.linkStatus === 'updated' ? 'text-blue-500' :
+              element.source.linkStatus === 'unlinked' ? 'text-orange-500' :
+              'text-red-500'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full inline-block ${
+                element.source.linkStatus === 'linked' ? 'bg-green-400' :
+                element.source.linkStatus === 'updated' ? 'bg-blue-400' :
+                element.source.linkStatus === 'unlinked' ? 'bg-orange-400' :
+                'bg-red-400'
+              }`} />
+              {element.source.linkStatus === 'linked' ? 'Linked — in sync' :
+               element.source.linkStatus === 'updated' ? 'Source updated' :
+               element.source.linkStatus === 'unlinked' ? 'Source file missing — showing embedded copy' :
+               'Error'}
+            </div>
+          )}
+          {element.source.embeddedData && (
+            <div className="text-2xs text-gray-400">Embedded copy available</div>
           )}
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-1 text-2xs text-gray-500 dark:text-on-surface-muted">
@@ -836,6 +881,17 @@ function ElementInspector({ element }: { element: BoardElement }) {
                 { value: 'left', label: 'Left' },
                 { value: 'center', label: 'Center' },
                 { value: 'right', label: 'Right' },
+              ]}
+            />
+          </Field>
+          <Field label="V-Align">
+            <SelectInput
+              value={element.style.verticalAlign || 'top'}
+              onChange={v => updateStyle({ verticalAlign: v as any })}
+              options={[
+                { value: 'top', label: 'Top' },
+                { value: 'center', label: 'Center' },
+                { value: 'bottom', label: 'Bottom' },
               ]}
             />
           </Field>

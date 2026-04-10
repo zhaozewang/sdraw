@@ -8,21 +8,22 @@ export function useKeyboardShortcuts() {
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const target = e.target as HTMLElement;
-    // Don't handle shortcuts when typing in inputs
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-      return;
-    }
-
     const mod = e.metaKey || e.ctrlKey;
-    const { selectedIds } = useUIStore.getState();
     const store = useBoardStore.getState();
 
-    // Save
+    // Save — always works, even when typing in inputs
     if (mod && e.key === 's') {
       e.preventDefault();
       store.saveBoard();
       return;
     }
+
+    // Don't handle other shortcuts when typing in inputs
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      return;
+    }
+
+    const { selectedIds } = useUIStore.getState();
 
     // Undo
     if (mod && !e.shiftKey && e.key === 'z') {

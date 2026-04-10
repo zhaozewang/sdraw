@@ -1,6 +1,8 @@
 import { memo, useCallback, useRef } from 'react';
 import { useReactFlow } from '@xyflow/react';
 import { useUIStore } from '@/store/uiStore';
+import { useBoardStore } from '@/store/boardStore';
+import { computeAlignmentGuides, type Rect } from '@/utils/alignmentGuides';
 
 interface ResizerProps {
   isVisible: boolean;
@@ -10,6 +12,8 @@ interface ResizerProps {
   minHeight?: number;
   /** Called with absolute target rect (on mouseup only) */
   onResizeAbsolute: (x: number, y: number, w: number, h: number) => void;
+  /** Called during resize drag with current rect (for alignment guides etc.) */
+  onResizeMove?: (x: number, y: number, w: number, h: number) => void;
   onResizeEnd: () => void;
   /** Return current element rect */
   getRect: () => { x: number; y: number; width: number; height: number };
@@ -17,6 +21,12 @@ interface ResizerProps {
   aspectRatio?: number;
   /** Only show corner handles (NE, NW, SE, SW) */
   cornersOnly?: boolean;
+  /** Called during rotation drag with new angle in degrees */
+  onRotate?: (rotation: number) => void;
+  /** Called when rotation drag ends */
+  onRotateEnd?: () => void;
+  /** Current rotation in degrees */
+  rotation?: number;
 }
 
 type HandlePosition = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
@@ -111,7 +121,8 @@ const ALL_HANDLES: HandlePosition[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w
 
 function ResizerComponent({
   isVisible, nodeId, minWidth = 20, minHeight = 20,
-  onResizeAbsolute, onResizeEnd, getRect, aspectRatio, cornersOnly,
+  onResizeAbsolute, onResizeMove, onResizeEnd, getRect, aspectRatio, cornersOnly,
+  onRotate, onRotateEnd, rotation = 0,
 }: ResizerProps) {
   const zoom = useUIStore(s => s.zoom);
   const { setNodes } = useReactFlow();
@@ -119,12 +130,69 @@ function ResizerComponent({
   setNodesRef.current = setNodes;
   const onResizeRef = useRef(onResizeAbsolute);
   onResizeRef.current = onResizeAbsolute;
+  const onResizeMoveRef = useRef(onResizeMove);
+  onResizeMoveRef.current = onResizeMove;
   const onResizeEndRef = useRef(onResizeEnd);
   onResizeEndRef.current = onResizeEnd;
   const getRectRef = useRef(getRect);
   getRectRef.current = getRect;
   const nodeIdRef = useRef(nodeId);
   nodeIdRef.current = nodeId;
+
+  const onRotateRef = useRef(onRotate);
+  onRotateRef.current = onRotate;
+  const onRotateEndRef = useRef(onRotateEnd);
+  onRotateEndRef.current = onRotateEnd;
+
+  const handleRotateDown = useCallback((e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!onRotateRef.current) return;
+
+    const rect = getRectRef.current();
+    const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
+    if (!viewport) return;
+    const container = viewport.parentElement!.getBoundingClientRect();
+    const match = viewport.style.transform.match(/translate\((.+?)px,\s*(.+?)px\)\s*scale\((.+?)\)/);
+    if (!match) return;
+    const tx = parseFloat(match[1]);
+    const ty = parseFloat(match[2]);
+    const scale = parseFloat(match[3]);
+
+    // Element center in screen coords
+    const cx = container.left + tx + (rect.x + rect.width / 2) * scale;
+    const cy = container.top + ty + (rect.y + rect.height / 2) * scale;
+
+    // Starting angle
+    const startAngle = Math.atan2(e.clientY - cy, e.clientX - cx) * (180 / Math.PI);
+    const startRotation = rotation;
+
+    const onMove = (ev: PointerEvent) => {
+      const angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * (180 / Math.PI);
+      let newRotation = startRotation + (angle - startAngle);
+      // Clamp to -180..180
+      while (newRotation > 180) newRotation -= 360;
+      while (newRotation < -180) newRotation += 360;
+      // Snap to 0, 90, -90, 180 when within 3 degrees
+      for (const snap of [0, 90, -90, 180, -180]) {
+        if (Math.abs(newRotation - snap) < 3) { newRotation = snap; break; }
+      }
+      onRotateRef.current?.(Math.round(newRotation));
+    };
+
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      onRotateEndRef.current?.();
+    };
+
+    document.body.style.cursor = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns=\\"http://www.w3.org/2000/svg\\" width=\\"20\\" height=\\"20\\" viewBox=\\"0 0 24 24\\"><path d=\\"M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z\\" fill=\\"%23333\\"/></svg>')}") 10 10, grab`;
+    document.body.style.userSelect = 'none';
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }, [rotation]);
 
   const handlePointerDown = useCallback((pos: HandlePosition) => (e: React.PointerEvent) => {
     e.stopPropagation();
@@ -148,6 +216,20 @@ function ResizerComponent({
       const totalDx = (ev.clientX - startX) / scale;
       const totalDy = (ev.clientY - startY) / scale;
       lastRect = computeRect(pos, origRect, totalDx, totalDy, minWidth, minHeight, aspectRatio);
+
+      // Compute alignment guides during resize
+      const board = useBoardStore.getState().board;
+      if (board) {
+        const draggingRect: Rect = { id: nodeIdRef.current, x: lastRect.x, y: lastRect.y, width: lastRect.width, height: lastRect.height };
+        const otherRects = board.elements
+          .filter(e => e.id !== nodeIdRef.current && e.visible)
+          .map(e => ({ id: e.id, x: e.x, y: e.y, width: e.width, height: e.height }));
+        const result = computeAlignmentGuides(draggingRect, otherRects);
+        useUIStore.getState().setResizeGuides(result.guides as any, result.spacing as any);
+      }
+
+      // Notify parent
+      onResizeMoveRef.current?.(lastRect.x, lastRect.y, lastRect.width, lastRect.height);
 
       // Update React Flow directly — this is the fastest path, no store roundtrip
       const nid = nodeIdRef.current;
@@ -174,7 +256,8 @@ function ResizerComponent({
       // Commit final rect to the board store
       onResizeRef.current(lastRect.x, lastRect.y, lastRect.width, lastRect.height);
 
-      // Re-enable sync
+      // Clear resize guides and re-enable sync
+      useUIStore.getState().setResizeGuides([], []);
       useUIStore.getState().setSuppressPositionSync(false);
       onResizeEndRef.current();
     };
@@ -213,9 +296,35 @@ function ResizerComponent({
               borderRadius: 1,
               cursor: handleCursors[pos],
               zIndex: 10,
+              pointerEvents: 'auto',
               left: `${fx * 100}%`,
               top: `${fy * 100}%`,
               transform: 'translate(-50%, -50%)',
+            }}
+          />
+        );
+      })}
+      {/* Rotation zones — outside each corner */}
+      {onRotate && CORNER_HANDLES.map(pos => {
+        const [fx, fy] = handleFracs[pos];
+        // Offset outward from the corner
+        const offX = fx === 0 ? -1 : 1;
+        const offY = fy === 0 ? -1 : 1;
+        const rotSize = handleSize * 1.5;
+        return (
+          <div
+            key={`rot-${pos}`}
+            onPointerDown={handleRotateDown}
+            className="absolute"
+            style={{
+              width: rotSize,
+              height: rotSize,
+              cursor: `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z" fill="%23333"/></svg>')}") 10 10, grab`,
+              zIndex: 9,
+              pointerEvents: 'auto',
+              left: `${fx * 100}%`,
+              top: `${fy * 100}%`,
+              transform: `translate(${offX * rotSize * 0.6}px, ${offY * rotSize * 0.6}px) translate(-50%, -50%)`,
             }}
           />
         );

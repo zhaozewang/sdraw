@@ -74,6 +74,41 @@ async def serve_image(
     )
 
 
+class EmbedImageRequest(BaseModel):
+    path: str
+
+
+@router.post("/image/embed")
+async def embed_image(body: EmbedImageRequest):
+    """Read an image file, return base64 data + metadata for embedding."""
+    import base64
+    p = Path(body.path).resolve()
+    if not p.exists() or not p.is_file():
+        return {"exists": False, "data": None, "mime": None, "mtime": None}
+    suffix = p.suffix.lower()
+    mime = MIME_MAP.get(suffix)
+    if mime is None:
+        return {"exists": False, "data": None, "mime": None, "mtime": None}
+    try:
+        data = base64.b64encode(p.read_bytes()).decode('ascii')
+        mtime = p.stat().st_mtime
+        return {"exists": True, "data": data, "mime": mime, "mtime": mtime}
+    except OSError as exc:
+        return {"exists": False, "data": None, "mime": None, "mtime": None, "error": str(exc)}
+
+
+@router.post("/image/check")
+async def check_image(body: EmbedImageRequest):
+    """Check if an image file exists and return its modification time."""
+    p = Path(body.path).resolve()
+    if not p.exists() or not p.is_file():
+        return {"exists": False, "mtime": None}
+    try:
+        return {"exists": True, "mtime": p.stat().st_mtime}
+    except OSError:
+        return {"exists": False, "mtime": None}
+
+
 class ValidatePathRequest(BaseModel):
     path: str
 

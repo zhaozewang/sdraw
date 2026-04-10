@@ -16,6 +16,7 @@ export interface ElementStyle {
   color?: string;
   padding?: number;
   textAlign?: 'left' | 'center' | 'right';
+  verticalAlign?: 'top' | 'center' | 'bottom';
   lineHeight?: number;
   strokeColor?: string;
   strokeWidth?: number;
@@ -31,6 +32,14 @@ export interface ImageSource {
   followLatest: boolean;
   autoRefresh: boolean;
   pinnedPath?: string;
+  /** Base64 embedded copy of the image for offline/unlinked display */
+  embeddedData?: string;
+  /** MIME type of the embedded data */
+  embeddedMime?: string;
+  /** Modification time of source file when last embedded */
+  lastModified?: number;
+  /** Link status: 'linked' | 'updated' | 'unlinked' | 'error' */
+  linkStatus?: 'linked' | 'updated' | 'unlinked' | 'error';
 }
 
 export interface CropRegion {
@@ -171,6 +180,7 @@ export const DEFAULT_TEXT_STYLE: ElementStyle = {
   background: 'transparent',
   padding: 4,
   textAlign: 'left',
+  verticalAlign: 'center',
   lineHeight: 1.4,
   opacity: 1,
 };

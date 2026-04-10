@@ -95,6 +95,19 @@ export const api = {
     return `${API_BASE}/image?${params.toString()}`;
   },
 
+  embedImage: (path: string) =>
+    request<{ exists: boolean; data: string | null; mime: string | null; mtime: number | null }>(
+      '/image/embed',
+      { method: 'POST', body: JSON.stringify({ path }) },
+      30000, // larger timeout for big images
+    ),
+
+  checkImage: (path: string) =>
+    request<{ exists: boolean; mtime: number | null }>('/image/check', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+
   validatePath: (path: string) =>
     request<{ valid: boolean; exists: boolean; is_file: boolean; is_dir: boolean }>(
       '/path/validate',

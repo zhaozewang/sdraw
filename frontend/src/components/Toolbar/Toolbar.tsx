@@ -133,7 +133,7 @@ export function Toolbar() {
 
   const handleInsertText = useCallback(() => {
     const el = useBoardStore.getState().addElement('text', {
-      text: 'Label',
+      text: 'Text',
       width: 100,
       height: 32,
       style: { fontSize: 16, fontWeight: 700, color: '#111111', background: 'transparent', padding: 4, textAlign: 'left' },

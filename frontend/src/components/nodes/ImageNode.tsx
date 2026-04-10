@@ -1,6 +1,7 @@
 import { memo, useState, useCallback, useMemo } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
+import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import { RefreshCw, AlertTriangle, Lock } from 'lucide-react';
 import { Resizer } from './Resizer';
@@ -31,6 +32,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
 
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
+  const zoom = useUIStore(s => s.zoom);
 
   const handleRefresh = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -57,6 +59,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
   if (!element || element.type !== 'image') return null;
 
   const { source, style } = element;
+  const invZoom = 1 / Math.max(zoom, 0.1);
 
   const rotation = element.rotation || 0;
 
@@ -71,6 +74,9 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
         onResizeEnd={onResizeEnd}
         getRect={getRect}
         aspectRatio={element.width / element.height}
+        rotation={rotation}
+        onRotate={r => updateElement(elementId, { rotation: r })}
+        onRotateEnd={() => pushHistory('Rotate')}
       />
       <div
         className="w-full h-full relative overflow-hidden"
@@ -94,6 +100,15 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
             onError={() => { setImgError(true); setLoading(false); }}
             draggable={false}
           />
+        ) : source?.embeddedData ? (
+          /* Fallback to embedded copy when source file is missing */
+          <img
+            src={`data:${source.embeddedMime || 'image/png'};base64,${source.embeddedData}`}
+            alt=""
+            className="w-full h-full"
+            style={{ objectFit: 'fill' as const }}
+            draggable={false}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gray-50 text-gray-400">
             {imgError ? (
@@ -115,19 +130,32 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         )}
 
-        {/* Status indicators */}
-        <div className="absolute top-1 right-1 flex gap-1">
+        {/* Status indicators — scale-invariant */}
+        <div className="absolute flex items-center" style={{ top: 4 * invZoom, right: 4 * invZoom, gap: 3 * invZoom }}>
+          {/* Link status dot */}
+          {source?.linkStatus === 'unlinked' && (
+            <div style={{ width: 10 * invZoom, height: 10 * invZoom, borderRadius: '50%', backgroundColor: '#fb923c', border: `${invZoom}px solid white`, boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }} title="Source file unlinked — using embedded copy" />
+          )}
+          {source?.linkStatus === 'updated' && (
+            <div className="animate-pulse" style={{ width: 10 * invZoom, height: 10 * invZoom, borderRadius: '50%', backgroundColor: '#60a5fa', border: `${invZoom}px solid white`, boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }} title="Source file updated" />
+          )}
+          {source?.linkStatus === 'error' && (
+            <div style={{ width: 10 * invZoom, height: 10 * invZoom, borderRadius: '50%', backgroundColor: '#f87171', border: `${invZoom}px solid white`, boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }} title="Error accessing source file" />
+          )}
+          {source?.linkStatus === 'linked' && (
+            <div style={{ width: 8 * invZoom, height: 8 * invZoom, borderRadius: '50%', backgroundColor: '#4ade80', border: `${invZoom}px solid white`, boxShadow: '0 1px 2px rgba(0,0,0,0.2)' }} title="Linked — in sync" />
+          )}
           {element.locked && (
-            <div className="bg-white/80 rounded p-0.5" title="Locked">
-              <Lock size={10} className="text-gray-500" />
+            <div style={{ backgroundColor: 'rgba(255,255,255,0.8)', borderRadius: 2 * invZoom, padding: 2 * invZoom }} title="Locked">
+              <Lock size={10 * invZoom} className="text-gray-500" />
             </div>
           )}
           <button
             onClick={handleRefresh}
-            className="bg-white/80 rounded p-0.5 hover:bg-white transition-colors"
+            style={{ backgroundColor: 'rgba(255,255,255,0.8)', borderRadius: 2 * invZoom, padding: 2 * invZoom }}
             title="Refresh image"
           >
-            <RefreshCw size={10} className="text-gray-500" />
+            <RefreshCw size={10 * invZoom} className="text-gray-500" />
           </button>
         </div>
 

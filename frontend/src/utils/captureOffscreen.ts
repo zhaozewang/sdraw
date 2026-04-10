@@ -265,14 +265,15 @@ function buildRectangleElement(el: BoardElement, ox: number, oy: number): HTMLEl
     return wrapper;
   }
 
-  if (shape === 'triangle' || shape === 'diamond') {
-    // Use inline SVG with polygon — matches RectangleNode.tsx
+  if (shape && shape !== 'rect') {
     const svg = document.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('viewBox', '0 0 100 100');
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.style.cssText = 'position: absolute; inset: 0; width: 100%; height: 100%;';
 
-    const polyPoints = shape === 'diamond' ? '50,0 100,50 50,100 0,50' : '50,0 100,100 0,100';
+    const sw = (meta.shaftWidth as number) ?? 0.5;
+    const hl = (meta.headLength as number) ?? 0.4;
+    const polyPoints = getExportShapePoints(shape, sw, hl);
     const polygon = createSvgElement('polygon', {
       points: polyPoints,
       fill: style.fill || 'transparent',
@@ -521,6 +522,24 @@ function renderMathHtml(text: string, katex: any): string {
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Compute polygon points for export shapes (same logic as RectangleNode) */
+function getExportShapePoints(shape: string, sw: number, hl: number): string {
+  const s = Math.max(0.05, Math.min(0.95, sw));
+  const h = Math.max(0.05, Math.min(0.95, hl));
+  const top = 50 - s * 50, bot = 50 + s * 50, neck = 100 - h * 100;
+  switch (shape) {
+    case 'arrow-right': return `0,${top} ${neck},${top} ${neck},0 100,50 ${neck},100 ${neck},${bot} 0,${bot}`;
+    case 'arrow-left': return `0,50 ${h*100},0 ${h*100},${top} 100,${top} 100,${bot} ${h*100},${bot} ${h*100},100`;
+    case 'arrow-up': return `50,0 100,${h*100} ${bot},${h*100} ${bot},100 ${top},100 ${top},${h*100} 0,${h*100}`;
+    case 'arrow-down': return `${top},0 ${bot},0 ${bot},${neck} 100,${neck} 50,100 0,${neck} ${top},${neck}`;
+    case 'arrow-double': return `0,50 ${h*50},0 ${h*50},${top} ${100-h*50},${top} ${100-h*50},0 100,50 ${100-h*50},100 ${100-h*50},${bot} ${h*50},${bot} ${h*50},100`;
+    case 'chevron': { const indent = h*100; return `0,0 ${100-indent},0 100,50 ${100-indent},100 0,100 ${indent},50`; }
+    case 'diamond': return '50,0 100,50 50,100 0,50';
+    case 'triangle': return '50,0 100,100 0,100';
+    default: return '50,0 100,100 0,100';
+  }
 }
 
 // -----------------------------------------------------------------------

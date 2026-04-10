@@ -34,8 +34,11 @@ function elementToNode(element: BoardElement): Node {
   const isArrow = element.type === 'arrow';
   const isPen = element.type === 'pen';
   const shape = element.metadata?.shape as string | undefined;
+  // Only unfilled polygon shapes need passthrough (clicks in empty bounding
+  // box corners should pass through). Filled shapes behave like normal rects.
+  const isFilled = !!element.style.fill && element.style.fill !== 'transparent';
   const isNonRectShape = element.type === 'rectangle'
-    && (shape === 'triangle' || shape === 'diamond');
+    && !!shape && shape !== 'rectangle' && !isFilled;
   const passThrough = isArrow || isPen || isNonRectShape;
 
   return {
@@ -59,6 +62,17 @@ function elementToNode(element: BoardElement): Node {
 
 /** Renders alignment guide lines and spacing indicators as an SVG overlay.
  *  Uses the viewport transform to convert canvas coords to screen coords. */
+function ResizeGuidesOverlay({ dragGuides, dragSpacing }: { dragGuides: GuideLine[]; dragSpacing: SpacingIndicator[] }) {
+  const resizeGuides = useUIStore(s => s.resizeGuides);
+  const resizeSpacing = useUIStore(s => s.resizeSpacing);
+  return (
+    <AlignmentOverlay
+      guides={[...dragGuides, ...resizeGuides] as GuideLine[]}
+      spacing={[...dragSpacing, ...resizeSpacing] as SpacingIndicator[]}
+    />
+  );
+}
+
 function AlignmentOverlay({
   guides,
   spacing,
@@ -327,8 +341,10 @@ export function Canvas() {
     if (useUIStore.getState().suppressPositionSync) return;
 
     // Structural fingerprint: things that require a full node rebuild
+    // Structural fingerprint: only fields that affect which nodes exist and their visual type.
+    // Exclude source.embeddedData/linkStatus/lastModified to avoid spurious rebuilds on save.
     const structFingerprint = board.elements
-      .map(el => `${el.id}:${el.visible}:${el.locked}:${el.type}:${el.source?.path || ''}:${el.text || ''}:${el.metadata?.shape || ''}:${el.style?.fill || ''}`)
+      .map(el => `${el.id}:${el.visible}:${el.locked}:${el.type}:${el.source?.path || ''}:${el.text || ''}:${el.metadata?.shape || ''}:${el.style?.fill || ''}:${el.style?.strokeColor || ''}`)
       .join('|');
     // Position/size fingerprint
     const posFingerprint = board.elements
@@ -343,7 +359,6 @@ export function Canvas() {
       prevZRef.current = zFingerprint;
       const newNodes = board.elements
         .filter(el => el.visible)
-        .sort((a, b) => a.z_index - b.z_index)
         .map(elementToNode);
       setNodes(newNodes);
     } else {
@@ -367,9 +382,7 @@ export function Canvas() {
               zIndex: el.z_index,
             };
           });
-          if (zChanged) {
-            updated = updated.sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
-          }
+          // zIndex is set via CSS on each node — no need to sort the array
           return updated;
         });
       }
@@ -517,7 +530,8 @@ export function Canvas() {
       const isArrow = el.type === 'arrow';
       const isPenEl = el.type === 'pen';
       const shape = el.metadata?.shape as string | undefined;
-      const isNonRect = el.type === 'rectangle' && (shape === 'triangle' || shape === 'diamond');
+      const elFilled = !!el.style.fill && el.style.fill !== 'transparent';
+      const isNonRect = el.type === 'rectangle' && !!shape && shape !== 'rectangle' && !elFilled;
       if (!isArrow && !isPenEl && !isNonRect) continue;
 
       const eR = el.x + el.width;
@@ -551,21 +565,18 @@ export function Canvas() {
     const rect = selectionRectRef.current;
     const hasDragRect = rect && (rect.x !== rect.x2 || rect.y !== rect.y2);
 
-    let selMinX: number, selMinY: number, selMaxX: number, selMaxY: number;
-    if (hasDragRect) {
-      selMinX = Math.min(rect.x, rect.x2);
-      selMinY = Math.min(rect.y, rect.y2);
-      selMaxX = Math.max(rect.x, rect.x2);
-      selMaxY = Math.max(rect.y, rect.y2);
-    } else if (selectedNodes.length >= 1) {
-      selMinX = Math.min(...selectedNodes.map(n => n.position.x));
-      selMinY = Math.min(...selectedNodes.map(n => n.position.y));
-      selMaxX = Math.max(...selectedNodes.map(n => n.position.x + (n.width || 0)));
-      selMaxY = Math.max(...selectedNodes.map(n => n.position.y + (n.height || 0)));
-    } else {
-      setSelectedIds([]);
+    // Only check passthrough elements when the user actually dragged a
+    // selection rectangle — NOT when clicking on individual nodes (which
+    // would incorrectly select nearby arrows/pens that overlap the node).
+    if (!hasDragRect) {
+      setSelectedIds([...new Set(ids)]);
       return;
     }
+
+    const selMinX = Math.min(rect.x, rect.x2);
+    const selMinY = Math.min(rect.y, rect.y2);
+    const selMaxX = Math.max(rect.x, rect.x2);
+    const selMaxY = Math.max(rect.y, rect.y2);
 
     for (const el of b.elements) {
       if (ids.includes(el.id)) continue;
@@ -573,7 +584,8 @@ export function Canvas() {
       const isArrow = el.type === 'arrow';
       const isPenEl = el.type === 'pen';
       const shape = el.metadata?.shape as string | undefined;
-      const isNonRect = el.type === 'rectangle' && (shape === 'triangle' || shape === 'diamond');
+      const elFilled = !!el.style.fill && el.style.fill !== 'transparent';
+      const isNonRect = el.type === 'rectangle' && !!shape && shape !== 'rectangle' && !elFilled;
       if (!isArrow && !isPenEl && !isNonRect) continue;
 
       // For arrows, compute visual bounds including curve control points
@@ -971,7 +983,7 @@ export function Canvas() {
         </Panel>
       </ReactFlow>
 
-      <AlignmentOverlay guides={guides} spacing={spacing} />
+      <ResizeGuidesOverlay dragGuides={guides} dragSpacing={spacing} />
 
       {/* Selection box overlay during drag-to-draw */}
       {drawPreview && (drawPreview.w > 2 || drawPreview.h > 2) && (

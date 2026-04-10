@@ -71,7 +71,7 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
 
   // Auto-enter edit mode for newly created text boxes
   useEffect(() => {
-    if ((selected || isSelectedInStore) && element?.text === 'Label' && !hasAutoEdited.current) {
+    if ((selected || isSelectedInStore) && (element?.text === 'Text' || element?.text === 'Label') && !hasAutoEdited.current) {
       hasAutoEdited.current = true;
       selectAllOnEdit.current = true;
       setTimeout(() => setEditing(true), 50);
@@ -172,6 +172,9 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
         onResizeEnd={onResizeEnd}
         getRect={getRect}
         aspectRatio={element.metadata?.lockAspectRatio ? element.width / element.height : undefined}
+        rotation={rotation}
+        onRotate={r => updateElement(elementId, { rotation: r })}
+        onRotateEnd={() => pushHistory('Rotate')}
       />
       <div
         className="w-full h-full"
@@ -182,6 +185,11 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
           border: (selected || isSelectedInStore)
             ? `${Math.max(1, 1.5 / Math.max(zoom, 0.1))}px dashed #3b82f6`
             : '1px solid transparent',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: style!.verticalAlign === 'center' ? 'center'
+            : style!.verticalAlign === 'bottom' ? 'flex-end' : 'flex-start',
+          overflow: editing ? 'visible' : 'hidden',
         }}
         onDoubleClick={handleDoubleClick}
       >
@@ -191,16 +199,17 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
             defaultValue={text || ''}
             onBlur={handleBlur}
             onKeyDown={handleKeyDown}
-            className="w-full h-full outline-none resize-none border-none bg-transparent p-0 m-0"
+            className="w-full outline-none resize-none border-none bg-transparent p-0 m-0"
             style={{
               ...textStyles,
               cursor: 'text',
               userSelect: 'text',
+              minHeight: '100%',
             }}
           />
         ) : (
           <div
-            className="w-full h-full"
+            className="w-full"
             style={{
               ...textStyles,
               cursor: 'default',

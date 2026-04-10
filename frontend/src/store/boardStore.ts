@@ -134,11 +134,34 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (autoExportAbort) autoExportAbort.abort();
     autoExportAbort = new AbortController();
     const result = await api.openBoardFromFile(filePath);
+    const board = result.board;
+
+    // Check link status for image elements (non-blocking)
+    const checkedElements = await Promise.all(
+      board.elements.map(async (el: any) => {
+        if (el.type !== 'image' || !el.source?.path) return el;
+        try {
+          const check = await api.checkImage(el.source.path);
+          let linkStatus: string;
+          if (!check.exists) {
+            linkStatus = 'unlinked';
+          } else if (el.source.lastModified && check.mtime && check.mtime > el.source.lastModified) {
+            linkStatus = 'updated';
+          } else {
+            linkStatus = 'linked';
+          }
+          return { ...el, source: { ...el.source, linkStatus } };
+        } catch {
+          return el;
+        }
+      })
+    );
+
     set({
-      board: result.board,
+      board: { ...board, elements: checkedElements },
       boardFilePath: result.path,
       isDirty: false,
-      history: [{ elements: structuredClone(result.board.elements), description: 'Load' }],
+      history: [{ elements: structuredClone(checkedElements), description: 'Load' }],
       historyIndex: 0,
     });
   },
@@ -155,8 +178,39 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       // Thumbnail capture is best-effort
     }
 
+    // Embed images: for each image element with a source path, fetch the
+    // file data and store as base64 so the board is self-contained.
+    const embeddedElements = await Promise.all(
+      board.elements.map(async (el) => {
+        if (el.type !== 'image' || !el.source?.path) return el;
+        try {
+          const result = await api.embedImage(el.source.path);
+          if (result.exists && result.data) {
+            return {
+              ...el,
+              source: {
+                ...el.source,
+                embeddedData: result.data,
+                embeddedMime: result.mime || 'image/png',
+                lastModified: result.mtime || undefined,
+                linkStatus: 'linked' as const,
+              },
+            };
+          }
+          // File doesn't exist — mark as unlinked but keep existing embedded data
+          return {
+            ...el,
+            source: { ...el.source, linkStatus: 'unlinked' as const },
+          };
+        } catch {
+          return el; // embedding failed, keep element as-is
+        }
+      })
+    );
+
     const updated = {
       ...board,
+      elements: embeddedElements,
       updated_at: new Date().toISOString(),
       thumbnail,
     };

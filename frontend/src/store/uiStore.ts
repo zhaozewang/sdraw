@@ -50,6 +50,11 @@ interface UIState {
   suppressPositionSync: boolean;
   setSuppressPositionSync: (v: boolean) => void;
 
+  // Resize alignment guides (set by Resizer via node, read by Canvas overlay)
+  resizeGuides: Array<{ axis: 'x' | 'y'; pos: number }>;
+  resizeSpacing: Array<{ axis: 'x' | 'y'; from: number; to: number; pos: number; label: string }>;
+  setResizeGuides: (guides: Array<{ axis: 'x' | 'y'; pos: number }>, spacing: Array<{ axis: 'x' | 'y'; from: number; to: number; pos: number; label: string }>) => void;
+
   // Snap target highlight (element ID whose edge should glow)
   snapTargetId: string | null;
   setSnapTargetId: (id: string | null) => void;
@@ -149,6 +154,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   autoSaveEnabled: false,
   suppressPositionSync: false,
   setSuppressPositionSync: (v) => set({ suppressPositionSync: v }),
+  resizeGuides: [],
+  resizeSpacing: [],
+  setResizeGuides: (guides, spacing) => set({ resizeGuides: guides, resizeSpacing: spacing }),
   snapTargetId: null,
   setSnapTargetId: (id) => set({ snapTargetId: id }),
   plotEditorElementId: null,

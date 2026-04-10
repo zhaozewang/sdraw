@@ -3,7 +3,7 @@ import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import type { DirEntry, FileInfo } from '@/types/board';
-import { Type, Square, ArrowRight, File, ChevronDown, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, ArrowLeft, Home, RefreshCw, Circle, Triangle, Diamond, Minus, Image as ImageIcon, FolderPlus, Spline, CornerDownRight, Code2, Pencil } from 'lucide-react';
+import { Type, Square, ArrowRight, ArrowLeft, ArrowUp, ArrowDown, File, ChevronDown, ChevronRight, ChevronsRight, Layers, PanelLeftClose, PanelLeftOpen, Folder, Home, RefreshCw, Circle, Triangle, Diamond, Minus, Image as ImageIcon, FolderPlus, Spline, CornerDownRight, Code2, Pencil } from 'lucide-react';
 import { getFileName, getLastDirectory, saveLastDirectory, fetchUserHome } from '@/utils/helpers';
 
 function InsertButton({ icon: Icon, label, onClick }: { icon: any; label: string; onClick: () => void }) {
@@ -423,7 +423,7 @@ export function InsertPanel() {
   };
 
   const handleInsertText = () => insertAtCenter('text', {
-    text: 'Label', width: 100, height: 32,
+    text: 'Text', width: 100, height: 32,
     style: { fontSize: 16, fontWeight: 700, color: '#111111', background: 'transparent', padding: 4, textAlign: 'left' },
   });
 
@@ -450,6 +450,11 @@ export function InsertPanel() {
           <InsertButton icon={Circle} label="Circle" onClick={() => startDraw('rectangle', { style: { borderRadius: 9999 } })} />
           <InsertButton icon={Diamond} label="Diamond" onClick={() => startDraw('rectangle', { metadata: { shape: 'diamond' } })} />
           <InsertButton icon={Triangle} label="Triangle" onClick={() => startDraw('rectangle', { metadata: { shape: 'triangle' } })} />
+          <InsertButton icon={ArrowRight} label="Arrow Right" onClick={() => startDraw('rectangle', { metadata: { shape: 'arrow-right' } })} />
+          <InsertButton icon={ArrowLeft} label="Arrow Left" onClick={() => startDraw('rectangle', { metadata: { shape: 'arrow-left' } })} />
+          <InsertButton icon={ArrowUp} label="Arrow Up" onClick={() => startDraw('rectangle', { metadata: { shape: 'arrow-up' } })} />
+          <InsertButton icon={ArrowDown} label="Arrow Down" onClick={() => startDraw('rectangle', { metadata: { shape: 'arrow-down' } })} />
+          <InsertButton icon={ChevronsRight} label="Chevron" onClick={() => startDraw('rectangle', { metadata: { shape: 'chevron' } })} />
         </InsertGroup>
         <InsertGroup label="Lines">
           <InsertButton icon={Minus} label="Line" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'none', lineType: 'straight' } })} />
