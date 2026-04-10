@@ -35,10 +35,10 @@ export function PythonEnvPicker() {
 
   // Per-board env overrides global
   const pythonEnvPath = boardPythonEnvPath ?? globalPythonEnvPath;
-  const setPythonEnvPath = (path: string | null) => {
+  const setPythonEnvPath = useCallback((path: string | null) => {
     // Always set per-board when a board is open
     setBoardPythonEnv(path);
-  };
+  }, [setBoardPythonEnv]);
 
   const [open, setOpen] = useState(false);
   const [inputPath, setInputPath] = useState(pythonEnvPath || '');
@@ -121,11 +121,15 @@ export function PythonEnvPicker() {
     }
   }, [setPythonEnvPath]);
 
+  // Use a ref for inputPath so handleApplyManual always reads the latest value
+  const inputPathRef = useRef(inputPath);
+  inputPathRef.current = inputPath;
+
   const handleApplyManual = useCallback(async () => {
-    const path = inputPath.trim();
+    const path = inputPathRef.current.trim();
     if (!path) return;
     await handleSelectEnv(path);
-  }, [inputPath, handleSelectEnv]);
+  }, [handleSelectEnv]);
 
   const handleSelectDefault = useCallback(() => {
     setPythonEnvPath(null);
