@@ -131,19 +131,21 @@ export function PythonEnvPicker() {
   }, [open]);
 
   const handleSelectEnv = useCallback(async (path: string) => {
-    setPythonEnvPath(path);
-    setInputPath(path);
     setValidating(true);
+    setCustomEnv(null);
     try {
       const result = await api.validatePythonEnv(path);
-      setCustomEnv(result);
-      // Remember valid envs for future use
       if (result.valid) {
+        setPythonEnvPath(path);
         const name = path.split('/').filter(Boolean).pop() || 'Custom';
         addRecentEnv(path, result.version ? `${name} (${result.version})` : name);
+        setInputPath('');
+        setCustomEnv(null);
+      } else {
+        setCustomEnv(result);
       }
     } catch {
-      setCustomEnv(null);
+      setCustomEnv({ valid: false, python: null, version: null, packages: [], error: 'Validation failed', is_default: false });
     } finally {
       setValidating(false);
     }
@@ -234,14 +236,6 @@ export function PythonEnvPicker() {
               <div className="flex items-center gap-1 text-red-600 dark:text-red-400 mt-0.5">
                 <XCircle size={9} className="shrink-0" />
                 <span className="truncate">{customEnv.error}</span>
-              </div>
-            )}
-            {customEnv && customEnv.valid && (
-              <div className="flex items-center gap-1 text-green-600 dark:text-green-400 mt-0.5">
-                <CheckCircle2 size={9} className="shrink-0" />
-                <span className="truncate">
-                  Python {customEnv.version}{customEnv.packages.length ? ` — ${customEnv.packages.join(', ')}` : ''}
-                </span>
               </div>
             )}
           </div>
