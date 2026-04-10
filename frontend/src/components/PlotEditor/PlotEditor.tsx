@@ -23,6 +23,64 @@ interface CropRect {
   x: number; y: number; w: number; h: number;
 }
 
+/** Overlay that positions the crop rectangle over the actual rendered image area (respects object-contain) */
+function CropOverlay({ imageRef, cropRect, isCropping }: {
+  imageRef: React.RefObject<HTMLImageElement | null>;
+  cropRect: CropRect | null;
+  isCropping: boolean;
+}) {
+  const [style, setStyle] = useState<React.CSSProperties>({});
+
+  useEffect(() => {
+    const update = () => {
+      const img = imageRef.current;
+      if (!img || !img.parentElement) return;
+      const parent = img.parentElement.getBoundingClientRect();
+      const nat = { w: img.naturalWidth, h: img.naturalHeight };
+      if (!nat.w || !nat.h) return;
+      const imgAspect = nat.w / nat.h;
+      const containerAspect = parent.width / parent.height;
+      let rw: number, rh: number;
+      if (imgAspect > containerAspect) {
+        rw = parent.width;
+        rh = parent.width / imgAspect;
+      } else {
+        rh = parent.height;
+        rw = parent.height * imgAspect;
+      }
+      setStyle({
+        position: 'absolute',
+        left: (parent.width - rw) / 2,
+        top: (parent.height - rh) / 2,
+        width: rw,
+        height: rh,
+        pointerEvents: 'none',
+      });
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [imageRef, cropRect, isCropping]);
+
+  if (!cropRect || cropRect.w <= 0) return null;
+
+  return (
+    <div style={style}>
+      <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1 1">
+        <defs>
+          <mask id="crop-mask-static">
+            <rect x="0" y="0" width="1" height="1" fill="white" />
+            <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" />
+          </mask>
+        </defs>
+        <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.5)" mask="url(#crop-mask-static)" />
+        <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
+          fill="none" stroke="#3b82f6" strokeWidth="0.003" />
+      </svg>
+    </div>
+  );
+}
+
 export function PlotEditor() {
   const elementId = useUIStore(s => s.plotEditorElementId);
   const element = useBoardStore(s =>
@@ -231,12 +289,34 @@ export function PlotEditor() {
     }
   }, [captureDpi]);
 
-  // Get the actual image bounds within the container (accounts for object-contain)
+  // Get the actual rendered image bounds within its container (accounts for object-contain)
   const cropImageRef = useRef<HTMLImageElement>(null);
-  const getImageRect = useCallback(() => {
+  const getImageRect = useCallback((): DOMRect | null => {
     const img = cropImageRef.current;
-    if (!img) return null;
-    return img.getBoundingClientRect();
+    if (!img || !img.naturalWidth || !img.naturalHeight) return null;
+    const containerRect = img.getBoundingClientRect();
+    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const containerAspect = containerRect.width / containerRect.height;
+    let renderW: number, renderH: number, offsetX: number, offsetY: number;
+    if (imgAspect > containerAspect) {
+      // Image is wider — fits width, has vertical gaps
+      renderW = containerRect.width;
+      renderH = containerRect.width / imgAspect;
+      offsetX = 0;
+      offsetY = (containerRect.height - renderH) / 2;
+    } else {
+      // Image is taller — fits height, has horizontal gaps
+      renderH = containerRect.height;
+      renderW = containerRect.height * imgAspect;
+      offsetX = (containerRect.width - renderW) / 2;
+      offsetY = 0;
+    }
+    return new DOMRect(
+      containerRect.left + offsetX,
+      containerRect.top + offsetY,
+      renderW,
+      renderH,
+    );
   }, []);
 
   // Use a ref for cropRect so mouseUp always reads the latest value
@@ -591,42 +671,27 @@ export function PlotEditor() {
                   {/* Crop UI: static image with drag-to-crop */}
                   {showCropUI && capturedImage && (
                     <div
-                      className="flex-1 min-h-0 relative flex items-center justify-center p-2 select-none"
+                      className="flex-1 min-h-0 relative select-none overflow-hidden"
                       style={{ cursor: 'crosshair' }}
                       onMouseDown={handleCropMouseDown}
                     >
-                      <div className="relative inline-block max-w-full max-h-full" style={{ lineHeight: 0 }}>
-                        <img
-                          ref={cropImageRef}
-                          src={`data:image/png;base64,${capturedImage}`}
-                          alt="Captured view"
-                          style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }}
-                          draggable={false}
-                        />
-                        {/* Crop overlay — positioned over the image */}
-                        {cropRect && cropRect.w > 0 && (
-                          <div className="absolute inset-0 pointer-events-none">
-                            <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1 1">
-                              <defs>
-                                <mask id="crop-mask-static">
-                                  <rect x="0" y="0" width="1" height="1" fill="white" />
-                                  <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" />
-                                </mask>
-                              </defs>
-                              <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.5)" mask="url(#crop-mask-static)" />
-                              <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
-                                fill="none" stroke="#3b82f6" strokeWidth="0.003" />
-                            </svg>
+                      <img
+                        ref={cropImageRef}
+                        src={`data:image/png;base64,${capturedImage}`}
+                        alt="Captured view"
+                        className="absolute inset-0 w-full h-full"
+                        style={{ objectFit: 'contain' }}
+                        draggable={false}
+                      />
+                      {/* Crop overlay — uses CropOverlay to position over actual image area */}
+                      <CropOverlay imageRef={cropImageRef} cropRect={cropRect} isCropping={isCropping} />
+                      {!cropRect && !isCropping && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <div className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5">
+                            <Crop size={12} /> Drag to select crop region
                           </div>
-                        )}
-                        {!cropRect && (
-                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                            <div className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5">
-                              <Crop size={12} /> Drag to select crop region
-                            </div>
-                          </div>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
