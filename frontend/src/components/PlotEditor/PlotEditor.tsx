@@ -231,19 +231,27 @@ export function PlotEditor() {
     }
   }, [captureDpi]);
 
-  // Crop drag handlers
+  // Get the actual image bounds within the container (accounts for object-contain)
+  const cropImageRef = useRef<HTMLImageElement>(null);
+  const getImageRect = useCallback(() => {
+    const img = cropImageRef.current;
+    if (!img) return null;
+    return img.getBoundingClientRect();
+  }, []);
+
+  // Crop drag handlers — coordinates relative to the image, not the container
   const handleCropMouseDown = useCallback((e: React.MouseEvent) => {
-    const rect = cropContainerRef.current?.getBoundingClientRect();
+    const rect = getImageRect();
     if (!rect) return;
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
     setCropStart({ x, y });
     setCropRect({ x, y, w: 0, h: 0 });
-  }, []);
+  }, [getImageRect]);
 
   const handleCropMouseMove = useCallback((e: React.MouseEvent) => {
     if (!cropStart) return;
-    const rect = cropContainerRef.current?.getBoundingClientRect();
+    const rect = getImageRect();
     if (!rect) return;
     const x2 = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const y2 = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
@@ -253,11 +261,10 @@ export function PlotEditor() {
       w: Math.abs(x2 - cropStart.x),
       h: Math.abs(y2 - cropStart.y),
     });
-  }, [cropStart]);
+  }, [cropStart, getImageRect]);
 
   const handleCropMouseUp = useCallback(() => {
     setCropStart(null);
-    // If crop is too small, remove it
     if (cropRect && (cropRect.w < 0.02 || cropRect.h < 0.02)) {
       setCropRect(null);
     }
@@ -542,23 +549,23 @@ export function PlotEditor() {
 
                   {/* Crop UI: static image with drag-to-crop */}
                   {showCropUI && capturedImage && (
-                    <div className="flex-1 min-h-0 relative flex items-center justify-center p-2">
-                      <div
-                        ref={cropContainerRef}
-                        className="relative max-w-full max-h-full select-none"
-                        style={{ cursor: 'crosshair' }}
-                        onMouseDown={handleCropMouseDown}
-                        onMouseMove={handleCropMouseMove}
-                        onMouseUp={handleCropMouseUp}
-                        onMouseLeave={handleCropMouseUp}
-                      >
+                    <div
+                      className="flex-1 min-h-0 relative flex items-center justify-center p-2 select-none"
+                      style={{ cursor: 'crosshair' }}
+                      onMouseDown={handleCropMouseDown}
+                      onMouseMove={handleCropMouseMove}
+                      onMouseUp={handleCropMouseUp}
+                      onMouseLeave={handleCropMouseUp}
+                    >
+                      <div className="relative inline-block max-w-full max-h-full" style={{ lineHeight: 0 }}>
                         <img
+                          ref={cropImageRef}
                           src={`data:image/png;base64,${capturedImage}`}
                           alt="Captured view"
-                          className="max-w-full max-h-full object-contain"
+                          style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }}
                           draggable={false}
                         />
-                        {/* Crop overlay */}
+                        {/* Crop overlay — positioned over the image */}
                         {cropRect && cropRect.w > 0 && (
                           <div className="absolute inset-0 pointer-events-none">
                             <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1 1">
