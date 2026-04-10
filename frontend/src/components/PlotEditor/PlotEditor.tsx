@@ -300,7 +300,8 @@ export function PlotEditor() {
       setLocalError(element.metadata?.lastError || null);
       setCropRect(element.metadata?.plotCrop || null);
       setCapturedImage(null);
-      setPlotlyJson(element.metadata?.plotlyJson || null);
+      // Don't restore plotlyJson — it's only available after running in this session
+      setPlotlyJson(null);
       setIsRunning(false);
       setHasRun(false);
       setExecutionId(null);
@@ -552,9 +553,9 @@ export function PlotEditor() {
       persistTimerRef.current = null;
     }
 
-    // Capture plotly view if interactive figure is showing
+    // Use captured image if available (from crop UI), otherwise try plotly capture
     let finalImage = capturedImage || localOutput;
-    if (plotlyJson && plotlyDivRef.current) {
+    if (!capturedImage && plotlyJson && plotlyDivRef.current) {
       try {
         const dataUrl = await Plotly.toImage(plotlyDivRef.current, {
           format: 'png', width: 800, height: 700, scale: captureDpi,
@@ -584,7 +585,7 @@ export function PlotEditor() {
             lastStdout: localStdout,
             lastError: localError,
             plotCrop: cropRect,
-            plotlyJson: plotlyJson,
+            // plotlyJson not persisted — too large and slow to re-render
           },
         };
         // Adjust element size to match image aspect ratio (keep width, adjust height)
@@ -766,12 +767,12 @@ export function PlotEditor() {
                 <>
                   {cropRect && (
                     <button
-                      onClick={() => setCapturedImage(null)}
+                      onClick={handleClose}
                       className="flex items-center gap-1 px-2 py-0.5 text-2xs font-medium text-white rounded transition-colors"
                       style={{ backgroundColor: '#3b82f6' }}
-                      title="Apply crop and return to interactive view"
+                      title="Apply crop and close"
                     >
-                      <Crop size={10} /> Apply Crop
+                      <Crop size={10} /> Save & Close
                     </button>
                   )}
                   <button
