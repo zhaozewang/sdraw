@@ -208,6 +208,14 @@ export function PythonEnvPicker() {
                 <span className="truncate">{customEnv.error}</span>
               </div>
             )}
+            {customEnv && customEnv.valid && (
+              <div className="flex items-center gap-1 text-green-600 dark:text-green-400 mt-0.5">
+                <CheckCircle2 size={9} className="shrink-0" />
+                <span className="truncate">
+                  Python {customEnv.version}{customEnv.packages.length ? ` — ${customEnv.packages.join(', ')}` : ''}
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="max-h-[280px] overflow-y-auto pb-1" style={{ fontSize: 12 }}>
