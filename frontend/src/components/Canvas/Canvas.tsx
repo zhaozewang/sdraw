@@ -306,6 +306,19 @@ export function Canvas() {
     };
   }, [reactFlow, setZoomTo, setFitViewFn]);
 
+  // Fit view to content when a board is first loaded
+  const lastBoardIdRef = useRef<string | null>(null);
+  useEffectReact(() => {
+    const id = board?.id ?? null;
+    if (id && id !== lastBoardIdRef.current) {
+      lastBoardIdRef.current = id;
+      // Delay to let nodes render first
+      setTimeout(() => {
+        reactFlow.fitView({ duration: 300, padding: 0.1 });
+      }, 100);
+    }
+  }, [board?.id, reactFlow]);
+
   const dragStartRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const alignedRef = useRef(false); // track if alignment snap was active
   const [guides, setGuides] = useState<GuideLine[]>([]);

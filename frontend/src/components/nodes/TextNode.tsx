@@ -149,6 +149,9 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
 
   const rotation = element.rotation || 0;
 
+  // Counter-scale text by 1/zoom so it stays at constant screen-pixel size
+  const invZoom = 1 / Math.max(zoom, 0.1);
+
   const textStyles: React.CSSProperties = {
     fontSize: style!.fontSize ?? 14,
     fontWeight: style!.fontWeight ?? 400,
@@ -180,45 +183,54 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
         className="w-full h-full"
         style={{
           backgroundColor: style!.background || 'transparent',
-          padding: style!.padding ?? 4,
           opacity: style!.opacity ?? 1,
           border: (selected || isSelectedInStore)
-            ? `${Math.max(1, 1.5 / Math.max(zoom, 0.1))}px dashed #3b82f6`
+            ? `${Math.max(1, 1.5 * invZoom)}px dashed #3b82f6`
             : '1px solid transparent',
+          overflow: 'hidden',
+        }}
+        onDoubleClick={handleDoubleClick}
+      >
+        {/* Counter-scale content so text stays at constant screen size */}
+        <div style={{
+          transform: `scale(${invZoom})`,
+          transformOrigin: 'top left',
+          width: `${100 * zoom}%`,
+          height: `${100 * zoom}%`,
+          padding: (style!.padding ?? 4) * zoom,
           display: 'flex',
           flexDirection: 'column',
           justifyContent: style!.verticalAlign === 'center' ? 'center'
             : style!.verticalAlign === 'bottom' ? 'flex-end' : 'flex-start',
           overflow: editing ? 'visible' : 'hidden',
-        }}
-        onDoubleClick={handleDoubleClick}
-      >
-        {editing ? (
-          <textarea
-            ref={textareaRef}
-            defaultValue={text || ''}
-            onBlur={handleBlur}
-            onKeyDown={handleKeyDown}
-            className="w-full outline-none resize-none border-none bg-transparent p-0 m-0"
-            style={{
-              ...textStyles,
-              cursor: 'text',
-              userSelect: 'text',
-              minHeight: '100%',
-            }}
-          />
-        ) : (
-          <div
-            className="w-full"
-            style={{
-              ...textStyles,
-              cursor: 'default',
-              userSelect: 'none',
-            }}
-          >
-            {renderedContent || text || ''}
-          </div>
-        )}
+        }}>
+          {editing ? (
+            <textarea
+              ref={textareaRef}
+              defaultValue={text || ''}
+              onBlur={handleBlur}
+              onKeyDown={handleKeyDown}
+              className="w-full outline-none resize-none border-none bg-transparent p-0 m-0"
+              style={{
+                ...textStyles,
+                cursor: 'text',
+                userSelect: 'text',
+                minHeight: '100%',
+              }}
+            />
+          ) : (
+            <div
+              className="w-full"
+              style={{
+                ...textStyles,
+                cursor: 'default',
+                userSelect: 'none',
+              }}
+            >
+              {renderedContent || text || ''}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

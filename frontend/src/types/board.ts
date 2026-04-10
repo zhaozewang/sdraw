@@ -207,7 +207,7 @@ export const DEFAULT_PLOT_STYLE: ElementStyle = {
   borderWidth: 0,
   borderRadius: 0,
   shadow: false,
-  background: 'transparent',
+  background: '#ffffff',
   opacity: 1,
 };
 
