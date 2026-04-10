@@ -401,12 +401,17 @@ export function PlotEditor() {
                   {!localOutput && !localStdout && !localError && (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-on-surface-muted select-none">
                       {hasRun ? (
-                        <>
-                          <span className="text-sm">Code executed — no output captured</span>
-                          <span className="text-xs opacity-60 text-center px-8">
-                            Add print() statements to debug, or make sure your code creates a matplotlib/plotly figure
-                          </span>
-                        </>
+                        <div className="flex flex-col items-center gap-3 px-8 max-w-md">
+                          <span className="text-sm font-medium">Code executed — no output captured</span>
+                          <div className="text-xs opacity-70 text-left space-y-2 w-full">
+                            <p>sdraw captures output in two ways:</p>
+                            <p className="font-semibold">Matplotlib:</p>
+                            <pre className="bg-surface-secondary rounded px-2 py-1 text-2xs">{'import matplotlib.pyplot as plt\nplt.plot([1, 2, 3], [1, 4, 9])\n# Any plt figure is auto-captured'}</pre>
+                            <p className="font-semibold">Plotly:</p>
+                            <pre className="bg-surface-secondary rounded px-2 py-1 text-2xs">{'import plotly.graph_objects as go\nfig = go.Figure(...)\n# Variable named "fig" is auto-captured'}</pre>
+                            <p className="opacity-80">Use <code className="bg-surface-secondary rounded px-1">print()</code> for debugging — output appears in the Console panel below.</p>
+                          </div>
+                        </div>
                       ) : (
                         <>
                           <Play size={20} />
