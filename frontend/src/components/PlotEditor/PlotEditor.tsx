@@ -46,8 +46,11 @@ function getRenderedImageRect(img: HTMLImageElement): { left: number; top: numbe
 }
 
 const HANDLE_SIZE = 8;
-type HandleCorner = 'nw' | 'ne' | 'sw' | 'se';
-const HANDLE_CURSORS: Record<HandleCorner, string> = { nw: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', se: 'nwse-resize' };
+type HandlePos = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+const HANDLE_CURSORS: Record<HandlePos, string> = {
+  nw: 'nwse-resize', n: 'ns-resize', ne: 'nesw-resize', e: 'ew-resize',
+  se: 'nwse-resize', s: 'ns-resize', sw: 'nesw-resize', w: 'ew-resize',
+};
 
 /** Overlay with gray mask, blue border, and draggable corner handles */
 function CropOverlay({ imageRef, cropRect, onCropChange }: {
@@ -57,7 +60,7 @@ function CropOverlay({ imageRef, cropRect, onCropChange }: {
 }) {
   const [overlayStyle, setOverlayStyle] = useState<React.CSSProperties>({});
   const [imgRect, setImgRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
-  const dragRef = useRef<{ corner: HandleCorner; startX: number; startY: number; startCrop: CropRect } | null>(null);
+  const dragRef = useRef<{ handle: HandlePos; startX: number; startY: number; startCrop: CropRect } | null>(null);
   const cropRef = useRef(cropRect);
   cropRef.current = cropRect;
 
@@ -81,12 +84,12 @@ function CropOverlay({ imageRef, cropRect, onCropChange }: {
     return () => window.removeEventListener('resize', update);
   }, [imageRef, cropRect]);
 
-  // Handle drag on corners
-  const handleMouseDown = useCallback((corner: HandleCorner, e: React.MouseEvent) => {
+  // Handle drag on corners and edges
+  const handleMouseDown = useCallback((handle: HandlePos, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     if (!cropRef.current) return;
-    dragRef.current = { corner, startX: e.clientX, startY: e.clientY, startCrop: { ...cropRef.current } };
+    dragRef.current = { handle, startX: e.clientX, startY: e.clientY, startCrop: { ...cropRef.current } };
 
     const onMove = (ev: MouseEvent) => {
       const d = dragRef.current;
@@ -94,23 +97,25 @@ function CropOverlay({ imageRef, cropRect, onCropChange }: {
       const dx = (ev.clientX - d.startX) / imgRect.width;
       const dy = (ev.clientY - d.startY) / imgRect.height;
       const c = d.startCrop;
-      let { x, y, w, h } = c;
+      let x = c.x, y = c.y, w = c.w, h = c.h;
+      const right = c.x + c.w, bottom = c.y + c.h;
 
-      if (d.corner === 'nw') {
-        x = Math.max(0, Math.min(c.x + c.w - 0.02, c.x + dx));
-        y = Math.max(0, Math.min(c.y + c.h - 0.02, c.y + dy));
-        w = c.x + c.w - x;
-        h = c.y + c.h - y;
-      } else if (d.corner === 'ne') {
+      // Adjust left edge
+      if (d.handle === 'nw' || d.handle === 'w' || d.handle === 'sw') {
+        x = Math.max(0, Math.min(right - 0.02, c.x + dx));
+        w = right - x;
+      }
+      // Adjust right edge
+      if (d.handle === 'ne' || d.handle === 'e' || d.handle === 'se') {
         w = Math.max(0.02, Math.min(1 - c.x, c.w + dx));
-        y = Math.max(0, Math.min(c.y + c.h - 0.02, c.y + dy));
-        h = c.y + c.h - y;
-      } else if (d.corner === 'sw') {
-        x = Math.max(0, Math.min(c.x + c.w - 0.02, c.x + dx));
-        w = c.x + c.w - x;
-        h = Math.max(0.02, Math.min(1 - c.y, c.h + dy));
-      } else if (d.corner === 'se') {
-        w = Math.max(0.02, Math.min(1 - c.x, c.w + dx));
+      }
+      // Adjust top edge
+      if (d.handle === 'nw' || d.handle === 'n' || d.handle === 'ne') {
+        y = Math.max(0, Math.min(bottom - 0.02, c.y + dy));
+        h = bottom - y;
+      }
+      // Adjust bottom edge
+      if (d.handle === 'sw' || d.handle === 's' || d.handle === 'se') {
         h = Math.max(0.02, Math.min(1 - c.y, c.h + dy));
       }
       onCropChange({ x, y, w, h });
@@ -153,11 +158,15 @@ function CropOverlay({ imageRef, cropRect, onCropChange }: {
 
   if (!cropRect || cropRect.w <= 0) return null;
 
-  const handles: { corner: HandleCorner; cx: number; cy: number }[] = [
-    { corner: 'nw', cx: cropRect.x, cy: cropRect.y },
-    { corner: 'ne', cx: cropRect.x + cropRect.w, cy: cropRect.y },
-    { corner: 'sw', cx: cropRect.x, cy: cropRect.y + cropRect.h },
-    { corner: 'se', cx: cropRect.x + cropRect.w, cy: cropRect.y + cropRect.h },
+  const handles: { pos: HandlePos; cx: number; cy: number }[] = [
+    { pos: 'nw', cx: cropRect.x, cy: cropRect.y },
+    { pos: 'n',  cx: cropRect.x + cropRect.w / 2, cy: cropRect.y },
+    { pos: 'ne', cx: cropRect.x + cropRect.w, cy: cropRect.y },
+    { pos: 'w',  cx: cropRect.x, cy: cropRect.y + cropRect.h / 2 },
+    { pos: 'e',  cx: cropRect.x + cropRect.w, cy: cropRect.y + cropRect.h / 2 },
+    { pos: 'sw', cx: cropRect.x, cy: cropRect.y + cropRect.h },
+    { pos: 's',  cx: cropRect.x + cropRect.w / 2, cy: cropRect.y + cropRect.h },
+    { pos: 'se', cx: cropRect.x + cropRect.w, cy: cropRect.y + cropRect.h },
   ];
 
   return (
@@ -189,10 +198,10 @@ function CropOverlay({ imageRef, cropRect, onCropChange }: {
         }}
       />
       {/* Corner handles */}
-      {handles.map(({ corner, cx, cy }) => (
+      {handles.map(({ pos, cx, cy }) => (
         <div
-          key={corner}
-          onMouseDown={(e) => handleMouseDown(corner, e)}
+          key={pos}
+          onMouseDown={(e) => handleMouseDown(pos, e)}
           style={{
             position: 'absolute',
             left: `calc(${cx * 100}% - ${HANDLE_SIZE / 2}px)`,
@@ -202,7 +211,7 @@ function CropOverlay({ imageRef, cropRect, onCropChange }: {
             backgroundColor: '#3b82f6',
             border: '1px solid white',
             borderRadius: 1,
-            cursor: HANDLE_CURSORS[corner],
+            cursor: HANDLE_CURSORS[pos],
             pointerEvents: 'auto',
             zIndex: 10,
           }}
@@ -605,10 +614,11 @@ export function PlotEditor() {
     try {
       const spec = JSON.parse(plotlyJson);
       const data = spec.data || [];
+      const { width: _w, height: _h, ...restLayout } = (spec.layout || {});
       const layout = {
-        ...(spec.layout || {}),
+        ...restLayout,
         autosize: true,
-        margin: spec.layout?.margin || { l: 0, r: 0, t: 30, b: 0 },
+        margin: restLayout.margin || { l: 0, r: 0, t: 30, b: 0 },
       };
       Plotly.react(plotlyDivRef.current, data, layout, {
         responsive: true,
