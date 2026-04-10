@@ -22,8 +22,8 @@ export function createElement(
     type,
     x: 100,
     y: 100,
-    width: type === 'arrow' || type === 'pen' ? 200 : type === 'text' ? 120 : type === 'plot' ? 480 : 300,
-    height: type === 'arrow' ? 0 : type === 'pen' ? 1 : type === 'text' ? 40 : type === 'plot' ? 520 : 200,
+    width: type === 'arrow' || type === 'pen' ? 200 : type === 'text' ? 120 : type === 'plot' ? 400 : 300,
+    height: type === 'arrow' ? 0 : type === 'pen' ? 1 : type === 'text' ? 40 : type === 'plot' ? 350 : 200,
     z_index: 0,
     locked: false,
     visible: true,
@@ -78,6 +78,7 @@ export function createElement(
       ].join('\n'),
       lastOutput: null,
       lastError: null,
+      lockAspectRatio: true,
     };
   }
 

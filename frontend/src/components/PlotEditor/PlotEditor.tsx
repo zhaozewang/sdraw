@@ -325,7 +325,8 @@ export function PlotEditor() {
       const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
       if (el) {
         const code = codeRef.current;
-        updateElement(elementId, {
+        // If we have a new image output, match the node aspect ratio to the image
+        const updates: Record<string, any> = {
           metadata: {
             ...el.metadata,
             code,
@@ -334,7 +335,21 @@ export function PlotEditor() {
             lastError: localError,
             plotCrop: cropRect,
           },
-        });
+        };
+        // Adjust element size to match image aspect ratio (keep width, adjust height)
+        if (croppedOutput && croppedOutput !== el.metadata?.lastOutput) {
+          try {
+            const img = new Image();
+            img.src = `data:image/png;base64,${croppedOutput}`;
+            // Use naturalWidth/Height if loaded, otherwise estimate from base64
+            await new Promise<void>((resolve) => { img.onload = () => resolve(); img.onerror = () => resolve(); });
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+              const ratio = img.naturalHeight / img.naturalWidth;
+              updates.height = Math.round(el.width * ratio);
+            }
+          } catch {}
+        }
+        updateElement(elementId, updates);
         pushHistory('Edit plot');
       }
     }

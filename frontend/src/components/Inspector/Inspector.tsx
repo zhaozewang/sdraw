@@ -684,7 +684,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
             </CompactField>
             <CompactField label="W">
               <NumberInput value={element.width} onChange={v => {
-                const locked = (element.type === 'image' && element.metadata?.lockAspectRatio !== false) || !!element.metadata?.lockAspectRatio;
+                const locked = ((element.type === 'image' || element.type === 'plot') && element.metadata?.lockAspectRatio !== false) || !!element.metadata?.lockAspectRatio;
                 if (locked && element.width > 0) {
                   const ratio = element.height / element.width;
                   update({ width: v, height: Math.round(v * ratio) });
@@ -696,7 +696,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
             </CompactField>
             <CompactField label="H">
               <NumberInput value={element.height} onChange={v => {
-                const locked = (element.type === 'image' && element.metadata?.lockAspectRatio !== false) || !!element.metadata?.lockAspectRatio;
+                const locked = ((element.type === 'image' || element.type === 'plot') && element.metadata?.lockAspectRatio !== false) || !!element.metadata?.lockAspectRatio;
                 if (locked && element.height > 0) {
                   const ratio = element.width / element.height;
                   update({ height: v, width: Math.round(v * ratio) });
