@@ -102,7 +102,7 @@ export function PlotEditor() {
       setLocalError(element.metadata?.lastError || null);
       setCropRect(element.metadata?.plotCrop || null);
       setCapturedImage(null);
-      setPlotlyJson(null);
+      setPlotlyJson(element.metadata?.plotlyJson || null);
       setIsRunning(false);
       setHasRun(false);
       setExecutionId(null);
@@ -239,37 +239,62 @@ export function PlotEditor() {
     return img.getBoundingClientRect();
   }, []);
 
+  // Use a ref for cropRect so mouseUp always reads the latest value
+  const cropRectRef = useRef<CropRect | null>(null);
+  cropRectRef.current = cropRect;
+  const cropStartRef = useRef<{ x: number; y: number } | null>(null);
+  cropStartRef.current = cropStart;
+
   // Crop drag handlers — coordinates relative to the image, not the container
   const handleCropMouseDown = useCallback((e: React.MouseEvent) => {
     const rect = getImageRect();
     if (!rect) return;
+    e.preventDefault();
     const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
     setCropStart({ x, y });
     setCropRect({ x, y, w: 0, h: 0 });
+    setIsCropping(true);
   }, [getImageRect]);
 
-  const handleCropMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!cropStart) return;
+  const handleCropMouseMove = useCallback((e: MouseEvent | React.MouseEvent) => {
+    const start = cropStartRef.current;
+    if (!start) return;
     const rect = getImageRect();
     if (!rect) return;
     const x2 = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const y2 = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
     setCropRect({
-      x: Math.min(cropStart.x, x2),
-      y: Math.min(cropStart.y, y2),
-      w: Math.abs(x2 - cropStart.x),
-      h: Math.abs(y2 - cropStart.y),
+      x: Math.min(start.x, x2),
+      y: Math.min(start.y, y2),
+      w: Math.abs(x2 - start.x),
+      h: Math.abs(y2 - start.y),
     });
-  }, [cropStart, getImageRect]);
+  }, [getImageRect]);
 
   const handleCropMouseUp = useCallback(() => {
+    if (!cropStartRef.current) return;
     setCropStart(null);
-    if (cropRect && (cropRect.w < 0.02 || cropRect.h < 0.02)) {
+    setIsCropping(false);
+    // Check using ref for latest value
+    const cr = cropRectRef.current;
+    if (cr && (cr.w < 0.01 || cr.h < 0.01)) {
       setCropRect(null);
     }
-    setIsCropping(false);
-  }, [cropRect]);
+  }, []);
+
+  // Attach mousemove/mouseup to document while cropping so dragging outside works
+  useEffect(() => {
+    if (!isCropping) return;
+    const onMove = (e: MouseEvent) => handleCropMouseMove(e);
+    const onUp = () => handleCropMouseUp();
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [isCropping, handleCropMouseMove, handleCropMouseUp]);
 
   const clearCrop = useCallback(() => {
     setCropRect(null);
@@ -334,6 +359,7 @@ export function PlotEditor() {
             lastStdout: localStdout,
             lastError: localError,
             plotCrop: cropRect,
+            plotlyJson: plotlyJson,
           },
         };
         // Adjust element size to match image aspect ratio (keep width, adjust height)
@@ -568,9 +594,6 @@ export function PlotEditor() {
                       className="flex-1 min-h-0 relative flex items-center justify-center p-2 select-none"
                       style={{ cursor: 'crosshair' }}
                       onMouseDown={handleCropMouseDown}
-                      onMouseMove={handleCropMouseMove}
-                      onMouseUp={handleCropMouseUp}
-                      onMouseLeave={handleCropMouseUp}
                     >
                       <div className="relative inline-block max-w-full max-h-full" style={{ lineHeight: 0 }}>
                         <img

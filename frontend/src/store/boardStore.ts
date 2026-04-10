@@ -105,10 +105,10 @@ const MAX_HISTORY = 50;
 function stripBlobsForHistory(elements: BoardElement[]): BoardElement[] {
   return elements.map(el => {
     // Strip plot output blobs from history (they're re-rendered on demand)
-    if (el.type === 'plot' && el.metadata?.lastOutput) {
+    if (el.type === 'plot' && (el.metadata?.lastOutput || el.metadata?.plotlyJson)) {
       return {
         ...el,
-        metadata: { ...el.metadata, lastOutput: null, lastStdout: null },
+        metadata: { ...el.metadata, lastOutput: null, lastStdout: null, plotlyJson: null },
       };
     }
     // Strip embedded image data from history (it's re-embedded on save)
