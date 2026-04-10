@@ -319,6 +319,9 @@ export function PlotEditor() {
     );
   }, []);
 
+  // Flag to suppress backdrop close right after a crop drag
+  const recentCropRef = useRef(false);
+
   // Use a ref for cropRect so mouseUp always reads the latest value
   const cropRectRef = useRef<CropRect | null>(null);
   cropRectRef.current = cropRect;
@@ -335,6 +338,7 @@ export function PlotEditor() {
     setCropStart({ x, y });
     setCropRect({ x, y, w: 0, h: 0 });
     setIsCropping(true);
+    recentCropRef.current = true;
   }, [getImageRect]);
 
   const handleCropMouseMove = useCallback((e: MouseEvent | React.MouseEvent) => {
@@ -356,11 +360,12 @@ export function PlotEditor() {
     if (!cropStartRef.current) return;
     setCropStart(null);
     setIsCropping(false);
-    // Check using ref for latest value
     const cr = cropRectRef.current;
     if (cr && (cr.w < 0.01 || cr.h < 0.01)) {
       setCropRect(null);
     }
+    // Clear the flag after a tick so the backdrop click handler sees it
+    setTimeout(() => { recentCropRef.current = false; }, 200);
   }, []);
 
   // Attach mousemove/mouseup to document while cropping so dragging outside works
@@ -505,7 +510,11 @@ export function PlotEditor() {
   const showStaticImage = !plotlyJson && !capturedImage && !!localOutput;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black/30" onClick={handleClose}>
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/30" onClick={() => {
+      // Don't close if user just finished a crop drag
+      if (recentCropRef.current) return;
+      handleClose();
+    }}>
       <div
         className="m-6 flex-1 flex flex-col bg-surface-primary rounded-lg shadow-2xl overflow-hidden border border-border"
         onClick={e => e.stopPropagation()}
