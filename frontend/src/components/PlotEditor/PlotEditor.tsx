@@ -784,7 +784,7 @@ export function PlotEditor() {
               )}
             </div>
 
-            <div className="flex-1 overflow-auto bg-surface-primary flex flex-col">
+            <div className="flex-1 overflow-hidden bg-surface-primary flex flex-col min-h-0">
               {isRunning ? (
                 <div className="w-full h-full flex items-center justify-center">
                   <div className="flex items-center gap-2 text-sm text-on-surface-muted">
