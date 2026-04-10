@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
-import { Play, Square, Loader2, X, Code2, Camera } from 'lucide-react';
+import { Play, Square, Loader2, X, Code2, Camera, Crop, RotateCcw } from 'lucide-react';
 import Plotly from 'plotly.js-dist-min';
 
 // CodeMirror imports
@@ -16,6 +16,11 @@ import { oneDark } from '@codemirror/theme-one-dark';
 
 function generateId() {
   return Math.random().toString(36).slice(2, 10);
+}
+
+/** Crop region as fractions of image dimensions (0–1) */
+interface CropRect {
+  x: number; y: number; w: number; h: number;
 }
 
 export function PlotEditor() {
@@ -33,19 +38,27 @@ export function PlotEditor() {
   const activePythonEnv = boardPythonEnv ?? globalPythonEnv;
 
   const [localCode, setLocalCode] = useState('');
-  const [localOutput, setLocalOutput] = useState<string | null>(null);
+  const [localOutput, setLocalOutput] = useState<string | null>(null); // full uncropped base64
   const [localStdout, setLocalStdout] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [plotlyJson, setPlotlyJson] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
+  const [captureDpi, setCaptureDpi] = useState(2);
+
+  // Crop state
+  const [cropRect, setCropRect] = useState<CropRect | null>(null);
+  const [isCropping, setIsCropping] = useState(false); // actively dragging crop
+  const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null); // full capture for crop UI
+
   const plotlyDivRef = useRef<HTMLDivElement>(null);
+  const cropContainerRef = useRef<HTMLDivElement>(null);
   const initRef = useRef<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const codeRef = useRef('');
-  // Debounced persist timer
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Persist local state to board store (debounced)
@@ -72,7 +85,6 @@ export function PlotEditor() {
     }
   }, [elementId, localOutput, localStdout, localError, updateElement]);
 
-  // Auto-persist on code changes (debounced 2s)
   const schedulePersist = useCallback(() => {
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
     persistTimerRef.current = setTimeout(() => persistToStore(), 2000);
@@ -88,7 +100,11 @@ export function PlotEditor() {
       setLocalOutput(element.metadata?.lastOutput || null);
       setLocalStdout(element.metadata?.lastStdout || null);
       setLocalError(element.metadata?.lastError || null);
+      setCropRect(element.metadata?.plotCrop || null);
+      setCapturedImage(null);
+      setPlotlyJson(null);
       setIsRunning(false);
+      setHasRun(false);
       setExecutionId(null);
     }
   }, [elementId, element]);
@@ -96,8 +112,6 @@ export function PlotEditor() {
   // Setup CodeMirror editor
   useEffect(() => {
     if (!editorRef.current || !elementId) return;
-
-    // Don't re-create if already initialized for this element
     if (viewRef.current) {
       viewRef.current.destroy();
       viewRef.current = null;
@@ -105,22 +119,13 @@ export function PlotEditor() {
 
     const runKeymap = keymap.of([{
       key: 'Mod-Enter',
-      run: () => {
-        handleRunRef.current();
-        return true;
-      },
+      run: () => { handleRunRef.current(); return true; },
     }, {
       key: 'Escape',
-      run: () => {
-        handleCloseRef.current();
-        return true;
-      },
+      run: () => { handleCloseRef.current(); return true; },
     }, {
       key: 'Shift-Tab',
-      run: (view) => {
-        indentLess(view);
-        return true;
-      }
+      run: (view) => { indentLess(view); return true; }
     }]);
 
     const extensions = [
@@ -158,27 +163,14 @@ export function PlotEditor() {
       }));
     }
 
-    const state = EditorState.create({
-      doc: codeRef.current,
-      extensions,
-    });
-
-    const view = new EditorView({
-      state,
-      parent: editorRef.current,
-    });
-
+    const state = EditorState.create({ doc: codeRef.current, extensions });
+    const view = new EditorView({ state, parent: editorRef.current });
     viewRef.current = view;
-    // Focus after a tick
     requestAnimationFrame(() => view.focus());
 
-    return () => {
-      view.destroy();
-      viewRef.current = null;
-    };
-  }, [elementId, isDark]); // re-create on theme change too
+    return () => { view.destroy(); viewRef.current = null; };
+  }, [elementId, isDark]);
 
-  // Refs for stable callbacks in keymap
   const handleRunRef = useRef<() => void>(() => {});
   const handleCloseRef = useRef<() => void>(() => {});
 
@@ -189,14 +181,12 @@ export function PlotEditor() {
     setExecutionId(execId);
     setLocalError(null);
     setLocalStdout(null);
+    setCapturedImage(null);
 
     try {
-      // Per-board env takes precedence over global
       const pythonEnv = useBoardStore.getState().board?.pythonEnvPath ?? useUIStore.getState().pythonEnvPath;
-      // Use board file's directory as working directory for relative imports
       const boardPath = useBoardStore.getState().boardFilePath;
       const cwd = boardPath ? boardPath.replace(/\/[^/]+$/, '') : null;
-      console.log('[PlotEditor] executing with python env:', pythonEnv, 'cwd:', cwd);
       const result = await api.executePlot(codeRef.current, 30, 150, pythonEnv, execId, cwd);
       if (result.success) {
         setLocalOutput(result.image_base64);
@@ -210,7 +200,6 @@ export function PlotEditor() {
         setPlotlyJson(result.plotly_json);
       }
     } catch (err: any) {
-      // Don't show error if it was an abort
       if (!String(err).includes('abort')) {
         setLocalError(String(err));
       }
@@ -223,27 +212,105 @@ export function PlotEditor() {
 
   const handleAbort = useCallback(async () => {
     if (executionId) {
-      try {
-        await api.abortPlot(executionId);
-      } catch {}
+      try { await api.abortPlot(executionId); } catch {}
     }
   }, [executionId]);
 
+  // Capture: snapshot plotly at current angle → enter crop mode
+  const handleCapture = useCallback(async () => {
+    if (!plotlyDivRef.current) return;
+    try {
+      const dataUrl = await Plotly.toImage(plotlyDivRef.current, {
+        format: 'png', width: 800, height: 700, scale: captureDpi,
+      });
+      const base64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+      setCapturedImage(base64);
+      setIsCropping(true);
+    } catch (e) {
+      console.warn('[PlotEditor] Capture failed:', e);
+    }
+  }, [captureDpi]);
+
+  // Crop drag handlers
+  const handleCropMouseDown = useCallback((e: React.MouseEvent) => {
+    const rect = cropContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    setCropStart({ x, y });
+    setCropRect({ x, y, w: 0, h: 0 });
+  }, []);
+
+  const handleCropMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!cropStart) return;
+    const rect = cropContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x2 = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const y2 = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    setCropRect({
+      x: Math.min(cropStart.x, x2),
+      y: Math.min(cropStart.y, y2),
+      w: Math.abs(x2 - cropStart.x),
+      h: Math.abs(y2 - cropStart.y),
+    });
+  }, [cropStart]);
+
+  const handleCropMouseUp = useCallback(() => {
+    setCropStart(null);
+    // If crop is too small, remove it
+    if (cropRect && (cropRect.w < 0.02 || cropRect.h < 0.02)) {
+      setCropRect(null);
+    }
+    setIsCropping(false);
+  }, [cropRect]);
+
+  const clearCrop = useCallback(() => {
+    setCropRect(null);
+    setCapturedImage(null);
+  }, []);
+
+  // Apply crop to a base64 image and return cropped base64
+  const applyCrop = useCallback((base64: string, crop: CropRect): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const sx = Math.round(crop.x * img.width);
+        const sy = Math.round(crop.y * img.height);
+        const sw = Math.round(crop.w * img.width);
+        const sh = Math.round(crop.h * img.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = sw;
+        canvas.height = sh;
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        resolve(canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, ''));
+      };
+      img.src = `data:image/png;base64,${base64}`;
+    });
+  }, []);
+
   const handleClose = useCallback(async () => {
-    // Persist any pending changes immediately
     if (persistTimerRef.current) {
       clearTimeout(persistTimerRef.current);
       persistTimerRef.current = null;
     }
 
-    // Auto-capture plotly view if interactive figure is showing
-    let finalOutput = localOutput;
+    // Capture plotly view if interactive figure is showing
+    let finalImage = capturedImage || localOutput;
     if (plotlyJson && plotlyDivRef.current) {
       try {
         const dataUrl = await Plotly.toImage(plotlyDivRef.current, {
-          format: 'png', width: 800, height: 700, scale: 2,
+          format: 'png', width: 800, height: 700, scale: captureDpi,
         });
-        finalOutput = dataUrl.replace(/^data:image\/png;base64,/, '');
+        finalImage = dataUrl.replace(/^data:image\/png;base64,/, '');
+      } catch {}
+    }
+
+    // Apply crop if set
+    let croppedOutput = finalImage;
+    if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02) {
+      try {
+        croppedOutput = await applyCrop(finalImage, cropRect);
       } catch {}
     }
 
@@ -251,30 +318,24 @@ export function PlotEditor() {
       const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
       if (el) {
         const code = codeRef.current;
-        const changed =
-          code !== el.metadata?.code ||
-          finalOutput !== el.metadata?.lastOutput ||
-          localStdout !== el.metadata?.lastStdout ||
-          localError !== el.metadata?.lastError;
-        if (changed) {
-          updateElement(elementId, {
-            metadata: {
-              ...el.metadata,
-              code,
-              lastOutput: finalOutput,
-              lastStdout: localStdout,
-              lastError: localError,
-            },
-          });
-          pushHistory('Edit plot');
-        }
+        updateElement(elementId, {
+          metadata: {
+            ...el.metadata,
+            code,
+            lastOutput: croppedOutput,
+            lastStdout: localStdout,
+            lastError: localError,
+            plotCrop: cropRect,
+          },
+        });
+        pushHistory('Edit plot');
       }
     }
     initRef.current = null;
     useUIStore.getState().setPlotEditorElementId(null);
-  }, [elementId, localOutput, localStdout, localError, plotlyJson, updateElement, pushHistory]);
+  }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, capturedImage, captureDpi, updateElement, pushHistory, applyCrop]);
 
-  // Render plotly figure interactively when plotlyJson changes
+  // Render plotly figure interactively
   useEffect(() => {
     if (!plotlyJson || !plotlyDivRef.current) return;
     try {
@@ -300,30 +361,9 @@ export function PlotEditor() {
     };
   }, [plotlyJson]);
 
-  // Capture current plotly view as static PNG
-  const captureView = useCallback(async () => {
-    if (!plotlyDivRef.current) return;
-    try {
-      const dataUrl = await Plotly.toImage(plotlyDivRef.current, {
-        format: 'png',
-        width: 800,
-        height: 700,
-        scale: 2,
-      });
-      // Strip data:image/png;base64, prefix
-      const base64 = dataUrl.replace(/^data:image\/png;base64,/, '');
-      setLocalOutput(base64);
-      setPlotlyJson(null); // Switch to static view
-    } catch (e) {
-      console.warn('[PlotEditor] Failed to capture plotly view:', e);
-    }
-  }, []);
-
-  // Keep refs current
   handleRunRef.current = handleRun;
   handleCloseRef.current = handleClose;
 
-  // Cleanup persist timer on unmount
   useEffect(() => {
     return () => {
       if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
@@ -331,6 +371,10 @@ export function PlotEditor() {
   }, []);
 
   if (!elementId || !element) return null;
+
+  const showInteractive = !!plotlyJson && !capturedImage;
+  const showCropUI = !!capturedImage;
+  const showStaticImage = !plotlyJson && !capturedImage && !!localOutput;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black/30" onClick={handleClose}>
@@ -407,18 +451,60 @@ export function PlotEditor() {
 
           {/* Output panel */}
           <div className="w-1/2 flex flex-col">
-            <div className="px-3 py-1.5 border-b border-border bg-inspector-section shrink-0 flex items-center justify-between">
+            <div className="px-3 py-1.5 border-b border-border bg-inspector-section shrink-0 flex items-center gap-2">
               <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Output</span>
+              <div className="flex-1" />
+
+              {/* DPI selector */}
               {plotlyJson && (
+                <div className="flex items-center gap-1">
+                  <span className="text-2xs text-on-surface-muted">Scale:</span>
+                  {[1, 2, 3].map(d => (
+                    <button
+                      key={d}
+                      onClick={() => setCaptureDpi(d)}
+                      className={`px-1 py-0.5 text-2xs rounded transition-colors ${
+                        captureDpi === d
+                          ? 'bg-blue-500 text-white'
+                          : 'text-on-surface-muted hover:bg-toolbar-hover'
+                      }`}
+                    >{d}x</button>
+                  ))}
+                </div>
+              )}
+
+              {/* Capture / crop controls */}
+              {plotlyJson && !capturedImage && (
                 <button
-                  onClick={captureView}
+                  onClick={handleCapture}
                   className="flex items-center gap-1 px-1.5 py-0.5 text-2xs text-on-surface-secondary hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors"
-                  title="Capture current view as static image"
+                  title="Capture current view and crop"
                 >
-                  <Camera size={10} /> Capture View
+                  <Camera size={10} /> Capture & Crop
                 </button>
               )}
+              {capturedImage && (
+                <>
+                  <button
+                    onClick={() => setCapturedImage(null)}
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-2xs text-on-surface-secondary hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors"
+                    title="Back to interactive view"
+                  >
+                    <RotateCcw size={10} /> Back to Interactive
+                  </button>
+                  {cropRect && (
+                    <button
+                      onClick={clearCrop}
+                      className="flex items-center gap-1 px-1.5 py-0.5 text-2xs text-red-500 hover:text-red-600 hover:bg-toolbar-hover rounded transition-colors"
+                      title="Clear crop"
+                    >
+                      <X size={10} /> Clear Crop
+                    </button>
+                  )}
+                </>
+              )}
             </div>
+
             <div className="flex-1 overflow-auto bg-surface-primary flex flex-col">
               {isRunning ? (
                 <div className="w-full h-full flex items-center justify-center">
@@ -429,15 +515,77 @@ export function PlotEditor() {
                 </div>
               ) : (
                 <>
-                  {/* Interactive plotly figure */}
-                  {plotlyJson && (
+                  {/* Interactive plotly with optional crop overlay */}
+                  {showInteractive && (
                     <div className="flex-1 min-h-0 relative">
                       <div ref={plotlyDivRef} className="absolute inset-0" />
+                      {/* Crop overlay on interactive view */}
+                      {cropRect && cropRect.w > 0.02 && (
+                        <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
+                          {/* Gray overlay with cutout */}
+                          <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1 1">
+                            <defs>
+                              <mask id="crop-mask">
+                                <rect x="0" y="0" width="1" height="1" fill="white" />
+                                <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" />
+                              </mask>
+                            </defs>
+                            <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.4)" mask="url(#crop-mask)" />
+                            <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
+                              fill="none" stroke="#3b82f6" strokeWidth="0.003" strokeDasharray="0.01 0.005" />
+                          </svg>
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  {/* Static plot image (shown when no interactive figure) */}
-                  {!plotlyJson && localOutput && (
+                  {/* Crop UI: static image with drag-to-crop */}
+                  {showCropUI && capturedImage && (
+                    <div className="flex-1 min-h-0 relative flex items-center justify-center p-2">
+                      <div
+                        ref={cropContainerRef}
+                        className="relative max-w-full max-h-full select-none"
+                        style={{ cursor: 'crosshair' }}
+                        onMouseDown={handleCropMouseDown}
+                        onMouseMove={handleCropMouseMove}
+                        onMouseUp={handleCropMouseUp}
+                        onMouseLeave={handleCropMouseUp}
+                      >
+                        <img
+                          src={`data:image/png;base64,${capturedImage}`}
+                          alt="Captured view"
+                          className="max-w-full max-h-full object-contain"
+                          draggable={false}
+                        />
+                        {/* Crop overlay */}
+                        {cropRect && cropRect.w > 0 && (
+                          <div className="absolute inset-0 pointer-events-none">
+                            <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1 1">
+                              <defs>
+                                <mask id="crop-mask-static">
+                                  <rect x="0" y="0" width="1" height="1" fill="white" />
+                                  <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" />
+                                </mask>
+                              </defs>
+                              <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.5)" mask="url(#crop-mask-static)" />
+                              <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
+                                fill="none" stroke="#3b82f6" strokeWidth="0.003" />
+                            </svg>
+                          </div>
+                        )}
+                        {!cropRect && (
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5">
+                              <Crop size={12} /> Drag to select crop region
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Static plot image (matplotlib or no plotly) */}
+                  {showStaticImage && (
                     <div className="flex-1 flex items-center justify-center p-4 min-h-0">
                       <img
                         src={`data:image/png;base64,${localOutput}`}
@@ -448,9 +596,9 @@ export function PlotEditor() {
                     </div>
                   )}
 
-                  {/* Stdout text output */}
+                  {/* Stdout */}
                   {localStdout && (
-                    <div className={`border-t border-border ${localOutput ? '' : 'flex-1'}`}>
+                    <div className={`border-t border-border ${!showInteractive && !showCropUI && !showStaticImage ? 'flex-1' : ''}`}>
                       <div className="px-3 py-1 bg-inspector-section border-b border-border">
                         <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Console</span>
                       </div>
@@ -465,7 +613,7 @@ export function PlotEditor() {
 
                   {/* Error */}
                   {localError && (
-                    <div className={`border-t border-border ${!plotlyJson && !localOutput && !localStdout ? 'flex-1 flex items-start' : ''}`}>
+                    <div className={`border-t border-border ${!showInteractive && !showCropUI && !showStaticImage && !localStdout ? 'flex-1 flex items-start' : ''}`}>
                       <pre
                         className="p-4 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap break-words w-full"
                         style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}
@@ -476,7 +624,7 @@ export function PlotEditor() {
                   )}
 
                   {/* Empty state */}
-                  {!plotlyJson && !localOutput && !localStdout && !localError && (
+                  {!showInteractive && !showCropUI && !showStaticImage && !localStdout && !localError && (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-on-surface-muted select-none">
                       {hasRun ? (
                         <div className="flex flex-col items-center gap-3 px-8 max-w-md">
