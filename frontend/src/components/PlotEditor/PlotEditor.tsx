@@ -3,7 +3,7 @@ import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import { Play, Square, Loader2, X, Code2, Camera, Crop, RotateCcw } from 'lucide-react';
-import Plotly from 'plotly.js-dist-min';
+// Plotly is loaded via CDN in the iframe — no need to import the full library
 
 // CodeMirror imports
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine } from '@codemirror/view';
@@ -251,7 +251,6 @@ export function PlotEditor() {
   const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null);
   const [capturedImage, setCapturedImage] = useState<string | null>(null); // full capture for crop UI
 
-  const plotlyDivRef = useRef<HTMLDivElement>(null);
   const cropContainerRef = useRef<HTMLDivElement>(null);
   const initRef = useRef<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -300,8 +299,7 @@ export function PlotEditor() {
       setLocalError(element.metadata?.lastError || null);
       setCropRect(element.metadata?.plotCrop || null);
       setCapturedImage(null);
-      // Don't restore plotlyJson — it's only available after running in this session
-      setPlotlyJson(null);
+      setPlotlyJson(element.metadata?.plotlyJson || null);
       setIsRunning(false);
       setHasRun(false);
       setExecutionId(null);
@@ -417,14 +415,19 @@ export function PlotEditor() {
 
   // Capture: snapshot plotly at current angle → enter crop mode
   const handleCapture = useCallback(async () => {
-    if (!plotlyDivRef.current) return;
+    const iframe = plotlyIframeRef.current;
+    const iframePlotly = (iframe?.contentWindow as any)?.Plotly;
+    const plotDiv = iframe?.contentDocument?.getElementById('plot');
+    if (!iframePlotly || !plotDiv) {
+      console.warn('[PlotEditor] Capture failed: iframe not ready');
+      return;
+    }
     try {
-      const dataUrl = await Plotly.toImage(plotlyDivRef.current, {
+      const dataUrl = await iframePlotly.toImage(plotDiv, {
         format: 'png', width: 800, height: 700, scale: captureDpi,
       });
       const base64 = dataUrl.replace(/^data:image\/png;base64,/, '');
       setCapturedImage(base64);
-      setIsCropping(true);
     } catch (e) {
       console.warn('[PlotEditor] Capture failed:', e);
     }
@@ -553,15 +556,20 @@ export function PlotEditor() {
       persistTimerRef.current = null;
     }
 
-    // Use captured image if available (from crop UI), otherwise try plotly capture
+    // Use captured image if available (from crop UI), otherwise try plotly capture from iframe
     let finalImage = capturedImage || localOutput;
-    if (!capturedImage && plotlyJson && plotlyDivRef.current) {
-      try {
-        const dataUrl = await Plotly.toImage(plotlyDivRef.current, {
-          format: 'png', width: 800, height: 700, scale: captureDpi,
-        });
-        finalImage = dataUrl.replace(/^data:image\/png;base64,/, '');
-      } catch {}
+    if (!capturedImage && plotlyJson) {
+      const iframe = plotlyIframeRef.current;
+      const iframePlotly = (iframe?.contentWindow as any)?.Plotly;
+      const plotDiv = iframe?.contentDocument?.getElementById('plot');
+      if (iframePlotly && plotDiv) {
+        try {
+          const dataUrl = await iframePlotly.toImage(plotDiv, {
+            format: 'png', width: 800, height: 700, scale: captureDpi,
+          });
+          finalImage = dataUrl.replace(/^data:image\/png;base64,/, '');
+        } catch {}
+      }
     }
 
     // Apply crop if set
@@ -585,7 +593,7 @@ export function PlotEditor() {
             lastStdout: localStdout,
             lastError: localError,
             plotCrop: cropRect,
-            // plotlyJson not persisted — too large and slow to re-render
+            plotlyJson: plotlyJson,
           },
         };
         // Adjust element size to match image aspect ratio (keep width, adjust height)
@@ -609,32 +617,31 @@ export function PlotEditor() {
     useUIStore.getState().setPlotEditorElementId(null);
   }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, capturedImage, captureDpi, updateElement, pushHistory, applyCrop]);
 
-  // Render plotly figure interactively
-  useEffect(() => {
-    if (!plotlyJson || !plotlyDivRef.current) return;
+  // Build iframe srcdoc for interactive plotly rendering
+  const plotlyIframeSrc = useCallback((jsonStr: string): string => {
     try {
-      const spec = JSON.parse(plotlyJson);
-      const data = spec.data || [];
+      const spec = JSON.parse(jsonStr);
+      const data = JSON.stringify(spec.data || []);
       const { width: _w, height: _h, ...restLayout } = (spec.layout || {});
-      const layout = {
+      const layout = JSON.stringify({
         ...restLayout,
         autosize: true,
         margin: restLayout.margin || { l: 0, r: 0, t: 30, b: 0 },
-      };
-      Plotly.react(plotlyDivRef.current, data, layout, {
-        responsive: true,
-        displayModeBar: true,
-        modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'],
       });
-    } catch (e) {
-      console.warn('[PlotEditor] Failed to render plotly:', e);
-    }
-    return () => {
-      if (plotlyDivRef.current) {
-        Plotly.purge(plotlyDivRef.current);
-      }
-    };
-  }, [plotlyJson]);
+      return `<!DOCTYPE html>
+<html><head>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden}#plot{width:100%;height:100%}</style>
+</head><body>
+<div id="plot"></div>
+<script>
+Plotly.newPlot('plot',${data},${layout},{responsive:true,displayModeBar:true,modeBarButtonsToRemove:['sendDataToCloud','toImage']});
+</script>
+</body></html>`;
+    } catch { return ''; }
+  }, []);
+
+  const plotlyIframeRef = useRef<HTMLIFrameElement>(null);
 
   handleRunRef.current = handleRun;
   handleCloseRef.current = handleClose;
@@ -805,10 +812,15 @@ export function PlotEditor() {
                 </div>
               ) : (
                 <>
-                  {/* Interactive plotly with optional crop overlay */}
-                  {showInteractive && (
+                  {/* Interactive plotly via iframe (renders independently, loads plotly from CDN) */}
+                  {showInteractive && plotlyJson && (
                     <div className="flex-1 min-h-0 relative">
-                      <div ref={plotlyDivRef} className="absolute inset-0" />
+                      <iframe
+                        ref={plotlyIframeRef}
+                        srcDoc={plotlyIframeSrc(plotlyJson)}
+                        className="absolute inset-0 w-full h-full border-none"
+                        sandbox="allow-scripts allow-same-origin"
+                      />
                       {/* Crop overlay on interactive view */}
                       {cropRect && cropRect.w > 0.02 && (
                         <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
