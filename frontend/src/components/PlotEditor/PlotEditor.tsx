@@ -317,24 +317,56 @@ export function PlotEditor() {
     const currentJson = getCurrentPlotlyJson();
     let finalImage = localOutput;
 
-    // Capture at the container's exact CSS dimensions with 2x pixel density.
-    // width/height = container CSS size ensures the aspect ratio matches exactly.
-    // scale = 2 doubles pixel density without changing the layout (fonts stay same).
+    // Capture strategy: render the container div to a canvas using the browser's
+    // native rendering. This captures exactly what's on screen — including the
+    // plotly figure with its modebar, margins, and any overlays.
     const container = plotlyContainerRef.current;
-    if (currentJson && plotlyDivRef.current && container) {
+    if (container) {
       try {
         const rect = container.getBoundingClientRect();
-        const url = await Plotly.toImage(plotlyDivRef.current, {
-          format: 'png',
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-          scale: captureScale,
-        });
-        finalImage = url.replace(/^data:image\/png;base64,/, '');
-      } catch {}
+        const w = Math.round(rect.width * captureScale);
+        const h = Math.round(rect.height * captureScale);
+
+        // Try to find plotly's internal canvas/svg and composite them
+        // For WebGL (3D), plotly uses a <canvas>. For 2D, it uses SVG.
+        const glCanvas = container.querySelector('canvas.gl-canvas, canvas') as HTMLCanvasElement | null;
+        const captureCanvas = document.createElement('canvas');
+        captureCanvas.width = w;
+        captureCanvas.height = h;
+        const ctx = captureCanvas.getContext('2d')!;
+
+        // White background
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+
+        if (glCanvas) {
+          // WebGL 3D plot — draw the GL canvas scaled to fill our capture canvas
+          const glRect = glCanvas.getBoundingClientRect();
+          const dx = (glRect.left - rect.left) * captureScale;
+          const dy = (glRect.top - rect.top) * captureScale;
+          const dw = glRect.width * captureScale;
+          const dh = glRect.height * captureScale;
+          ctx.drawImage(glCanvas, dx, dy, dw, dh);
+        } else {
+          // Fallback: use Plotly.toImage with scale
+          const url = await Plotly.toImage(plotlyDivRef.current!, { format: 'png', scale: captureScale });
+          const plotImg = await loadImage(url.replace(/^data:image\/png;base64,/, ''));
+          ctx.drawImage(plotImg, 0, 0, w, h);
+        }
+
+        finalImage = captureCanvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+      } catch (e) {
+        // Last resort fallback
+        if (plotlyDivRef.current) {
+          try {
+            const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: captureScale });
+            finalImage = url.replace(/^data:image\/png;base64,/, '');
+          } catch {}
+        }
+      }
     }
 
-    // Apply crop — fractions map directly since image = container * scale
+    // Apply crop — fractions are relative to container, image matches container exactly
     let cropped = finalImage;
     if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02) {
       try {
@@ -344,7 +376,7 @@ export function PlotEditor() {
         const sw = Math.round(cropRect.w * img.naturalWidth);
         const sh = Math.round(cropRect.h * img.naturalHeight);
         const canvas = document.createElement('canvas');
-        canvas.width = sw; canvas.height = sh;
+        canvas.width = Math.max(1, sw); canvas.height = Math.max(1, sh);
         canvas.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
         cropped = canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
       } catch (e) {
