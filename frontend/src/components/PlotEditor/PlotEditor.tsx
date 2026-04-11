@@ -567,7 +567,7 @@ export function PlotEditor() {
 
           <div className="flex-1" />
 
-          {hasOutput && !cropMode && (
+          {hasPlotly && !cropMode && (
             <button onClick={enterCropMode} className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
               <Crop size={12} /> {cropRect ? 'Edit Crop' : 'Crop'}
             </button>
@@ -656,12 +656,20 @@ export function PlotEditor() {
                     />
                   )}
 
+                  {/* Static image only (no interactive view available) */}
                   {!hasPlotly && localOutput && (
-                    <div className="flex-1 flex items-center justify-center p-4 min-h-0">
+                    <div className="flex-1 min-h-0 relative flex items-center justify-center p-4">
                       <img src={`data:image/png;base64,${localOutput}`} alt="Plot" className="max-w-full max-h-full object-contain" draggable={false} />
+                      {/* Banner: run to get interactive view */}
+                      {element?.type === 'plot' && element?.metadata?.code && (
+                        <div className={`absolute top-2 left-2 right-2 text-center text-xs px-3 py-1.5 rounded ${isDark ? 'bg-yellow-900/40 text-yellow-300/80' : 'bg-yellow-100 text-yellow-700'}`}>
+                          Run to enable interactive view
+                        </div>
+                      )}
                     </div>
                   )}
 
+                  {/* Empty: no output at all */}
                   {!hasOutput && (
                     <div className={`w-full h-full flex flex-col items-center justify-center gap-3 select-none px-8 ${isDark ? 'text-white/25' : 'text-gray-300'}`}>
                       {hasRun ? (
