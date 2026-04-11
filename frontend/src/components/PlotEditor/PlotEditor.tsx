@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
-import { Play, Square, Loader2, X, Code2, Crop, Check } from 'lucide-react';
+import { Play, Square, Loader2, X, Crop, Check, Save } from 'lucide-react';
 import Plotly from 'plotly.js-dist-min';
 
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine } from '@codemirror/view';
@@ -13,173 +13,121 @@ import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from '@
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
 
-function generateId() {
-  return Math.random().toString(36).slice(2, 10);
+function generateId() { return Math.random().toString(36).slice(2, 10); }
+
+interface CropRect { x: number; y: number; w: number; h: number; }
+
+// ─── Draggable Splitter ────────────────────────────────────────
+function Splitter({ dir, onDrag }: { dir: 'h' | 'v'; onDrag: (delta: number) => void }) {
+  const onDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const start = dir === 'h' ? e.clientX : e.clientY;
+    const onMove = (ev: MouseEvent) => onDrag((dir === 'h' ? ev.clientX : ev.clientY) - start);
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [dir, onDrag]);
+
+  return (
+    <div
+      onMouseDown={onDown}
+      className={dir === 'h'
+        ? 'w-1 shrink-0 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors'
+        : 'h-1 shrink-0 cursor-row-resize hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors'
+      }
+      style={{ backgroundColor: 'rgba(128,128,128,0.15)' }}
+    />
+  );
 }
 
-interface CropRect {
-  x: number; y: number; w: number; h: number;
-}
-
-// ─── Phase A: Crop Editor ──────────────────────────────────────
-// Full interactive crop overlay with 8 handles + move + draw.
-// Captures ALL pointer events (plotly frozen underneath).
-
-const H = 8; // handle size
+// ─── Crop Editor (Phase A) ─────────────────────────────────────
+const HS = 8;
 type Dir = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
-const DIR_CURSOR: Record<Dir, string> = {
-  nw: 'nwse-resize', n: 'ns-resize', ne: 'nesw-resize', e: 'ew-resize',
-  se: 'nwse-resize', s: 'ns-resize', sw: 'nesw-resize', w: 'ew-resize',
-};
+const DC: Record<Dir, string> = { nw:'nwse-resize', n:'ns-resize', ne:'nesw-resize', e:'ew-resize', se:'nwse-resize', s:'ns-resize', sw:'nesw-resize', w:'ew-resize' };
 
 function CropEditor({ cropRect, onChange, containerRef }: {
-  cropRect: CropRect | null;
-  onChange: (r: CropRect | null) => void;
+  cropRect: CropRect | null; onChange: (r: CropRect | null) => void;
   containerRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const cropRef = useRef(cropRect);
-  cropRef.current = cropRect;
-
-  const toFrac = useCallback((e: MouseEvent | React.MouseEvent) => {
-    const el = containerRef.current;
-    if (!el) return { fx: 0, fy: 0 };
+  const cr = useRef(cropRect); cr.current = cropRect;
+  const toF = useCallback((e: MouseEvent | React.MouseEvent) => {
+    const el = containerRef.current; if (!el) return { fx: 0, fy: 0 };
     const r = el.getBoundingClientRect();
-    return {
-      fx: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
-      fy: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)),
-    };
+    return { fx: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), fy: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) };
   }, [containerRef]);
-
-  const useDrag = useCallback((onMove: (ev: MouseEvent) => void, onDone?: () => void) => {
-    const move = (ev: MouseEvent) => { ev.preventDefault(); onMove(ev); };
-    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); onDone?.(); };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
+  const drag = useCallback((onM: (ev: MouseEvent) => void, onD?: () => void) => {
+    const m = (ev: MouseEvent) => { ev.preventDefault(); onM(ev); };
+    const u = () => { document.removeEventListener('mousemove', m); document.removeEventListener('mouseup', u); onD?.(); };
+    document.addEventListener('mousemove', m); document.addEventListener('mouseup', u);
   }, []);
-
-  // Draw new
-  const onBgDown = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).dataset.crop) return;
-    e.preventDefault();
-    const { fx, fy } = toFrac(e);
-    const sx = fx, sy = fy;
+  const onBg = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).dataset.crop) return; e.preventDefault();
+    const { fx, fy } = toF(e); const sx = fx, sy = fy;
     onChange({ x: fx, y: fy, w: 0, h: 0 });
-    useDrag((ev) => {
-      const { fx: mx, fy: my } = toFrac(ev);
-      onChange({ x: Math.min(sx, mx), y: Math.min(sy, my), w: Math.abs(mx - sx), h: Math.abs(my - sy) });
-    }, () => { const cr = cropRef.current; if (cr && (cr.w < 0.01 || cr.h < 0.01)) onChange(null); });
-  }, [toFrac, onChange, useDrag]);
-
-  // Resize
-  const onHandleDown = useCallback((dir: Dir, e: React.MouseEvent) => {
-    e.stopPropagation(); e.preventDefault();
-    if (!cropRef.current) return;
-    const s = { ...cropRef.current };
-    const { fx: sx, fy: sy } = toFrac(e);
-    useDrag((ev) => {
-      const { fx, fy } = toFrac(ev);
-      const dx = fx - sx, dy = fy - sy;
-      let { x, y, w, h } = s;
-      const r = s.x + s.w, b = s.y + s.h;
-      // Edges
-      if (dir.includes('w')) { x = Math.max(0, Math.min(r - 0.02, s.x + dx)); w = r - x; }
-      if (dir.includes('e')) { w = Math.max(0.02, Math.min(1 - s.x, s.w + dx)); }
-      if (dir.includes('n')) { y = Math.max(0, Math.min(b - 0.02, s.y + dy)); h = b - y; }
-      if (dir.includes('s')) { h = Math.max(0.02, Math.min(1 - s.y, s.h + dy)); }
-      // Single-axis dirs: keep other axis unchanged
-      if (dir === 'n' || dir === 's') { x = s.x; w = s.w; }
-      if (dir === 'e' || dir === 'w') { y = s.y; h = s.h; }
+    drag((ev) => { const { fx: mx, fy: my } = toF(ev); onChange({ x: Math.min(sx, mx), y: Math.min(sy, my), w: Math.abs(mx - sx), h: Math.abs(my - sy) }); },
+      () => { const c = cr.current; if (c && (c.w < 0.01 || c.h < 0.01)) onChange(null); });
+  }, [toF, onChange, drag]);
+  const onH = useCallback((d: Dir, e: React.MouseEvent) => {
+    e.stopPropagation(); e.preventDefault(); if (!cr.current) return;
+    const s = { ...cr.current }; const { fx: sx, fy: sy } = toF(e);
+    drag((ev) => {
+      const { fx, fy } = toF(ev); const dx = fx - sx, dy = fy - sy;
+      let { x, y, w, h } = s; const rb = s.x + s.w, bb = s.y + s.h;
+      if (d.includes('w')) { x = Math.max(0, Math.min(rb - 0.02, s.x + dx)); w = rb - x; }
+      if (d.includes('e')) { w = Math.max(0.02, Math.min(1 - s.x, s.w + dx)); }
+      if (d.includes('n')) { y = Math.max(0, Math.min(bb - 0.02, s.y + dy)); h = bb - y; }
+      if (d.includes('s')) { h = Math.max(0.02, Math.min(1 - s.y, s.h + dy)); }
+      if (d === 'n' || d === 's') { x = s.x; w = s.w; }
+      if (d === 'e' || d === 'w') { y = s.y; h = s.h; }
       onChange({ x, y, w, h });
     });
-  }, [toFrac, onChange, useDrag]);
+  }, [toF, onChange, drag]);
+  const onMv = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation(); e.preventDefault(); if (!cr.current) return;
+    const s = { ...cr.current }; const { fx: sx, fy: sy } = toF(e);
+    drag((ev) => { const { fx, fy } = toF(ev); onChange({ x: Math.max(0, Math.min(1 - s.w, s.x + fx - sx)), y: Math.max(0, Math.min(1 - s.h, s.y + fy - sy)), w: s.w, h: s.h }); });
+  }, [toF, onChange, drag]);
 
-  // Move
-  const onMoveDown = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation(); e.preventDefault();
-    if (!cropRef.current) return;
-    const s = { ...cropRef.current };
-    const { fx: sx, fy: sy } = toFrac(e);
-    useDrag((ev) => {
-      const { fx, fy } = toFrac(ev);
-      let nx = s.x + (fx - sx), ny = s.y + (fy - sy);
-      nx = Math.max(0, Math.min(1 - s.w, nx));
-      ny = Math.max(0, Math.min(1 - s.h, ny));
-      onChange({ x: nx, y: ny, w: s.w, h: s.h });
-    });
-  }, [toFrac, onChange, useDrag]);
-
-  // Handle positions
-  const handles: { dir: Dir; x: number; y: number }[] = cropRect ? [
-    { dir: 'nw', x: cropRect.x, y: cropRect.y },
-    { dir: 'n',  x: cropRect.x + cropRect.w / 2, y: cropRect.y },
-    { dir: 'ne', x: cropRect.x + cropRect.w, y: cropRect.y },
-    { dir: 'e',  x: cropRect.x + cropRect.w, y: cropRect.y + cropRect.h / 2 },
-    { dir: 'se', x: cropRect.x + cropRect.w, y: cropRect.y + cropRect.h },
-    { dir: 's',  x: cropRect.x + cropRect.w / 2, y: cropRect.y + cropRect.h },
-    { dir: 'sw', x: cropRect.x, y: cropRect.y + cropRect.h },
-    { dir: 'w',  x: cropRect.x, y: cropRect.y + cropRect.h / 2 },
+  const handles: { d: Dir; x: number; y: number }[] = cropRect ? [
+    { d:'nw', x:cropRect.x, y:cropRect.y }, { d:'n', x:cropRect.x+cropRect.w/2, y:cropRect.y },
+    { d:'ne', x:cropRect.x+cropRect.w, y:cropRect.y }, { d:'e', x:cropRect.x+cropRect.w, y:cropRect.y+cropRect.h/2 },
+    { d:'se', x:cropRect.x+cropRect.w, y:cropRect.y+cropRect.h }, { d:'s', x:cropRect.x+cropRect.w/2, y:cropRect.y+cropRect.h },
+    { d:'sw', x:cropRect.x, y:cropRect.y+cropRect.h }, { d:'w', x:cropRect.x, y:cropRect.y+cropRect.h/2 },
   ] : [];
 
   return (
-    <div className="absolute inset-0" style={{ zIndex: 20, cursor: 'crosshair', pointerEvents: 'auto' }}
-      onMouseDown={onBgDown}>
-      {/* Dim mask */}
-      {cropRect && cropRect.w > 0.01 && (
+    <div className="absolute inset-0" style={{ zIndex: 20, cursor: 'crosshair', pointerEvents: 'auto' }} onMouseDown={onBg}>
+      {cropRect && cropRect.w > 0.01 && (<>
         <svg className="absolute inset-0 w-full h-full" style={{ pointerEvents: 'none' }} preserveAspectRatio="none" viewBox="0 0 1 1">
-          <defs><mask id="sdraw-crop-edit">
-            <rect x="0" y="0" width="1" height="1" fill="white" />
-            <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" />
-          </mask></defs>
+          <defs><mask id="sdraw-crop-edit"><rect x="0" y="0" width="1" height="1" fill="white" /><rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" /></mask></defs>
           <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.5)" mask="url(#sdraw-crop-edit)" />
-          <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
-            fill="none" stroke="#3b82f6" strokeWidth="0.003" />
+          <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="none" stroke="#3b82f6" strokeWidth="0.003" />
         </svg>
-      )}
-      {/* Move area */}
-      {cropRect && cropRect.w > 0.01 && (
-        <div data-crop="move" onMouseDown={onMoveDown} style={{
-          position: 'absolute', left: `${cropRect.x * 100}%`, top: `${cropRect.y * 100}%`,
-          width: `${cropRect.w * 100}%`, height: `${cropRect.h * 100}%`,
-          cursor: 'move', zIndex: 21,
-        }} />
-      )}
-      {/* 8 handles */}
-      {handles.map(({ dir, x, y }) => (
-        <div key={dir} data-crop="handle" onMouseDown={(e) => onHandleDown(dir, e)} style={{
-          position: 'absolute',
-          left: `calc(${x * 100}% - ${H / 2}px)`, top: `calc(${y * 100}% - ${H / 2}px)`,
-          width: H, height: H,
-          backgroundColor: '#3b82f6', border: '1.5px solid white', borderRadius: 2,
-          cursor: DIR_CURSOR[dir], zIndex: 22,
-        }} />
-      ))}
-      {/* Hint */}
+        <div data-crop="move" onMouseDown={onMv} style={{ position:'absolute', left:`${cropRect.x*100}%`, top:`${cropRect.y*100}%`, width:`${cropRect.w*100}%`, height:`${cropRect.h*100}%`, cursor:'move', zIndex:21 }} />
+        {handles.map(({ d, x, y }) => (
+          <div key={d} data-crop="handle" onMouseDown={(e) => onH(d, e)} style={{
+            position:'absolute', left:`calc(${x*100}% - ${HS/2}px)`, top:`calc(${y*100}% - ${HS/2}px)`,
+            width:HS, height:HS, backgroundColor:'#3b82f6', border:'1.5px solid white', borderRadius:2, cursor:DC[d], zIndex:22,
+          }} />
+        ))}
+      </>)}
       {!cropRect && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5">
-            <Crop size={12} /> Drag to select crop region
-          </div>
+          <div className="bg-black/60 text-white text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5"><Crop size={12} /> Drag to select crop region</div>
         </div>
       )}
     </div>
   );
 }
 
-// ─── Phase B: Crop Indicator ───────────────────────────────────
-// Visual-only overlay. No pointer events. Shows the crop region with
-// a dashed border and lightly dimmed outside.
-
+// ─── Crop Indicator (Phase B) ──────────────────────────────────
 function CropIndicator({ cropRect }: { cropRect: CropRect }) {
   return (
     <div className="absolute inset-0" style={{ zIndex: 10, pointerEvents: 'none' }}>
       <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1 1">
-        <defs><mask id="sdraw-crop-view">
-          <rect x="0" y="0" width="1" height="1" fill="white" />
-          <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" />
-        </mask></defs>
+        <defs><mask id="sdraw-crop-view"><rect x="0" y="0" width="1" height="1" fill="white" /><rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" /></mask></defs>
         <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.3)" mask="url(#sdraw-crop-view)" />
-        <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
-          fill="none" stroke="#3b82f6" strokeWidth="0.002" strokeDasharray="0.01 0.005" />
+        <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="none" stroke="#3b82f6" strokeWidth="0.002" strokeDasharray="0.01 0.005" />
       </svg>
     </div>
   );
@@ -189,14 +137,11 @@ function CropIndicator({ cropRect }: { cropRect: CropRect }) {
 
 export function PlotEditor() {
   const elementId = useUIStore(s => s.plotEditorElementId);
-  const element = useBoardStore(s =>
-    elementId ? s.board?.elements.find(el => el.id === elementId) : undefined
-  );
+  const element = useBoardStore(s => elementId ? s.board?.elements.find(el => el.id === elementId) : undefined);
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const theme = useUIStore(s => s.theme);
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-
   const boardPythonEnv = useBoardStore(s => s.board?.pythonEnvPath);
   const globalPythonEnv = useUIStore(s => s.pythonEnvPath);
   const activePythonEnv = boardPythonEnv ?? globalPythonEnv;
@@ -213,6 +158,12 @@ export function PlotEditor() {
   const [cropRect, setCropRect] = useState<CropRect | null>(null);
   const [cropMode, setCropMode] = useState(false);
 
+  // Layout: horizontal split (left width %), vertical split (code height %)
+  const [leftPct, setLeftPct] = useState(45);
+  const [codePct, setCodePct] = useState(75);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const leftRef = useRef<HTMLDivElement>(null);
+
   const plotlyContainerRef = useRef<HTMLDivElement>(null);
   const plotlyDivRef = useRef<HTMLDivElement | null>(null);
   const initRef = useRef<string | null>(null);
@@ -226,14 +177,10 @@ export function PlotEditor() {
     const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
     if (!el) return;
     const code = codeRef.current;
-    if (code !== el.metadata?.code || localOutput !== el.metadata?.lastOutput ||
-        localStdout !== el.metadata?.lastStdout || localError !== el.metadata?.lastError) {
-      updateElement(elementId, {
-        metadata: { ...el.metadata, code, lastOutput: localOutput, lastStdout: localStdout, lastError: localError },
-      });
+    if (code !== el.metadata?.code || localOutput !== el.metadata?.lastOutput || localStdout !== el.metadata?.lastStdout || localError !== el.metadata?.lastError) {
+      updateElement(elementId, { metadata: { ...el.metadata, code, lastOutput: localOutput, lastStdout: localStdout, lastError: localError } });
     }
   }, [elementId, localOutput, localStdout, localError, updateElement]);
-
   const schedulePersist = useCallback(() => {
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
     persistTimerRef.current = setTimeout(() => persistToStore(), 2000);
@@ -253,7 +200,7 @@ export function PlotEditor() {
     }
   }, [elementId, element]);
 
-  // CodeMirror
+  // CodeMirror — always dark theme for code
   useEffect(() => {
     if (!editorRef.current || !elementId) return;
     if (viewRef.current) { viewRef.current.destroy(); viewRef.current = null; }
@@ -270,20 +217,20 @@ export function PlotEditor() {
       EditorView.updateListener.of((u) => {
         if (u.docChanged) { const c = u.state.doc.toString(); codeRef.current = c; setLocalCode(c); schedulePersist(); }
       }),
+      oneDark,
       EditorView.theme({
-        '&': { height: '100%', fontSize: '12px' },
-        '.cm-scroller': { overflow: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' },
-        '.cm-content': { padding: '8px 0' }, '.cm-gutters': { borderRight: 'none' },
+        '&': { height: '100%', fontSize: '13px' },
+        '.cm-scroller': { overflow: 'auto', fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' },
+        '.cm-content': { padding: '12px 0' },
+        '.cm-gutters': { borderRight: 'none', minWidth: '3em' },
       }),
     ];
-    if (isDark) exts.push(oneDark);
-    else exts.push(EditorView.theme({ '.cm-gutters': { backgroundColor: '#f8f9fa', color: '#999' } }));
     const st = EditorState.create({ doc: codeRef.current, extensions: exts });
     const v = new EditorView({ state: st, parent: editorRef.current });
     viewRef.current = v;
     requestAnimationFrame(() => v.focus());
     return () => { v.destroy(); viewRef.current = null; };
-  }, [elementId, isDark]);
+  }, [elementId]);
 
   const handleRunRef = useRef<() => void>(() => {});
   const handleCloseRef = useRef<() => void>(() => {});
@@ -291,8 +238,7 @@ export function PlotEditor() {
   const handleRun = useCallback(async () => {
     if (isRunning || !elementId) return;
     const execId = generateId();
-    setIsRunning(true); setExecutionId(execId);
-    setLocalError(null); setLocalStdout(null);
+    setIsRunning(true); setExecutionId(execId); setLocalError(null); setLocalStdout(null);
     try {
       const env = useBoardStore.getState().board?.pythonEnvPath ?? useUIStore.getState().pythonEnvPath;
       const bp = useBoardStore.getState().boardFilePath;
@@ -300,310 +246,243 @@ export function PlotEditor() {
       const r = await api.executePlot(codeRef.current, 30, 150, env, execId, cwd);
       setLocalOutput(r.image_base64); setLocalStdout(r.stdout);
       setLocalError(r.success ? null : r.error); setPlotlyJson(r.plotly_json);
-    } catch (err: any) {
-      if (!String(err).includes('abort')) setLocalError(String(err));
-    } finally { setIsRunning(false); setHasRun(true); setExecutionId(null); }
+    } catch (err: any) { if (!String(err).includes('abort')) setLocalError(String(err)); }
+    finally { setIsRunning(false); setHasRun(true); setExecutionId(null); }
   }, [elementId, isRunning]);
 
-  const handleAbort = useCallback(async () => {
-    if (executionId) { try { await api.abortPlot(executionId); } catch {} }
-  }, [executionId]);
+  const handleAbort = useCallback(async () => { if (executionId) { try { await api.abortPlot(executionId); } catch {} } }, [executionId]);
 
   const applyCrop = useCallback((b64: string, crop: CropRect): Promise<string> => {
     return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
+      const img = new Image(); img.onload = () => {
         const sx = Math.round(crop.x * img.width), sy = Math.round(crop.y * img.height);
         const sw = Math.round(crop.w * img.width), sh = Math.round(crop.h * img.height);
         const c = document.createElement('canvas'); c.width = sw; c.height = sh;
         c.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
         resolve(c.toDataURL('image/png').replace(/^data:image\/png;base64,/, ''));
-      };
-      img.src = `data:image/png;base64,${b64}`;
+      }; img.src = `data:image/png;base64,${b64}`;
     });
   }, []);
 
-  // Get the current plotly layout (includes camera position set by user interaction)
   const getCurrentPlotlyJson = useCallback(() => {
     if (!plotlyJson || !plotlyDivRef.current) return plotlyJson;
-    try {
-      const div = plotlyDivRef.current as any;
-      if (div.data && div.layout) {
-        return JSON.stringify({ data: div.data, layout: div.layout });
-      }
-    } catch {}
+    try { const d = plotlyDivRef.current as any; if (d.data && d.layout) return JSON.stringify({ data: d.data, layout: d.layout }); } catch {}
     return plotlyJson;
   }, [plotlyJson]);
 
-  // Save: capture current view + crop → persist to canvas node
   const handleSave = useCallback(async () => {
     if (!elementId) return;
-
-    // Capture the current plotly state (including camera position)
     const currentJson = getCurrentPlotlyJson();
-
-    // Capture image at the container's aspect ratio so crop coordinates align
     let finalImage = localOutput;
     if (currentJson && plotlyDivRef.current) {
       try {
-        const container = plotlyDivRef.current.getBoundingClientRect();
-        const url = await Plotly.toImage(plotlyDivRef.current, {
-          format: 'png',
-          width: Math.round(container.width * captureDpi),
-          height: Math.round(container.height * captureDpi),
-          scale: 1,
-        });
+        const c = plotlyDivRef.current.getBoundingClientRect();
+        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', width: Math.round(c.width * captureDpi), height: Math.round(c.height * captureDpi), scale: 1 });
         finalImage = url.replace(/^data:image\/png;base64,/, '');
       } catch {}
     }
-
-    // Apply crop
     let cropped = finalImage;
-    if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02) {
-      try { cropped = await applyCrop(finalImage, cropRect); } catch {}
-    }
-
+    if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02) { try { cropped = await applyCrop(finalImage, cropRect); } catch {} }
     const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
     if (el) {
-      const updates: Record<string, any> = {
-        metadata: {
-          ...el.metadata, code: codeRef.current,
-          lastOutput: cropped, lastStdout: localStdout, lastError: localError,
-          plotCrop: cropRect, plotlyJson: currentJson,
-        },
-      };
-      // Adjust element aspect ratio to match image
-      if (cropped) {
-        try {
-          const img = new Image(); img.src = `data:image/png;base64,${cropped}`;
-          await new Promise<void>(r => { img.onload = () => r(); img.onerror = () => r(); });
-          if (img.naturalWidth > 0) updates.height = Math.round(el.width * (img.naturalHeight / img.naturalWidth));
-        } catch {}
-      }
-      updateElement(elementId, updates);
-      pushHistory('Save plot');
-      // Also update local plotlyJson to include camera state
+      const updates: Record<string, any> = { metadata: { ...el.metadata, code: codeRef.current, lastOutput: cropped, lastStdout: localStdout, lastError: localError, plotCrop: cropRect, plotlyJson: currentJson } };
+      if (cropped) { try { const img = new Image(); img.src = `data:image/png;base64,${cropped}`; await new Promise<void>(r => { img.onload = () => r(); img.onerror = () => r(); }); if (img.naturalWidth > 0) updates.height = Math.round(el.width * (img.naturalHeight / img.naturalWidth)); } catch {} }
+      updateElement(elementId, updates); pushHistory('Save plot');
       setPlotlyJson(currentJson);
     }
   }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, captureDpi, updateElement, pushHistory, applyCrop, getCurrentPlotlyJson]);
 
-  // Close: just close the editor (save first if needed)
-  const handleClose = useCallback(async () => {
+  const handleClose = useCallback(() => {
     if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
-    initRef.current = null;
-    useUIStore.getState().setPlotEditorElementId(null);
+    initRef.current = null; useUIStore.getState().setPlotEditorElementId(null);
   }, []);
 
-  // Save & Close
-  const handleSaveAndClose = useCallback(async () => {
-    await handleSave();
-    handleClose();
-  }, [handleSave, handleClose]);
+  const handleSaveAndClose = useCallback(async () => { await handleSave(); handleClose(); }, [handleSave, handleClose]);
 
-  // Plotly render — uses callback ref to render as soon as div mounts
-  const plotlyJsonRef = useRef(plotlyJson);
-  plotlyJsonRef.current = plotlyJson;
-
+  // Plotly render
+  const plotlyJsonRef = useRef(plotlyJson); plotlyJsonRef.current = plotlyJson;
   const renderPlotly = useCallback((div: HTMLDivElement) => {
-    const json = plotlyJsonRef.current;
-    if (!json) return;
+    const json = plotlyJsonRef.current; if (!json) return;
     try {
       const spec = JSON.parse(json);
-      // Strip fixed width/height but keep everything else (including camera/scene)
       const { width: _w, height: _h, ...rest } = (spec.layout || {});
-      Plotly.react(div, spec.data || [], {
-        ...rest, autosize: true,
-      }, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'] });
+      Plotly.react(div, spec.data || [], { ...rest, autosize: true }, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'] });
     } catch (e) { console.warn('[PlotEditor] plotly error:', e); }
   }, []);
-
-  // Callback ref: fires when div mounts/unmounts
   const plotlyRefCallback = useCallback((node: HTMLDivElement | null) => {
-    if (plotlyDivRef.current && !node) {
-      Plotly.purge(plotlyDivRef.current);
-    }
+    if (plotlyDivRef.current && !node) Plotly.purge(plotlyDivRef.current);
     plotlyDivRef.current = node;
     if (node) renderPlotly(node);
   }, [renderPlotly]);
-
-  // Re-render when plotlyJson changes (div already mounted)
-  useEffect(() => {
-    if (!plotlyJson || !plotlyDivRef.current) return;
-    renderPlotly(plotlyDivRef.current);
-  }, [plotlyJson, renderPlotly]);
+  useEffect(() => { if (plotlyJson && plotlyDivRef.current) renderPlotly(plotlyDivRef.current); }, [plotlyJson, renderPlotly]);
 
   handleRunRef.current = handleRun;
   handleCloseRef.current = handleSaveAndClose;
   useEffect(() => { return () => { if (persistTimerRef.current) clearTimeout(persistTimerRef.current); }; }, []);
 
-  if (!elementId || !element) return null;
+  // Splitter drag handlers
+  const hSplitStart = useRef(leftPct);
+  const vSplitStart = useRef(codePct);
+  const onHSplit = useCallback((delta: number) => {
+    const body = bodyRef.current; if (!body) return;
+    const pct = hSplitStart.current + (delta / body.clientWidth) * 100;
+    setLeftPct(Math.max(25, Math.min(75, pct)));
+  }, []);
+  const onVSplit = useCallback((delta: number) => {
+    const left = leftRef.current; if (!left) return;
+    const pct = vSplitStart.current + (delta / left.clientHeight) * 100;
+    setCodePct(Math.max(30, Math.min(90, pct)));
+  }, []);
+  // Reset start on mousedown
+  useEffect(() => { hSplitStart.current = leftPct; }, [leftPct]);
+  useEffect(() => { vSplitStart.current = codePct; }, [codePct]);
 
+  if (!elementId || !element) return null;
   const hasPlotly = !!plotlyJson;
   const hasOutput = !!localOutput || hasPlotly;
+  const hasConsole = !!localStdout || !!localError;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black/30" onClick={handleSaveAndClose}>
-      <div className="m-6 flex-1 flex flex-col bg-surface-primary rounded-lg shadow-2xl overflow-hidden border border-border"
+    <div className="fixed inset-0 z-50 flex flex-col" onClick={handleSaveAndClose}>
+      {/* Dark translucent backdrop */}
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+
+      <div className="relative m-4 flex-1 flex flex-col rounded-xl shadow-2xl overflow-hidden border border-white/10"
+        style={{ backgroundColor: '#1e1e2e' }}
         onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
-        <div className="h-10 bg-toolbar-bg border-b border-toolbar-border flex items-center px-3 gap-2 shrink-0 select-none">
-          <Code2 size={15} className="text-on-surface-secondary shrink-0" />
-          <span className="text-xs font-semibold text-on-surface-primary">Plot Editor</span>
-          <span className="text-2xs text-on-surface-muted truncate max-w-[200px]" title={activePythonEnv || 'default (built-in)'}>
-            [{(activePythonEnv || 'default').split('/').pop()}]
-          </span>
-          <div className="w-px h-5 bg-toolbar-border mx-1" />
-
+        {/* Compact toolbar */}
+        <div className="h-9 flex items-center px-3 gap-1.5 shrink-0 select-none border-b border-white/[0.06]" style={{ backgroundColor: '#181825' }}>
+          {/* Run/Stop */}
           {isRunning ? (
-            <button onClick={handleAbort} className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md text-red-100"
-              style={{ backgroundColor: isDark ? 'rgba(239,68,68,0.2)' : 'rgba(239,68,68,0.75)', border: isDark ? '1px solid rgba(239,68,68,0.35)' : '1px solid rgba(239,68,68,0.45)' }}>
+            <button onClick={handleAbort} className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded text-red-300 hover:text-red-200" style={{ backgroundColor: 'rgba(239,68,68,0.15)' }}>
               <Square size={10} fill="currentColor" /> Stop
             </button>
           ) : (
-            <button onClick={handleRun} className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md text-green-100"
-              style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.2)' : 'rgba(74,186,120,0.75)', border: isDark ? '1px solid rgba(34,197,94,0.35)' : '1px solid rgba(74,186,120,0.45)', boxShadow: isDark ? '0 0 8px rgba(34,197,94,0.1)' : '0 0 6px rgba(22,163,74,0.15)' }}>
-              <Play size={12} /> Run
+            <button onClick={handleRun} className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded text-green-300 hover:text-green-200" style={{ backgroundColor: 'rgba(34,197,94,0.15)' }}>
+              <Play size={10} /> Run
             </button>
           )}
-          <span className="text-2xs text-on-surface-muted select-none">{isRunning ? 'Running...' : 'Cmd+Enter'}</span>
+          <span className="text-[10px] text-white/30">{isRunning ? '' : '\u2318\u23CE'}</span>
+
+          <div className="w-px h-4 bg-white/10 mx-1" />
+
+          {/* Python env */}
+          <span className="text-[10px] text-white/30 truncate max-w-[140px]" title={activePythonEnv || 'default'}>
+            {(activePythonEnv || 'default').split('/').pop()}
+          </span>
+
           <div className="flex-1" />
+
+          {/* Output controls */}
+          {hasPlotly && (
+            <div className="flex items-center gap-0.5 mr-1">
+              {([1, 2, 3] as const).map(d => (
+                <button key={d} onClick={() => setCaptureDpi(d)} title={`${d}x resolution`}
+                  className={`px-1 py-0.5 text-[10px] rounded ${captureDpi === d ? 'bg-blue-500/30 text-blue-300' : 'text-white/30 hover:text-white/50'}`}>
+                  {d}x
+                </button>
+              ))}
+            </div>
+          )}
+
+          {hasOutput && !cropMode && (
+            <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded ${cropRect ? 'text-blue-400' : 'text-white/40 hover:text-white/60'}`}>
+              <Crop size={9} /> {cropRect ? 'Edit Crop' : 'Crop'}
+            </button>
+          )}
+          {cropMode && (
+            <button onClick={() => setCropMode(false)} className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-blue-300 rounded bg-blue-500/20">
+              <Check size={9} /> Done
+            </button>
+          )}
+          {cropRect && !cropMode && (
+            <button onClick={() => setCropRect(null)} className="text-[10px] text-red-400/60 hover:text-red-400 px-1">
+              <X size={9} />
+            </button>
+          )}
+
+          <div className="w-px h-4 bg-white/10 mx-1" />
 
           {hasOutput && (
             <>
-              <button onClick={handleSave}
-                className="flex items-center gap-1 px-2 py-0.5 text-2xs text-on-surface-secondary hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors"
-                title="Save current view to canvas">
-                Save
+              <button onClick={handleSave} className="text-[10px] text-white/40 hover:text-white/70 px-1.5 py-0.5 rounded hover:bg-white/5" title="Save to canvas">
+                <Save size={11} />
               </button>
-              <button onClick={handleSaveAndClose}
-                className="flex items-center gap-1 px-2 py-0.5 text-2xs font-medium text-white rounded" style={{ backgroundColor: '#3b82f6' }}
-                title="Save and close editor">
+              <button onClick={handleSaveAndClose} className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded text-white/80 hover:text-white bg-blue-600/60 hover:bg-blue-600/80">
                 Save & Close
               </button>
             </>
           )}
-          <button onClick={handleClose} className="p-1 text-on-surface-muted hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors" title="Close without saving">
-            <X size={16} />
+          <button onClick={handleClose} className="text-white/30 hover:text-white/60 p-0.5 rounded hover:bg-white/5 ml-0.5" title="Close without saving">
+            <X size={14} />
           </button>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 flex min-h-0">
-          {/* Code + Console/Error */}
-          <div className="w-1/2 flex flex-col border-r border-border">
-            <div className="px-3 py-1.5 border-b border-border bg-inspector-section shrink-0">
-              <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Code</span>
-            </div>
-            <div ref={editorRef} className="flex-1 overflow-hidden" style={{ minHeight: 0 }} />
+        {/* Body: code+console | splitter | output */}
+        <div className="flex-1 flex min-h-0" ref={bodyRef}>
+          {/* Left: code + console */}
+          <div className="flex flex-col min-h-0 overflow-hidden" style={{ width: `${leftPct}%` }} ref={leftRef}>
+            {/* Code editor */}
+            <div ref={editorRef} className="overflow-hidden" style={{ height: hasConsole ? `${codePct}%` : '100%', minHeight: 0 }} />
 
-            {/* Stdout */}
-            {localStdout && (
-              <div className="border-t border-border shrink-0">
-                <div className="px-3 py-1 bg-inspector-section border-b border-border">
-                  <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Console</span>
+            {/* Console/Error */}
+            {hasConsole && (
+              <>
+                <Splitter dir="v" onDrag={onVSplit} />
+                <div className="overflow-auto min-h-0" style={{ height: `${100 - codePct}%`, backgroundColor: '#11111b' }}>
+                  {localStdout && (
+                    <pre className="px-3 py-2 text-xs text-[#a6adc8] whitespace-pre-wrap break-words"
+                      style={{ fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace' }}>{localStdout}</pre>
+                  )}
+                  {localError && (
+                    <pre className="px-3 py-2 text-xs text-[#f38ba8] whitespace-pre-wrap break-words"
+                      style={{ fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace' }}>{localError}</pre>
+                  )}
                 </div>
-                <pre className="p-3 text-xs text-on-surface-primary whitespace-pre-wrap break-words overflow-auto max-h-[150px]"
-                  style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}>{localStdout}</pre>
-              </div>
-            )}
-
-            {/* Error */}
-            {localError && (
-              <div className="border-t border-border shrink-0">
-                <pre className="p-3 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap break-words overflow-auto max-h-[150px]"
-                  style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}>{localError}</pre>
-              </div>
+              </>
             )}
           </div>
 
-          {/* Output */}
-          <div className="w-1/2 flex flex-col">
-            <div className="px-3 py-1.5 border-b border-border bg-inspector-section shrink-0 flex items-center gap-2">
-              <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Output</span>
-              <div className="flex-1" />
+          {/* Horizontal splitter */}
+          <Splitter dir="h" onDrag={onHSplit} />
 
-              {hasPlotly && (
-                <div className="flex items-center gap-1">
-                  <span className="text-2xs text-on-surface-muted">Resolution:</span>
-                  {([1, 2, 3] as const).map(d => (
-                    <button key={d} onClick={() => setCaptureDpi(d)} title={`${800 * d}×${700 * d}px`}
-                      className={`px-1 py-0.5 text-2xs rounded ${captureDpi === d ? 'bg-blue-500 text-white' : 'text-on-surface-muted hover:bg-toolbar-hover'}`}>
-                      {d === 1 ? 'Low' : d === 2 ? 'Med' : 'High'}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {hasOutput && !cropMode && (
-                <button onClick={() => setCropMode(true)}
-                  className={`flex items-center gap-1 px-1.5 py-0.5 text-2xs rounded hover:bg-toolbar-hover ${cropRect ? 'text-blue-500' : 'text-on-surface-secondary hover:text-on-surface-primary'}`}>
-                  <Crop size={10} /> {cropRect ? 'Edit Crop' : 'Crop'}
-                </button>
-              )}
-              {cropMode && (
-                <button onClick={() => setCropMode(false)}
-                  className="flex items-center gap-1 px-2 py-0.5 text-2xs font-medium text-white rounded" style={{ backgroundColor: '#3b82f6' }}>
-                  <Check size={10} /> Done
-                </button>
-              )}
-              {cropRect && !cropMode && (
-                <button onClick={() => setCropRect(null)}
-                  className="flex items-center gap-1 px-1.5 py-0.5 text-2xs text-red-500 hover:text-red-600 hover:bg-toolbar-hover rounded">
-                  <X size={10} /> Clear
-                </button>
-              )}
-            </div>
-
-            <div className="flex-1 overflow-hidden bg-surface-primary flex flex-col min-h-0">
+          {/* Right: output */}
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: '#1a1a2e' }}>
+            <div className="flex-1 overflow-hidden flex flex-col min-h-0">
               {isRunning ? (
                 <div className="w-full h-full flex items-center justify-center">
-                  <div className="flex items-center gap-2 text-sm text-on-surface-muted"><Loader2 size={18} className="animate-spin" /> Executing...</div>
+                  <div className="flex items-center gap-2 text-sm text-white/30"><Loader2 size={18} className="animate-spin" /> Executing...</div>
                 </div>
               ) : (
                 <>
-                  {/* Plotly */}
                   {hasPlotly && (
-                    <div className="flex-1 min-h-0 relative overflow-hidden bg-white dark:bg-neutral-900" ref={plotlyContainerRef}>
+                    <div className="flex-1 min-h-0 relative overflow-hidden" style={{ backgroundColor: '#fff' }} ref={plotlyContainerRef}>
                       <div ref={plotlyRefCallback} className="absolute inset-0 overflow-hidden" />
-
-                      {/* Phase A: crop editor (plotly frozen) */}
-                      {cropMode && (
-                        <CropEditor cropRect={cropRect} onChange={setCropRect} containerRef={plotlyContainerRef} />
-                      )}
-
-                      {/* Phase B: crop indicator (visual only, plotly interactive) */}
-                      {!cropMode && cropRect && cropRect.w > 0.01 && (
-                        <CropIndicator cropRect={cropRect} />
-                      )}
+                      {cropMode && <CropEditor cropRect={cropRect} onChange={setCropRect} containerRef={plotlyContainerRef} />}
+                      {!cropMode && cropRect && cropRect.w > 0.01 && <CropIndicator cropRect={cropRect} />}
                     </div>
                   )}
 
-                  {/* Static matplotlib */}
                   {!hasPlotly && localOutput && (
                     <div className="flex-1 flex items-center justify-center p-4 min-h-0">
                       <img src={`data:image/png;base64,${localOutput}`} alt="Plot" className="max-w-full max-h-full object-contain" draggable={false} />
                     </div>
                   )}
 
-
-                  {/* Empty */}
-                  {!hasOutput && !localStdout && !localError && (
-                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-on-surface-muted select-none">
+                  {!hasOutput && (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white/25 select-none px-8">
                       {hasRun ? (
-                        <div className="flex flex-col items-center gap-3 px-8 max-w-md">
-                          <span className="text-sm font-medium">Code executed — no output captured</span>
-                          <div className="text-xs opacity-70 text-left space-y-2 w-full">
-                            <p>sdraw captures output in two ways:</p>
-                            <p className="font-semibold">Matplotlib:</p>
-                            <pre className="bg-surface-secondary rounded px-2 py-1 text-2xs">{'import matplotlib.pyplot as plt\nplt.plot([1, 2, 3], [1, 4, 9])\n# Any plt figure is auto-captured'}</pre>
-                            <p className="font-semibold">Plotly:</p>
-                            <pre className="bg-surface-secondary rounded px-2 py-1 text-2xs">{'import plotly.graph_objects as go\nfig = go.Figure(...)\n# Variable named "fig" is auto-captured'}</pre>
-                            <p className="opacity-80">Use <code className="bg-surface-secondary rounded px-1">print()</code> for debugging.</p>
-                          </div>
-                        </div>
+                        <>
+                          <span className="text-sm">No output captured</span>
+                          <span className="text-xs text-white/15 text-center">Create a matplotlib figure or a plotly <code className="text-white/25">fig = go.Figure(...)</code></span>
+                        </>
                       ) : (
-                        <><Play size={20} /><span className="text-sm">Click Run to execute your code</span><span className="text-xs opacity-60">Cmd+Enter</span></>
+                        <>
+                          <Play size={20} />
+                          <span className="text-sm">Run to see output</span>
+                          <span className="text-[10px] text-white/15">{'\u2318'}+Enter</span>
+                        </>
                       )}
                     </div>
                   )}
