@@ -325,8 +325,11 @@ export function PlotEditor() {
   localErrorRef.current = localError;
 
   // Save: capture at 1:1 scale (exact on-screen match) + crop + update node + persist to file
+  const isSavingRef = useRef(false);
   const handleSave = useCallback(async () => {
-    if (!elementId) return;
+    if (!elementId || isSavingRef.current) return;
+    isSavingRef.current = true;
+    try {
 
     const currentCrop = cropRectRef.current;
     const currentJson = getCurrentPlotlyJson();
@@ -449,6 +452,7 @@ export function PlotEditor() {
       const verify3 = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
       console.log('[PlotEditor] AFTER saveBoard:', { w: verify3?.width, h: verify3?.height });
     }
+    } finally { isSavingRef.current = false; }
   }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard]);
 
   const handleClose = useCallback(() => {
@@ -476,7 +480,7 @@ export function PlotEditor() {
   useEffect(() => { if (plotlyJson && plotlyDivRef.current) renderPlotly(plotlyDivRef.current); }, [plotlyJson, renderPlotly]);
 
   handleRunRef.current = handleRun;
-  handleCloseRef.current = handleSaveAndClose;
+  handleCloseRef.current = handleClose;
   useEffect(() => { return () => { if (persistTimerRef.current) clearTimeout(persistTimerRef.current); }; }, []);
 
   const clampH = useCallback((p: number) => Math.max(25, Math.min(75, p)), []);
@@ -488,7 +492,7 @@ export function PlotEditor() {
   const hasConsole = !!localStdout || !!localError;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col" onClick={handleSaveAndClose}>
+    <div className="fixed inset-0 z-50 flex flex-col" onClick={handleClose}>
       {/* Dark translucent backdrop */}
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
 
