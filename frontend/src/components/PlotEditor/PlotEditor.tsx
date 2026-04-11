@@ -444,8 +444,10 @@ export function PlotEditor() {
   localStdoutRef.current = localStdout;
   const localErrorRef = useRef(localError);
   localErrorRef.current = localError;
+  const cropSnapshotRef = useRef(cropSnapshot);
+  cropSnapshotRef.current = cropSnapshot;
 
-  // Save: relayout → capture → crop → update node → persist to file
+  // Save: capture → crop → update node → persist to file
   const isSavingRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -456,12 +458,20 @@ export function PlotEditor() {
     try {
       const currentCrop = cropRectRef.current;
       const currentJson = getCurrentPlotlyJson();
+      const snapshot = cropSnapshotRef.current;
 
-      // 1. Relayout plotly to match container, capture, restore autosize
+      // 1. Get the full image to crop from.
+      //    If we have a crop snapshot (entered crop mode), use it directly —
+      //    the crop fractions are relative to this exact image.
+      //    If no snapshot (saving without crop), capture from plotly.
       let fullB64: string | null = null;
-      const containerEl = plotlyContainerRef.current;
-      if (plotlyDivRef.current && containerEl) {
-        const rect = containerEl.getBoundingClientRect();
+
+      if (snapshot) {
+        // Crop snapshot already captured at correct dimensions
+        fullB64 = snapshot;
+      } else if (plotlyDivRef.current && plotlyContainerRef.current) {
+        // No crop mode — capture live plotly view
+        const rect = plotlyContainerRef.current.getBoundingClientRect();
         await (Plotly as any).relayout(plotlyDivRef.current, {
           width: Math.round(rect.width), height: Math.round(rect.height),
         });
@@ -471,6 +481,7 @@ export function PlotEditor() {
           autosize: true, width: undefined, height: undefined,
         });
       }
+
       if (!fullB64) fullB64 = localOutputRef.current;
       if (!fullB64) return;
 
@@ -478,10 +489,7 @@ export function PlotEditor() {
       const crop = (currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02)
         ? currentCrop : { x: 0, y: 0, w: 1, h: 1 };
 
-      const full = await new Promise<HTMLImageElement>((res, rej) => {
-        const i = new Image(); i.onload = () => res(i); i.onerror = rej;
-        i.src = `data:image/png;base64,${fullB64}`;
-      });
+      const full = await loadImage(fullB64);
       const sx = Math.max(0, Math.round(crop.x * full.naturalWidth));
       const sy = Math.max(0, Math.round(crop.y * full.naturalHeight));
       const sw = Math.max(1, Math.min(full.naturalWidth - sx, Math.round(crop.w * full.naturalWidth)));
@@ -492,16 +500,13 @@ export function PlotEditor() {
       const outputB64 = cvs.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
 
       // 3. Get output dimensions for aspect ratio
-      const out = await new Promise<HTMLImageElement>((res, rej) => {
-        const i = new Image(); i.onload = () => res(i); i.onerror = rej;
-        i.src = `data:image/png;base64,${outputB64}`;
-      });
+      const out = await loadImage(outputB64);
 
       // 4. Cancel pending debounce, update local state
       if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
       setLocalOutput(outputB64);
 
-      // 5. Update element with correct dimensions
+      // 5. Update element with correct dimensions and all metadata
       const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
       if (el) {
         const newHeight = out.naturalWidth > 0
@@ -524,7 +529,7 @@ export function PlotEditor() {
       isSavingRef.current = false;
       setIsSaving(false);
     }
-  }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard]);
+  }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard, loadImage]);
 
   // Enter crop mode: capture a snapshot of the current plotly view as a static image.
   // Crop coordinates are relative to this image, making them viewport-independent.
