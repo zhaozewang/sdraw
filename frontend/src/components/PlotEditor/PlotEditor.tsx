@@ -165,6 +165,71 @@ function CropIndicator({ cropRect }: { cropRect: CropRect }) {
   );
 }
 
+// ─── Crop Image View ───────────────────────────────────────────
+// Shows a static snapshot centered in a dark container with the
+// CropEditor overlay sized exactly to the image. Crop coordinates
+// are image-relative (0-1 fractions of image dimensions).
+function CropImageView({ snapshot, cropRect, onChange, isDark }: {
+  snapshot: string;
+  cropRect: CropRect | null;
+  onChange: (r: CropRect | null) => void;
+  isDark: boolean;
+}) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const cropAreaRef = useRef<HTMLDivElement>(null);
+  const [imgLayout, setImgLayout] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+
+  // Compute the rendered image position within the container (object-contain math)
+  const updateLayout = useCallback(() => {
+    const wrapper = wrapperRef.current;
+    const img = imgRef.current;
+    if (!wrapper || !img || !img.naturalWidth) return;
+    const wr = wrapper.getBoundingClientRect();
+    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const containerAspect = wr.width / wr.height;
+    let rw: number, rh: number;
+    if (imgAspect > containerAspect) {
+      rw = wr.width; rh = wr.width / imgAspect;
+    } else {
+      rh = wr.height; rw = wr.height * imgAspect;
+    }
+    setImgLayout({
+      left: (wr.width - rw) / 2, top: (wr.height - rh) / 2,
+      width: rw, height: rh,
+    });
+  }, []);
+
+  useEffect(() => {
+    updateLayout();
+    window.addEventListener('resize', updateLayout);
+    return () => window.removeEventListener('resize', updateLayout);
+  }, [updateLayout, snapshot]);
+
+  return (
+    <div ref={wrapperRef} className="flex-1 min-h-0 relative overflow-hidden" style={{ backgroundColor: isDark ? '#111' : '#e5e5e5' }}>
+      <img
+        ref={imgRef}
+        src={`data:image/png;base64,${snapshot}`}
+        alt="Crop preview"
+        className="absolute inset-0 w-full h-full"
+        style={{ objectFit: 'contain' }}
+        draggable={false}
+        onLoad={updateLayout}
+      />
+      {/* CropEditor positioned exactly over the rendered image area */}
+      {imgLayout && (
+        <div ref={cropAreaRef} className="absolute" style={{
+          left: imgLayout.left, top: imgLayout.top,
+          width: imgLayout.width, height: imgLayout.height,
+        }}>
+          <CropEditor cropRect={cropRect} onChange={onChange} containerRef={cropAreaRef} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── PlotEditor ────────────────────────────────────────────────
 
 export function PlotEditor() {
@@ -189,6 +254,7 @@ export function PlotEditor() {
   const saveBoard = useBoardStore(s => s.saveBoard);
   const [cropRect, setCropRect] = useState<CropRect | null>(null);
   const [cropMode, setCropMode] = useState(false);
+  const [cropSnapshot, setCropSnapshot] = useState<string | null>(null); // static image for crop mode
 
   // Layout: horizontal split (left width %), vertical split (code height %)
   const [leftPct, setLeftPct] = useState(45);
@@ -405,6 +471,32 @@ export function PlotEditor() {
     }
   }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard]);
 
+  // Enter crop mode: capture a snapshot of the current plotly view as a static image.
+  // Crop coordinates are relative to this image, making them viewport-independent.
+  const enterCropMode = useCallback(async () => {
+    if (!plotlyDivRef.current || !plotlyContainerRef.current) return;
+    try {
+      const rect = plotlyContainerRef.current.getBoundingClientRect();
+      await (Plotly as any).relayout(plotlyDivRef.current, {
+        width: Math.round(rect.width), height: Math.round(rect.height),
+      });
+      const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: 2 });
+      setCropSnapshot(url.replace(/^data:image\/png;base64,/, ''));
+      await (Plotly as any).relayout(plotlyDivRef.current, {
+        autosize: true, width: undefined, height: undefined,
+      });
+    } catch {
+      // Fallback: use existing output
+      if (localOutputRef.current) setCropSnapshot(localOutputRef.current);
+    }
+    setCropMode(true);
+  }, []);
+
+  const exitCropMode = useCallback(() => {
+    setCropMode(false);
+    setCropSnapshot(null);
+  }, []);
+
   const handleClose = useCallback(() => {
     if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
     initRef.current = null; useUIStore.getState().setPlotEditorElementId(null);
@@ -476,17 +568,17 @@ export function PlotEditor() {
           <div className="flex-1" />
 
           {hasOutput && !cropMode && (
-            <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
+            <button onClick={enterCropMode} className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
               <Crop size={12} /> {cropRect ? 'Edit Crop' : 'Crop'}
             </button>
           )}
           {cropMode && (
             <div className="flex items-center gap-1">
-              <button onClick={() => setCropMode(false)} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
+              <button onClick={exitCropMode} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
                 <Check size={12} /> Done
               </button>
               {cropRect && (
-                <button onClick={() => { setCropRect(null); setCropMode(false); }} className={`px-1.5 py-0.5 text-xs rounded ${isDark ? 'text-white/25 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
+                <button onClick={() => { setCropRect(null); exitCropMode(); }} className={`px-1.5 py-0.5 text-xs rounded ${isDark ? 'text-white/25 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
                   Clear
                 </button>
               )}
@@ -545,12 +637,23 @@ export function PlotEditor() {
                 </div>
               ) : (
                 <>
-                  {hasPlotly && (
+                  {hasPlotly && !cropMode && (
                     <div className="flex-1 min-h-0 relative overflow-hidden bg-white" ref={plotlyContainerRef}>
                       <div ref={plotlyRefCallback} className="absolute inset-0 overflow-hidden" />
-                      {cropMode && <CropEditor cropRect={cropRect} onChange={setCropRect} containerRef={plotlyContainerRef} />}
-                      {!cropMode && cropRect && cropRect.w > 0.01 && <CropIndicator cropRect={cropRect} />}
+                      {cropRect && cropRect.w > 0.01 && <CropIndicator cropRect={cropRect} />}
                     </div>
+                  )}
+
+                  {/* Crop mode: static snapshot with crop editor.
+                      The crop wrapper is sized to the image via object-fit:contain math,
+                      so crop coordinates are image-relative and viewport-independent. */}
+                  {cropMode && cropSnapshot && (
+                    <CropImageView
+                      snapshot={cropSnapshot}
+                      cropRect={cropRect}
+                      onChange={setCropRect}
+                      isDark={isDark}
+                    />
                   )}
 
                   {!hasPlotly && localOutput && (
