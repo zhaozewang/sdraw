@@ -73,13 +73,17 @@ function Splitter({ dir, containerRef, siblingRef, onCommit, clamp }: {
 }
 
 // ─── Crop Editor (Phase A) ─────────────────────────────────────
+// aspectRatio: w/h ratio to enforce (null = free), expressed in container fraction space.
+// Since crop fractions are image-relative, the aspect ratio needs to account for the
+// container's pixel dimensions to convert between fraction-space and pixel-space.
 const HS = 8;
 type Dir = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 const DC: Record<Dir, string> = { nw:'nwse-resize', n:'ns-resize', ne:'nesw-resize', e:'ew-resize', se:'nwse-resize', s:'ns-resize', sw:'nesw-resize', w:'ew-resize' };
 
-function CropEditor({ cropRect, onChange, containerRef }: {
+function CropEditor({ cropRect, onChange, containerRef, aspectRatio }: {
   cropRect: CropRect | null; onChange: (r: CropRect | null) => void;
   containerRef: React.RefObject<HTMLDivElement | null>;
+  aspectRatio?: number | null; // w/h in pixels. null = free
 }) {
   const cr = useRef(cropRect); cr.current = cropRect;
   const toF = useCallback((e: MouseEvent | React.MouseEvent) => {
@@ -87,21 +91,55 @@ function CropEditor({ cropRect, onChange, containerRef }: {
     const r = el.getBoundingClientRect();
     return { fx: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), fy: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) };
   }, [containerRef]);
+
+  // Convert pixel aspect ratio to fraction-space ratio
+  // fraction w/h ratio = (pixelRatio) * (containerH / containerW)
+  const getFracRatio = useCallback(() => {
+    if (!aspectRatio) return null;
+    const el = containerRef.current;
+    if (!el) return aspectRatio;
+    const r = el.getBoundingClientRect();
+    return aspectRatio * (r.height / r.width);
+  }, [aspectRatio, containerRef]);
+
+  // Enforce aspect ratio: given a width in fraction space, compute height
+  const enforceAR = useCallback((w: number, h: number): { w: number; h: number } => {
+    const fr = getFracRatio();
+    if (!fr) return { w, h };
+    // Use the larger dimension to constrain
+    const hFromW = w / fr;
+    const wFromH = h * fr;
+    if (hFromW <= 1 && hFromW >= 0.01) return { w, h: hFromW };
+    return { w: wFromH, h };
+  }, [getFracRatio]);
+
   const drag = useCallback((onM: (ev: MouseEvent) => void, onD?: () => void) => {
     const m = (ev: MouseEvent) => { ev.preventDefault(); onM(ev); };
     const u = () => { document.removeEventListener('mousemove', m); document.removeEventListener('mouseup', u); onD?.(); };
     document.addEventListener('mousemove', m); document.addEventListener('mouseup', u);
   }, []);
+
+  // Draw new crop
   const onBg = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).dataset.crop) return; e.preventDefault();
     const { fx, fy } = toF(e); const sx = fx, sy = fy;
     onChange({ x: fx, y: fy, w: 0, h: 0 });
-    drag((ev) => { const { fx: mx, fy: my } = toF(ev); onChange({ x: Math.min(sx, mx), y: Math.min(sy, my), w: Math.abs(mx - sx), h: Math.abs(my - sy) }); },
-      () => { const c = cr.current; if (c && (c.w < 0.01 || c.h < 0.01)) onChange(null); });
-  }, [toF, onChange, drag]);
+    drag((ev) => {
+      const { fx: mx, fy: my } = toF(ev);
+      let w = Math.abs(mx - sx), h = Math.abs(my - sy);
+      const ar = enforceAR(w, h);
+      w = ar.w; h = ar.h;
+      const x = mx >= sx ? sx : sx - w;
+      const y = my >= sy ? sy : sy - h;
+      onChange({ x: Math.max(0, x), y: Math.max(0, y), w, h });
+    }, () => { const c = cr.current; if (c && (c.w < 0.01 || c.h < 0.01)) onChange(null); });
+  }, [toF, onChange, drag, enforceAR]);
+
+  // Resize from handle
   const onH = useCallback((d: Dir, e: React.MouseEvent) => {
     e.stopPropagation(); e.preventDefault(); if (!cr.current) return;
     const s = { ...cr.current }; const { fx: sx, fy: sy } = toF(e);
+    const fr = getFracRatio();
     drag((ev) => {
       const { fx, fy } = toF(ev); const dx = fx - sx, dy = fy - sy;
       let { x, y, w, h } = s; const rb = s.x + s.w, bb = s.y + s.h;
@@ -111,21 +149,36 @@ function CropEditor({ cropRect, onChange, containerRef }: {
       if (d.includes('s')) { h = Math.max(0.02, Math.min(1 - s.y, s.h + dy)); }
       if (d === 'n' || d === 's') { x = s.x; w = s.w; }
       if (d === 'e' || d === 'w') { y = s.y; h = s.h; }
+      // Enforce aspect ratio on corner drags
+      if (fr && (d === 'nw' || d === 'ne' || d === 'sw' || d === 'se')) {
+        h = w / fr;
+        if (d === 'nw' || d === 'ne') y = bb - h;
+      }
       onChange({ x, y, w, h });
     });
-  }, [toF, onChange, drag]);
+  }, [toF, onChange, drag, getFracRatio]);
+
+  // Move
   const onMv = useCallback((e: React.MouseEvent) => {
     e.stopPropagation(); e.preventDefault(); if (!cr.current) return;
     const s = { ...cr.current }; const { fx: sx, fy: sy } = toF(e);
     drag((ev) => { const { fx, fy } = toF(ev); onChange({ x: Math.max(0, Math.min(1 - s.w, s.x + fx - sx)), y: Math.max(0, Math.min(1 - s.h, s.y + fy - sy)), w: s.w, h: s.h }); });
   }, [toF, onChange, drag]);
 
-  const handles: { d: Dir; x: number; y: number }[] = cropRect ? [
-    { d:'nw', x:cropRect.x, y:cropRect.y }, { d:'n', x:cropRect.x+cropRect.w/2, y:cropRect.y },
-    { d:'ne', x:cropRect.x+cropRect.w, y:cropRect.y }, { d:'e', x:cropRect.x+cropRect.w, y:cropRect.y+cropRect.h/2 },
-    { d:'se', x:cropRect.x+cropRect.w, y:cropRect.y+cropRect.h }, { d:'s', x:cropRect.x+cropRect.w/2, y:cropRect.y+cropRect.h },
-    { d:'sw', x:cropRect.x, y:cropRect.y+cropRect.h }, { d:'w', x:cropRect.x, y:cropRect.y+cropRect.h/2 },
-  ] : [];
+  // Only show corner handles when aspect ratio is locked (edge handles don't make sense)
+  const handles: { d: Dir; x: number; y: number }[] = cropRect ? (
+    aspectRatio ? [
+      { d:'nw', x:cropRect.x, y:cropRect.y },
+      { d:'ne', x:cropRect.x+cropRect.w, y:cropRect.y },
+      { d:'se', x:cropRect.x+cropRect.w, y:cropRect.y+cropRect.h },
+      { d:'sw', x:cropRect.x, y:cropRect.y+cropRect.h },
+    ] : [
+      { d:'nw', x:cropRect.x, y:cropRect.y }, { d:'n', x:cropRect.x+cropRect.w/2, y:cropRect.y },
+      { d:'ne', x:cropRect.x+cropRect.w, y:cropRect.y }, { d:'e', x:cropRect.x+cropRect.w, y:cropRect.y+cropRect.h/2 },
+      { d:'se', x:cropRect.x+cropRect.w, y:cropRect.y+cropRect.h }, { d:'s', x:cropRect.x+cropRect.w/2, y:cropRect.y+cropRect.h },
+      { d:'sw', x:cropRect.x, y:cropRect.y+cropRect.h }, { d:'w', x:cropRect.x, y:cropRect.y+cropRect.h/2 },
+    ]
+  ) : [];
 
   return (
     <div className="absolute inset-0" style={{ zIndex: 20, cursor: 'crosshair', pointerEvents: 'auto' }} onMouseDown={onBg}>
@@ -169,10 +222,11 @@ function CropIndicator({ cropRect }: { cropRect: CropRect }) {
 // Shows a static snapshot centered in a dark container with the
 // CropEditor overlay sized exactly to the image. Crop coordinates
 // are image-relative (0-1 fractions of image dimensions).
-function CropImageView({ snapshot, cropRect, onChange, isDark }: {
+function CropImageView({ snapshot, cropRect, onChange, isDark, aspectRatio }: {
   snapshot: string;
   cropRect: CropRect | null;
   onChange: (r: CropRect | null) => void;
+  aspectRatio?: number | null;
   isDark: boolean;
 }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -223,7 +277,7 @@ function CropImageView({ snapshot, cropRect, onChange, isDark }: {
           left: imgLayout.left, top: imgLayout.top,
           width: imgLayout.width, height: imgLayout.height,
         }}>
-          <CropEditor cropRect={cropRect} onChange={onChange} containerRef={cropAreaRef} />
+          <CropEditor cropRect={cropRect} onChange={onChange} containerRef={cropAreaRef} aspectRatio={aspectRatio} />
         </div>
       )}
     </div>
@@ -254,7 +308,8 @@ export function PlotEditor() {
   const saveBoard = useBoardStore(s => s.saveBoard);
   const [cropRect, setCropRect] = useState<CropRect | null>(null);
   const [cropMode, setCropMode] = useState(false);
-  const [cropSnapshot, setCropSnapshot] = useState<string | null>(null); // static image for crop mode
+  const [cropSnapshot, setCropSnapshot] = useState<string | null>(null);
+  const [cropAspectRatio, setCropAspectRatio] = useState<number | null>(null); // w/h pixel ratio, null = free
 
   // Layout: horizontal split (left width %), vertical split (code height %)
   const [leftPct, setLeftPct] = useState(45);
@@ -573,9 +628,30 @@ export function PlotEditor() {
             </button>
           )}
           {cropMode && (
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5">
+              {/* Aspect ratio selector */}
+              {([
+                { label: 'Free', ratio: null },
+                { label: '1:1', ratio: 1 },
+                { label: '4:3', ratio: 4/3 },
+                { label: '3:4', ratio: 3/4 },
+                { label: '16:9', ratio: 16/9 },
+                { label: '9:16', ratio: 9/16 },
+              ] as const).map(({ label, ratio }) => (
+                <button key={label} onClick={() => setCropAspectRatio(ratio)}
+                  className={`px-1.5 py-0.5 text-xs rounded ${
+                    cropAspectRatio === ratio
+                      ? (isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100')
+                      : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')
+                  }`}>
+                  {label}
+                </button>
+              ))}
+
+              <div className={`w-px h-4 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
+
               <button onClick={exitCropMode} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
-                <Check size={12} /> Done
+                <Check size={12} /> Crop
               </button>
               {cropRect && (
                 <button onClick={() => { setCropRect(null); exitCropMode(); }} className={`px-1.5 py-0.5 text-xs rounded ${isDark ? 'text-white/25 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
@@ -653,6 +729,7 @@ export function PlotEditor() {
                       cropRect={cropRect}
                       onChange={setCropRect}
                       isDark={isDark}
+                      aspectRatio={cropAspectRatio}
                     />
                   )}
 
