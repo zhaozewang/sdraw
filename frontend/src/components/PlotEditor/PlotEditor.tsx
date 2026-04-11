@@ -358,7 +358,7 @@ export function PlotEditor() {
 
   // Plotly render
   useEffect(() => {
-    if (!plotlyJson || !plotlyDivRef.current || cropMode) return;
+    if (!plotlyJson || !plotlyDivRef.current) return;
     try {
       const spec = JSON.parse(plotlyJson);
       const { width: _w, height: _h, ...rest } = (spec.layout || {});
@@ -367,7 +367,7 @@ export function PlotEditor() {
       }, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'] });
     } catch (e) { console.warn('[PlotEditor] plotly error:', e); }
     return () => { if (plotlyDivRef.current) Plotly.purge(plotlyDivRef.current); };
-  }, [plotlyJson, cropMode]);
+  }, [plotlyJson]);
 
   handleRunRef.current = handleRun;
   handleCloseRef.current = handleClose;
