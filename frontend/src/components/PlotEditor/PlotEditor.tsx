@@ -324,56 +324,39 @@ export function PlotEditor() {
   const localErrorRef = useRef(localError);
   localErrorRef.current = localError;
 
-  // Save: capture at 1:1 scale (exact on-screen match) + crop + update node + persist to file
+  // Save: relayout → capture → crop → update node → persist to file
   const isSavingRef = useRef(false);
+  const [isSaving, setIsSaving] = useState(false);
+
   const handleSave = useCallback(async () => {
     if (!elementId || isSavingRef.current) return;
     isSavingRef.current = true;
+    setIsSaving(true);
     try {
+      const currentCrop = cropRectRef.current;
+      const currentJson = getCurrentPlotlyJson();
 
-    const currentCrop = cropRectRef.current;
-    const currentJson = getCurrentPlotlyJson();
-
-    // Step 1: Force plotly to relayout at the container's CSS dimensions,
-    // then capture. This ensures the captured image has the same aspect
-    // ratio as the container, so crop fractions map correctly.
-    // Plotly.relayout preserves the camera/interactive state.
-    let fullB64: string | null = null;
-    const containerEl = plotlyContainerRef.current;
-    if (plotlyDivRef.current && containerEl) {
-      try {
+      // 1. Relayout plotly to match container, capture, restore autosize
+      let fullB64: string | null = null;
+      const containerEl = plotlyContainerRef.current;
+      if (plotlyDivRef.current && containerEl) {
         const rect = containerEl.getBoundingClientRect();
-        // Force plotly internal dimensions to match the container
         await (Plotly as any).relayout(plotlyDivRef.current, {
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
+          width: Math.round(rect.width), height: Math.round(rect.height),
         });
-        // Capture at 2x pixel density
         const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: 2 });
         fullB64 = url.replace(/^data:image\/png;base64,/, '');
-        // Restore autosize so the figure remains responsive
         await (Plotly as any).relayout(plotlyDivRef.current, {
-          autosize: true,
-          width: undefined,
-          height: undefined,
+          autosize: true, width: undefined, height: undefined,
         });
-      } catch (e) {
-        console.warn('[PlotEditor] capture failed:', e);
       }
-    }
-    if (!fullB64) { fullB64 = localOutputRef.current; }
-    if (!fullB64) return;
+      if (!fullB64) fullB64 = localOutputRef.current;
+      if (!fullB64) return;
 
-    // Step 2: Always crop — if no user crop, use the full image (invisible default crop).
-    // Unified workflow: capture → crop → save. Same code path regardless.
-    // Crop fractions × image natural dimensions works because the plotly image
-    // (via autosize + scale) is proportional to the container.
-    const crop = (currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02)
-      ? currentCrop
-      : { x: 0, y: 0, w: 1, h: 1 }; // default: full image
+      // 2. Crop (default = full image if no user crop)
+      const crop = (currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02)
+        ? currentCrop : { x: 0, y: 0, w: 1, h: 1 };
 
-    let outputB64 = fullB64;
-    {
       const full = await new Promise<HTMLImageElement>((res, rej) => {
         const i = new Image(); i.onload = () => res(i); i.onerror = rej;
         i.src = `data:image/png;base64,${fullB64}`;
@@ -382,77 +365,44 @@ export function PlotEditor() {
       const sy = Math.max(0, Math.round(crop.y * full.naturalHeight));
       const sw = Math.max(1, Math.min(full.naturalWidth - sx, Math.round(crop.w * full.naturalWidth)));
       const sh = Math.max(1, Math.min(full.naturalHeight - sy, Math.round(crop.h * full.naturalHeight)));
-      const c = document.createElement('canvas');
-      c.width = sw; c.height = sh;
-      c.getContext('2d')!.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
-      outputB64 = c.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
-    }
+      const cvs = document.createElement('canvas');
+      cvs.width = sw; cvs.height = sh;
+      cvs.getContext('2d')!.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+      const outputB64 = cvs.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
 
-    // Step 3: Load output image to get dimensions for aspect ratio
-    let out: HTMLImageElement;
-    try {
-      out = await new Promise<HTMLImageElement>((res, rej) => {
+      // 3. Get output dimensions for aspect ratio
+      const out = await new Promise<HTMLImageElement>((res, rej) => {
         const i = new Image(); i.onload = () => res(i); i.onerror = rej;
         i.src = `data:image/png;base64,${outputB64}`;
       });
-    } catch {
-      console.warn('[PlotEditor] failed to load output image for dimensions');
-      return;
+
+      // 4. Cancel pending debounce, update local state
+      if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
+      setLocalOutput(outputB64);
+
+      // 5. Update element with correct dimensions
+      const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
+      if (el) {
+        const newHeight = out.naturalWidth > 0
+          ? Math.round(el.width * (out.naturalHeight / out.naturalWidth)) : el.height;
+        updateElement(elementId, {
+          width: el.width, height: newHeight,
+          metadata: {
+            ...el.metadata, code: codeRef.current, lastOutput: outputB64,
+            lastStdout: localStdoutRef.current, lastError: localErrorRef.current,
+            plotCrop: currentCrop, plotlyJson: currentJson,
+          },
+        });
+        pushHistory('Save plot');
+        await new Promise(r => setTimeout(r, 100));
+        await saveBoard();
+      }
+    } catch (e) {
+      console.warn('[PlotEditor] save failed:', e);
+    } finally {
+      isSavingRef.current = false;
+      setIsSaving(false);
     }
-
-    // Step 4: Cancel any pending debounced persist (it would overwrite with stale data)
-    if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
-
-    // Step 5: Update local state so the UI reflects the save immediately
-    setLocalOutput(outputB64);
-
-    // Step 6: Update element — set lastOutput, node dimensions, and all metadata
-    const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
-    if (el) {
-      const newHeight = out.naturalWidth > 0
-        ? Math.round(el.width * (out.naturalHeight / out.naturalWidth))
-        : el.height;
-      const containerRect = plotlyContainerRef.current?.getBoundingClientRect();
-      console.log('[PlotEditor] save:', {
-        container: containerRect ? { w: Math.round(containerRect.width), h: Math.round(containerRect.height) } : null,
-        capturedFull: { w: 'see above', h: 'see above' },
-        outputImg: { w: out.naturalWidth, h: out.naturalHeight },
-        crop: currentCrop,
-        node: { oldW: el.width, oldH: el.height, newH: newHeight },
-      });
-      updateElement(elementId, {
-        width: el.width,
-        height: newHeight,
-        metadata: {
-          ...el.metadata,
-          code: codeRef.current,
-          lastOutput: outputB64,
-          lastStdout: localStdoutRef.current,
-          lastError: localErrorRef.current,
-          plotCrop: currentCrop,
-          plotlyJson: currentJson,
-        },
-      });
-      pushHistory('Save plot');
-
-      // Verify the update took effect
-      const verify = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
-      console.log('[PlotEditor] AFTER updateElement:', { w: verify?.width, h: verify?.height, expectedH: newHeight });
-
-      // Step 7: Persist to disk after React processes the state update
-      await new Promise(r => setTimeout(r, 100));
-
-      // Verify again after React tick
-      const verify2 = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
-      console.log('[PlotEditor] AFTER 100ms:', { w: verify2?.width, h: verify2?.height });
-
-      await saveBoard();
-
-      // Verify after save
-      const verify3 = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
-      console.log('[PlotEditor] AFTER saveBoard:', { w: verify3?.width, h: verify3?.height });
-    }
-    } finally { isSavingRef.current = false; }
   }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard]);
 
   const handleClose = useCallback(() => {
@@ -546,8 +496,9 @@ export function PlotEditor() {
           <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
 
           {hasOutput && (
-            <button onClick={handleSaveAndClose} className="flex items-center gap-1 px-3 py-1 text-xs font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
-              <Save size={12} /> Save
+            <button onClick={handleSaveAndClose} disabled={isSaving}
+              className={`flex items-center gap-1 px-3 py-1 text-xs font-medium rounded text-white ${isSaving ? 'bg-blue-400 cursor-wait' : 'bg-blue-600 hover:bg-blue-700'}`}>
+              {isSaving ? <><Loader2 size={12} className="animate-spin" /> Saving...</> : <><Save size={12} /> Save</>}
             </button>
           )}
           <button onClick={handleClose} className={`p-0.5 rounded ml-0.5 ${isDark ? 'text-white/30 hover:text-white/60 hover:bg-white/5' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`} title="Close without saving">
