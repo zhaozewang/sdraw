@@ -186,7 +186,7 @@ export function PlotEditor() {
   const [isRunning, setIsRunning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
-  const [captureDpi, setCaptureDpi] = useState(1);
+  const [captureDpi, setCaptureDpi] = useState(2); // actual scale factor (labels show 0.5x/1x/2x)
   const [cropRect, setCropRect] = useState<CropRect | null>(null);
   const [cropMode, setCropMode] = useState(false);
 
@@ -317,34 +317,31 @@ export function PlotEditor() {
     const currentJson = getCurrentPlotlyJson();
     let finalImage = localOutput;
 
-    // Capture plotly at current view
+    // Capture plotly at current view using explicit width/height = container * scale.
+    // This guarantees the image pixels map 1:1 to the container coordinates,
+    // so crop fractions apply directly without any scaling correction.
     const container = plotlyContainerRef.current;
     if (currentJson && plotlyDivRef.current && container) {
       try {
-        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: captureDpi });
+        const rect = container.getBoundingClientRect();
+        const url = await Plotly.toImage(plotlyDivRef.current, {
+          format: 'png',
+          width: Math.round(rect.width * captureDpi),
+          height: Math.round(rect.height * captureDpi),
+        });
         finalImage = url.replace(/^data:image\/png;base64,/, '');
       } catch {}
     }
 
-    // Apply crop with coordinate correction
+    // Apply crop — fractions map directly since image = container * scale
     let cropped = finalImage;
-    if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02 && container) {
+    if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02) {
       try {
         const img = await loadImage(finalImage);
-        const containerRect = container.getBoundingClientRect();
-
-        // The crop fractions are relative to the container div.
-        // The captured image may have different dimensions than the container.
-        // Compute the mapping: what fraction of the image corresponds to the container.
-        const scaleX = img.naturalWidth / containerRect.width;
-        const scaleY = img.naturalHeight / containerRect.height;
-
-        // Adjusted crop in image-pixel space
-        const sx = Math.round(cropRect.x * containerRect.width * scaleX);
-        const sy = Math.round(cropRect.y * containerRect.height * scaleY);
-        const sw = Math.round(cropRect.w * containerRect.width * scaleX);
-        const sh = Math.round(cropRect.h * containerRect.height * scaleY);
-
+        const sx = Math.round(cropRect.x * img.naturalWidth);
+        const sy = Math.round(cropRect.y * img.naturalHeight);
+        const sw = Math.round(cropRect.w * img.naturalWidth);
+        const sh = Math.round(cropRect.h * img.naturalHeight);
         const canvas = document.createElement('canvas');
         canvas.width = sw; canvas.height = sh;
         canvas.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
@@ -442,10 +439,10 @@ export function PlotEditor() {
 
           {hasPlotly && (
             <div className="flex items-center gap-0.5 mr-1">
-              {([0.5, 1, 2] as const).map(d => (
-                <button key={d} onClick={() => setCaptureDpi(d)} title={`${d}x resolution`}
-                  className={`px-1.5 py-0.5 text-xs rounded ${captureDpi === d ? 'text-blue-400 font-medium' : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')}`}>
-                  {d}x
+              {([{label: '0.5x', scale: 1}, {label: '1x', scale: 2}, {label: '2x', scale: 4}] as const).map(({ label, scale }) => (
+                <button key={scale} onClick={() => setCaptureDpi(scale)} title={`${label} resolution`}
+                  className={`px-1.5 py-0.5 text-xs rounded ${captureDpi === scale ? 'text-blue-400 font-medium' : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')}`}>
+                  {label}
                 </button>
               ))}
             </div>
