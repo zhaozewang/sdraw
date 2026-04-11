@@ -214,7 +214,7 @@ export function PlotEditor() {
   const [cropMode, setCropMode] = useState(false);
 
   const plotlyContainerRef = useRef<HTMLDivElement>(null);
-  const plotlyDivRef = useRef<HTMLDivElement>(null);
+  const plotlyDivRef = useRef<HTMLDivElement | null>(null);
   const initRef = useRef<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -356,32 +356,35 @@ export function PlotEditor() {
     useUIStore.getState().setPlotEditorElementId(null);
   }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, captureDpi, updateElement, pushHistory, applyCrop]);
 
-  // Plotly render — retries on next frame if div isn't mounted yet
+  // Plotly render — uses callback ref to render as soon as div mounts
   const plotlyJsonRef = useRef(plotlyJson);
   plotlyJsonRef.current = plotlyJson;
 
-  const renderPlotly = useCallback(() => {
+  const renderPlotly = useCallback((div: HTMLDivElement) => {
     const json = plotlyJsonRef.current;
-    if (!json || !plotlyDivRef.current) return;
+    if (!json) return;
     try {
       const spec = JSON.parse(json);
       const { width: _w, height: _h, ...rest } = (spec.layout || {});
-      Plotly.react(plotlyDivRef.current, spec.data || [], {
+      Plotly.react(div, spec.data || [], {
         ...rest, autosize: true, margin: rest.margin || { l: 0, r: 0, t: 30, b: 0 },
       }, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'] });
     } catch (e) { console.warn('[PlotEditor] plotly error:', e); }
   }, []);
 
-  useEffect(() => {
-    if (!plotlyJson) return;
-    // The div may not exist yet on the first render cycle (hasPlotly just became true).
-    // Try immediately, then retry after React re-renders.
-    if (plotlyDivRef.current) {
-      renderPlotly();
-    } else {
-      requestAnimationFrame(() => renderPlotly());
+  // Callback ref: fires when div mounts/unmounts
+  const plotlyRefCallback = useCallback((node: HTMLDivElement | null) => {
+    if (plotlyDivRef.current && !node) {
+      Plotly.purge(plotlyDivRef.current);
     }
-    return () => { if (plotlyDivRef.current) Plotly.purge(plotlyDivRef.current); };
+    plotlyDivRef.current = node;
+    if (node) renderPlotly(node);
+  }, [renderPlotly]);
+
+  // Re-render when plotlyJson changes (div already mounted)
+  useEffect(() => {
+    if (!plotlyJson || !plotlyDivRef.current) return;
+    renderPlotly(plotlyDivRef.current);
   }, [plotlyJson, renderPlotly]);
 
   handleRunRef.current = handleRun;
@@ -501,7 +504,7 @@ export function PlotEditor() {
                   {/* Plotly */}
                   {hasPlotly && (
                     <div className="flex-1 min-h-0 relative overflow-hidden bg-white dark:bg-neutral-900" ref={plotlyContainerRef}>
-                      <div ref={plotlyDivRef} className="absolute inset-0 overflow-hidden" />
+                      <div ref={plotlyRefCallback} className="absolute inset-0 overflow-hidden" />
 
                       {/* Phase A: crop editor (plotly frozen) */}
                       {cropMode && (
