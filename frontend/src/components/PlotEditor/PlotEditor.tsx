@@ -186,7 +186,7 @@ export function PlotEditor() {
   const [isRunning, setIsRunning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
-  const [captureDpi, setCaptureDpi] = useState(2); // actual scale factor (labels show 0.5x/1x/2x)
+  const captureScale = 2; // pixel density multiplier — preserves on-screen layout, just sharper
   const [cropRect, setCropRect] = useState<CropRect | null>(null);
   const [cropMode, setCropMode] = useState(false);
 
@@ -317,18 +317,13 @@ export function PlotEditor() {
     const currentJson = getCurrentPlotlyJson();
     let finalImage = localOutput;
 
-    // Capture plotly at current view using explicit width/height = container * scale.
-    // This guarantees the image pixels map 1:1 to the container coordinates,
-    // so crop fractions apply directly without any scaling correction.
-    const container = plotlyContainerRef.current;
-    if (currentJson && plotlyDivRef.current && container) {
+    // Capture plotly using scale — this preserves the exact on-screen layout
+    // (fonts, margins, tick labels all identical) and just increases pixel density.
+    // The image dimensions = plotly_internal_size * scale, and since autosize=true
+    // the internal size matches the container, so crop fractions map directly.
+    if (currentJson && plotlyDivRef.current) {
       try {
-        const rect = container.getBoundingClientRect();
-        const url = await Plotly.toImage(plotlyDivRef.current, {
-          format: 'png',
-          width: Math.round(rect.width * captureDpi),
-          height: Math.round(rect.height * captureDpi),
-        });
+        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: captureScale });
         finalImage = url.replace(/^data:image\/png;base64,/, '');
       } catch {}
     }
@@ -365,7 +360,7 @@ export function PlotEditor() {
       updateElement(elementId, updates); pushHistory('Save plot');
       setPlotlyJson(currentJson);
     }
-  }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, captureDpi, updateElement, pushHistory, loadImage, getCurrentPlotlyJson]);
+  }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, updateElement, pushHistory, loadImage, getCurrentPlotlyJson]);
 
   const handleClose = useCallback(() => {
     if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
@@ -436,17 +431,6 @@ export function PlotEditor() {
           </span>
 
           <div className="flex-1" />
-
-          {hasPlotly && (
-            <div className="flex items-center gap-0.5 mr-1">
-              {([{label: '0.5x', scale: 1}, {label: '1x', scale: 2}, {label: '2x', scale: 4}] as const).map(({ label, scale }) => (
-                <button key={scale} onClick={() => setCaptureDpi(scale)} title={`${label} resolution`}
-                  className={`px-1.5 py-0.5 text-xs rounded ${captureDpi === scale ? 'text-blue-400 font-medium' : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')}`}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
 
           {hasOutput && !cropMode && (
             <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
