@@ -418,25 +418,22 @@ export function PlotEditor() {
             </div>
           )}
 
-          {hasOutput && !cropMode && !cropRect && (
-            <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded ${isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700'}`}>
-              <Crop size={12} /> Crop
+          {hasOutput && !cropMode && (
+            <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
+              <Crop size={12} /> {cropRect ? 'Edit Crop' : 'Crop'}
             </button>
-          )}
-          {hasOutput && !cropMode && cropRect && (
-            <div className="flex items-center gap-0.5">
-              <button onClick={() => setCropMode(true)} className="flex items-center gap-1 px-2 py-0.5 text-xs rounded text-blue-400 hover:text-blue-300">
-                <Crop size={12} /> Edit Crop
-              </button>
-              <button onClick={() => setCropRect(null)} className={`px-1 py-0.5 text-xs rounded ${isDark ? 'text-white/25 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`} title="Clear crop">
-                Clear
-              </button>
-            </div>
           )}
           {cropMode && (
-            <button onClick={() => setCropMode(false)} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
-              <Check size={12} /> Done
-            </button>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setCropMode(false)} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
+                <Check size={12} /> Done
+              </button>
+              {cropRect && (
+                <button onClick={() => { setCropRect(null); setCropMode(false); }} className={`px-1.5 py-0.5 text-xs rounded ${isDark ? 'text-white/25 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
+                  Clear
+                </button>
+              )}
+            </div>
           )}
 
           <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
