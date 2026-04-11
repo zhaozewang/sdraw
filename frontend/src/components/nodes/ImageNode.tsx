@@ -159,9 +159,10 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
           </button>
         </div>
 
-        {/* File path indicator on hover */}
+        {/* File path indicator on hover — zoom invariant */}
         {selected && source?.path && (
-          <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-2xs px-1.5 py-0.5 truncate">
+          <div className="absolute left-0 right-0 bg-black/60 text-white truncate"
+            style={{ bottom: 0, fontSize: 10 * invZoom, padding: `${2 * invZoom}px ${4 * invZoom}px`, transformOrigin: 'bottom left' }}>
             {source.path.split('/').pop()}
           </div>
         )}

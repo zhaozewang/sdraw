@@ -15,6 +15,8 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
   const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
+  const zoom = useUIStore(s => s.zoom);
+  const invZoom = 1 / Math.max(zoom, 0.1);
 
   const handleDoubleClick = useCallback(() => {
     if (element && !element.locked) {
@@ -103,9 +105,10 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
           )}
         </div>
 
-        {/* Label on hover */}
+        {/* Label on hover — zoom invariant */}
         {selected && (
-          <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-2xs px-1.5 py-0.5 truncate">
+          <div className="absolute left-0 right-0 bg-black/60 text-white truncate"
+            style={{ bottom: 0, fontSize: 10 * invZoom, padding: `${2 * invZoom}px ${4 * invZoom}px` }}>
             Python Plot
           </div>
         )}
