@@ -389,12 +389,12 @@ export function PlotEditor() {
           {isRunning ? (
             <button onClick={handleAbort} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-red-300' : 'text-red-600'}`}
               style={{ backgroundColor: isDark ? 'rgba(239,68,68,0.15)' : 'rgba(239,68,68,0.1)' }}>
-              <Square size={10} fill="currentColor" /> Stop
+              <Square size={12} fill="currentColor" /> Stop
             </button>
           ) : (
             <button onClick={handleRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
               style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.1)' }}>
-              <Play size={10} /> Run
+              <Play size={12} /> Run
             </button>
           )}
           <span className={`text-xs ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{isRunning ? '' : '\u2318\u23CE'}</span>
@@ -420,29 +420,24 @@ export function PlotEditor() {
 
           {hasOutput && !cropMode && (
             <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
-              <Crop size={9} /> {cropRect ? 'Edit Crop' : 'Crop'}
+              <Crop size={12} /> {cropRect ? 'Edit Crop' : 'Crop'}
             </button>
           )}
           {cropMode && (
             <button onClick={() => setCropMode(false)} className={`flex items-center gap-1 px-1.5 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
-              <Check size={9} /> Done
+              <Check size={12} /> Done
             </button>
           )}
           {cropRect && !cropMode && (
-            <button onClick={() => setCropRect(null)} className="text-xs text-red-400/60 hover:text-red-400 px-1"><X size={9} /></button>
+            <button onClick={() => setCropRect(null)} className="text-xs text-red-400/60 hover:text-red-400 px-1"><X size={12} /></button>
           )}
 
           <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
 
           {hasOutput && (
-            <>
-              <button onClick={handleSave} className={`px-1.5 py-0.5 rounded ${isDark ? 'text-white/40 hover:text-white/70 hover:bg-white/5' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`} title="Save to canvas">
-                <Save size={11} />
-              </button>
-              <button onClick={handleSaveAndClose} className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
-                Save & Close
-              </button>
-            </>
+            <button onClick={handleSaveAndClose} className="flex items-center gap-1 px-3 py-1 text-xs font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
+              <Save size={12} /> Save
+            </button>
           )}
           <button onClick={handleClose} className={`p-0.5 rounded ml-0.5 ${isDark ? 'text-white/30 hover:text-white/60 hover:bg-white/5' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`} title="Close without saving">
             <X size={14} />
