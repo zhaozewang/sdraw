@@ -411,12 +411,31 @@ export function PlotEditor() {
 
         {/* Body */}
         <div className="flex-1 flex min-h-0">
-          {/* Code */}
+          {/* Code + Console/Error */}
           <div className="w-1/2 flex flex-col border-r border-border">
             <div className="px-3 py-1.5 border-b border-border bg-inspector-section shrink-0">
               <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Code</span>
             </div>
             <div ref={editorRef} className="flex-1 overflow-hidden" style={{ minHeight: 0 }} />
+
+            {/* Stdout */}
+            {localStdout && (
+              <div className="border-t border-border shrink-0">
+                <div className="px-3 py-1 bg-inspector-section border-b border-border">
+                  <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Console</span>
+                </div>
+                <pre className="p-3 text-xs text-on-surface-primary whitespace-pre-wrap break-words overflow-auto max-h-[150px]"
+                  style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}>{localStdout}</pre>
+              </div>
+            )}
+
+            {/* Error */}
+            {localError && (
+              <div className="border-t border-border shrink-0">
+                <pre className="p-3 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap break-words overflow-auto max-h-[150px]"
+                  style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}>{localError}</pre>
+              </div>
+            )}
           </div>
 
           {/* Output */}
@@ -488,24 +507,6 @@ export function PlotEditor() {
                     </div>
                   )}
 
-                  {/* Stdout */}
-                  {localStdout && !cropMode && (
-                    <div className={`border-t border-border ${!hasOutput ? 'flex-1' : ''}`}>
-                      <div className="px-3 py-1 bg-inspector-section border-b border-border">
-                        <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Console</span>
-                      </div>
-                      <pre className="p-3 text-xs text-on-surface-primary whitespace-pre-wrap break-words overflow-auto max-h-[200px]"
-                        style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}>{localStdout}</pre>
-                    </div>
-                  )}
-
-                  {/* Error */}
-                  {localError && !cropMode && (
-                    <div className={`border-t border-border ${!hasOutput && !localStdout ? 'flex-1 flex items-start' : ''}`}>
-                      <pre className="p-4 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap break-words w-full"
-                        style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}>{localError}</pre>
-                    </div>
-                  )}
 
                   {/* Empty */}
                   {!hasOutput && !localStdout && !localError && (
