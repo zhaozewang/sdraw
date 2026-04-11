@@ -323,38 +323,82 @@ export function PlotEditor() {
     });
   }, []);
 
-  const handleClose = useCallback(async () => {
-    if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
+  // Get the current plotly layout (includes camera position set by user interaction)
+  const getCurrentPlotlyJson = useCallback(() => {
+    if (!plotlyJson || !plotlyDivRef.current) return plotlyJson;
+    try {
+      const div = plotlyDivRef.current as any;
+      if (div.data && div.layout) {
+        return JSON.stringify({ data: div.data, layout: div.layout });
+      }
+    } catch {}
+    return plotlyJson;
+  }, [plotlyJson]);
+
+  // Save: capture current view + crop → persist to canvas node
+  const handleSave = useCallback(async () => {
+    if (!elementId) return;
+
+    // Capture the current plotly state (including camera position)
+    const currentJson = getCurrentPlotlyJson();
+
+    // Capture image at the container's aspect ratio so crop coordinates align
     let finalImage = localOutput;
-    if (plotlyJson && plotlyDivRef.current) {
+    if (currentJson && plotlyDivRef.current) {
       try {
-        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', width: 800, height: 700, scale: captureDpi });
+        const container = plotlyDivRef.current.getBoundingClientRect();
+        const url = await Plotly.toImage(plotlyDivRef.current, {
+          format: 'png',
+          width: Math.round(container.width * captureDpi),
+          height: Math.round(container.height * captureDpi),
+          scale: 1,
+        });
         finalImage = url.replace(/^data:image\/png;base64,/, '');
       } catch {}
     }
+
+    // Apply crop
     let cropped = finalImage;
     if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02) {
       try { cropped = await applyCrop(finalImage, cropRect); } catch {}
     }
-    if (elementId) {
-      const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
-      if (el) {
-        const updates: Record<string, any> = {
-          metadata: { ...el.metadata, code: codeRef.current, lastOutput: cropped, lastStdout: localStdout, lastError: localError, plotCrop: cropRect, plotlyJson },
-        };
-        if (cropped && cropped !== el.metadata?.lastOutput) {
-          try {
-            const img = new Image(); img.src = `data:image/png;base64,${cropped}`;
-            await new Promise<void>(r => { img.onload = () => r(); img.onerror = () => r(); });
-            if (img.naturalWidth > 0) updates.height = Math.round(el.width * (img.naturalHeight / img.naturalWidth));
-          } catch {}
-        }
-        updateElement(elementId, updates); pushHistory('Edit plot');
+
+    const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
+    if (el) {
+      const updates: Record<string, any> = {
+        metadata: {
+          ...el.metadata, code: codeRef.current,
+          lastOutput: cropped, lastStdout: localStdout, lastError: localError,
+          plotCrop: cropRect, plotlyJson: currentJson,
+        },
+      };
+      // Adjust element aspect ratio to match image
+      if (cropped) {
+        try {
+          const img = new Image(); img.src = `data:image/png;base64,${cropped}`;
+          await new Promise<void>(r => { img.onload = () => r(); img.onerror = () => r(); });
+          if (img.naturalWidth > 0) updates.height = Math.round(el.width * (img.naturalHeight / img.naturalWidth));
+        } catch {}
       }
+      updateElement(elementId, updates);
+      pushHistory('Save plot');
+      // Also update local plotlyJson to include camera state
+      setPlotlyJson(currentJson);
     }
+  }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, captureDpi, updateElement, pushHistory, applyCrop, getCurrentPlotlyJson]);
+
+  // Close: just close the editor (save first if needed)
+  const handleClose = useCallback(async () => {
+    if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
     initRef.current = null;
     useUIStore.getState().setPlotEditorElementId(null);
-  }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, captureDpi, updateElement, pushHistory, applyCrop]);
+  }, []);
+
+  // Save & Close
+  const handleSaveAndClose = useCallback(async () => {
+    await handleSave();
+    handleClose();
+  }, [handleSave, handleClose]);
 
   // Plotly render — uses callback ref to render as soon as div mounts
   const plotlyJsonRef = useRef(plotlyJson);
@@ -365,9 +409,10 @@ export function PlotEditor() {
     if (!json) return;
     try {
       const spec = JSON.parse(json);
+      // Strip fixed width/height but keep everything else (including camera/scene)
       const { width: _w, height: _h, ...rest } = (spec.layout || {});
       Plotly.react(div, spec.data || [], {
-        ...rest, autosize: true, margin: rest.margin || { l: 0, r: 0, t: 30, b: 0 },
+        ...rest, autosize: true,
       }, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'] });
     } catch (e) { console.warn('[PlotEditor] plotly error:', e); }
   }, []);
@@ -388,7 +433,7 @@ export function PlotEditor() {
   }, [plotlyJson, renderPlotly]);
 
   handleRunRef.current = handleRun;
-  handleCloseRef.current = handleClose;
+  handleCloseRef.current = handleSaveAndClose;
   useEffect(() => { return () => { if (persistTimerRef.current) clearTimeout(persistTimerRef.current); }; }, []);
 
   if (!elementId || !element) return null;
@@ -397,7 +442,7 @@ export function PlotEditor() {
   const hasOutput = !!localOutput || hasPlotly;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black/30" onClick={handleClose}>
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/30" onClick={handleSaveAndClose}>
       <div className="m-6 flex-1 flex flex-col bg-surface-primary rounded-lg shadow-2xl overflow-hidden border border-border"
         onClick={e => e.stopPropagation()}>
 
@@ -423,8 +468,24 @@ export function PlotEditor() {
           )}
           <span className="text-2xs text-on-surface-muted select-none">{isRunning ? 'Running...' : 'Cmd+Enter'}</span>
           <div className="flex-1" />
-          <span className="text-2xs text-on-surface-muted select-none">Esc to close</span>
-          <button onClick={handleClose} className="p-1 text-on-surface-muted hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors"><X size={16} /></button>
+
+          {hasOutput && (
+            <>
+              <button onClick={handleSave}
+                className="flex items-center gap-1 px-2 py-0.5 text-2xs text-on-surface-secondary hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors"
+                title="Save current view to canvas">
+                Save
+              </button>
+              <button onClick={handleSaveAndClose}
+                className="flex items-center gap-1 px-2 py-0.5 text-2xs font-medium text-white rounded" style={{ backgroundColor: '#3b82f6' }}
+                title="Save and close editor">
+                Save & Close
+              </button>
+            </>
+          )}
+          <button onClick={handleClose} className="p-1 text-on-surface-muted hover:text-on-surface-primary hover:bg-toolbar-hover rounded transition-colors" title="Close without saving">
+            <X size={16} />
+          </button>
         </div>
 
         {/* Body */}
