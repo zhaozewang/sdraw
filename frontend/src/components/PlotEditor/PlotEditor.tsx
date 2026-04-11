@@ -451,8 +451,32 @@ export function PlotEditor() {
   const isSavingRef = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
 
-  const handleSave = useCallback(async () => {
-    if (!elementId || isSavingRef.current) return;
+  // Helper: relayout plotly to container size, capture, restore autosize.
+  // Always restores autosize even if capture fails (try/finally).
+  const captureFromPlotly = useCallback(async (): Promise<string | null> => {
+    if (!plotlyDivRef.current || !plotlyContainerRef.current) return null;
+    try {
+      const rect = plotlyContainerRef.current.getBoundingClientRect();
+      await (Plotly as any).relayout(plotlyDivRef.current, {
+        width: Math.round(rect.width), height: Math.round(rect.height),
+      });
+      try {
+        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: 2 });
+        return url.replace(/^data:image\/png;base64,/, '');
+      } finally {
+        // Always restore autosize — even if toImage throws
+        await (Plotly as any).relayout(plotlyDivRef.current, {
+          autosize: true, width: undefined, height: undefined,
+        }).catch(() => {}); // swallow restore errors
+      }
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Save: returns true if saved successfully, false if skipped/failed
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (!elementId || isSavingRef.current) return false;
     isSavingRef.current = true;
     setIsSaving(true);
     try {
@@ -460,30 +484,12 @@ export function PlotEditor() {
       const currentJson = getCurrentPlotlyJson();
       const snapshot = cropSnapshotRef.current;
 
-      // 1. Get the full image to crop from.
-      //    If we have a crop snapshot (entered crop mode), use it directly —
-      //    the crop fractions are relative to this exact image.
-      //    If no snapshot (saving without crop), capture from plotly.
-      let fullB64: string | null = null;
-
-      if (snapshot) {
-        // Crop snapshot already captured at correct dimensions
-        fullB64 = snapshot;
-      } else if (plotlyDivRef.current && plotlyContainerRef.current) {
-        // No crop mode — capture live plotly view
-        const rect = plotlyContainerRef.current.getBoundingClientRect();
-        await (Plotly as any).relayout(plotlyDivRef.current, {
-          width: Math.round(rect.width), height: Math.round(rect.height),
-        });
-        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: 2 });
-        fullB64 = url.replace(/^data:image\/png;base64,/, '');
-        await (Plotly as any).relayout(plotlyDivRef.current, {
-          autosize: true, width: undefined, height: undefined,
-        });
-      }
-
+      // 1. Get the full image.
+      //    Snapshot exists → use it (crop fractions are relative to it).
+      //    No snapshot → capture from live plotly.
+      let fullB64: string | null = snapshot || await captureFromPlotly();
       if (!fullB64) fullB64 = localOutputRef.current;
-      if (!fullB64) return;
+      if (!fullB64) return false;
 
       // 2. Crop (default = full image if no user crop)
       const crop = (currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02)
@@ -523,46 +529,40 @@ export function PlotEditor() {
         await new Promise(r => setTimeout(r, 100));
         await saveBoard();
       }
+      return true;
     } catch (e) {
       console.warn('[PlotEditor] save failed:', e);
+      return false;
     } finally {
       isSavingRef.current = false;
       setIsSaving(false);
     }
-  }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard, loadImage]);
+  }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard, loadImage, captureFromPlotly]);
 
-  // Enter crop mode: capture a snapshot of the current plotly view as a static image.
-  // Crop coordinates are relative to this image, making them viewport-independent.
+  // Enter crop mode: capture snapshot, then switch to crop UI
   const enterCropMode = useCallback(async () => {
-    if (!plotlyDivRef.current || !plotlyContainerRef.current) return;
-    try {
-      const rect = plotlyContainerRef.current.getBoundingClientRect();
-      await (Plotly as any).relayout(plotlyDivRef.current, {
-        width: Math.round(rect.width), height: Math.round(rect.height),
-      });
-      const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: 2 });
-      setCropSnapshot(url.replace(/^data:image\/png;base64,/, ''));
-      await (Plotly as any).relayout(plotlyDivRef.current, {
-        autosize: true, width: undefined, height: undefined,
-      });
-    } catch {
-      // Fallback: use existing output
-      if (localOutputRef.current) setCropSnapshot(localOutputRef.current);
-    }
+    const b64 = await captureFromPlotly();
+    setCropSnapshot(b64 || localOutputRef.current || null);
     setCropMode(true);
-  }, []);
+  }, [captureFromPlotly]);
 
   const exitCropMode = useCallback(() => {
     setCropMode(false);
     setCropSnapshot(null);
   }, []);
 
+  // Close: guarded against closing during save
   const handleClose = useCallback(() => {
+    if (isSavingRef.current) return; // don't close while saving
     if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
     initRef.current = null; useUIStore.getState().setPlotEditorElementId(null);
   }, []);
 
-  const handleSaveAndClose = useCallback(async () => { await handleSave(); handleClose(); }, [handleSave, handleClose]);
+  // Save & Close: only close if save succeeded
+  const handleSaveAndClose = useCallback(async () => {
+    const saved = await handleSave();
+    if (saved) handleClose();
+  }, [handleSave, handleClose]);
 
   // Plotly render
   const plotlyJsonRef = useRef(plotlyJson); plotlyJsonRef.current = plotlyJson;
