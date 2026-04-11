@@ -331,15 +331,29 @@ export function PlotEditor() {
     const currentCrop = cropRectRef.current;
     const currentJson = getCurrentPlotlyJson();
 
-    // Step 1: Capture with scale only — this preserves the CURRENT camera
-    // angle and interactive state. Passing explicit width/height causes plotly
-    // to re-render from the layout spec, resetting the camera.
-    // scale=2 gives 2x pixel density without changing the layout.
+    // Step 1: Force plotly to relayout at the container's CSS dimensions,
+    // then capture. This ensures the captured image has the same aspect
+    // ratio as the container, so crop fractions map correctly.
+    // Plotly.relayout preserves the camera/interactive state.
     let fullB64: string | null = null;
-    if (plotlyDivRef.current) {
+    const containerEl = plotlyContainerRef.current;
+    if (plotlyDivRef.current && containerEl) {
       try {
+        const rect = containerEl.getBoundingClientRect();
+        // Force plotly internal dimensions to match the container
+        await (Plotly as any).relayout(plotlyDivRef.current, {
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        });
+        // Capture at 2x pixel density
         const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: 2 });
         fullB64 = url.replace(/^data:image\/png;base64,/, '');
+        // Restore autosize so the figure remains responsive
+        await (Plotly as any).relayout(plotlyDivRef.current, {
+          autosize: true,
+          width: undefined,
+          height: undefined,
+        });
       } catch (e) {
         console.warn('[PlotEditor] capture failed:', e);
       }
