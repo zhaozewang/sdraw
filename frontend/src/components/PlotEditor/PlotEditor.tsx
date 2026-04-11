@@ -356,18 +356,33 @@ export function PlotEditor() {
     useUIStore.getState().setPlotEditorElementId(null);
   }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, captureDpi, updateElement, pushHistory, applyCrop]);
 
-  // Plotly render
-  useEffect(() => {
-    if (!plotlyJson || !plotlyDivRef.current) return;
+  // Plotly render — retries on next frame if div isn't mounted yet
+  const plotlyJsonRef = useRef(plotlyJson);
+  plotlyJsonRef.current = plotlyJson;
+
+  const renderPlotly = useCallback(() => {
+    const json = plotlyJsonRef.current;
+    if (!json || !plotlyDivRef.current) return;
     try {
-      const spec = JSON.parse(plotlyJson);
+      const spec = JSON.parse(json);
       const { width: _w, height: _h, ...rest } = (spec.layout || {});
       Plotly.react(plotlyDivRef.current, spec.data || [], {
         ...rest, autosize: true, margin: rest.margin || { l: 0, r: 0, t: 30, b: 0 },
       }, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'] });
     } catch (e) { console.warn('[PlotEditor] plotly error:', e); }
+  }, []);
+
+  useEffect(() => {
+    if (!plotlyJson) return;
+    // The div may not exist yet on the first render cycle (hasPlotly just became true).
+    // Try immediately, then retry after React re-renders.
+    if (plotlyDivRef.current) {
+      renderPlotly();
+    } else {
+      requestAnimationFrame(() => renderPlotly());
+    }
     return () => { if (plotlyDivRef.current) Plotly.purge(plotlyDivRef.current); };
-  }, [plotlyJson]);
+  }, [plotlyJson, renderPlotly]);
 
   handleRunRef.current = handleRun;
   handleCloseRef.current = handleClose;
