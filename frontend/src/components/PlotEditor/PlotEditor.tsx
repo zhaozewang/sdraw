@@ -329,26 +329,14 @@ export function PlotEditor() {
     const currentCrop = cropRectRef.current;
     const currentJson = getCurrentPlotlyJson();
 
-    // Step 1: Capture at plotly's ACTUAL current layout dimensions.
-    // Using the CSS container size causes a re-layout if it differs from
-    // plotly's internal computed size (which it does on first render).
-    // Reading from _fullLayout gives the exact dimensions plotly is
-    // currently rendering at — so the capture matches the screen.
-    // scale=2 doubles pixel density without changing the layout.
+    // Step 1: Capture with scale only — this preserves the CURRENT camera
+    // angle and interactive state. Passing explicit width/height causes plotly
+    // to re-render from the layout spec, resetting the camera.
+    // scale=2 gives 2x pixel density without changing the layout.
     let fullB64: string | null = null;
-    const div = plotlyDivRef.current as any;
-    const containerRect = plotlyContainerRef.current?.getBoundingClientRect();
-    if (div && containerRect) {
+    if (plotlyDivRef.current) {
       try {
-        // Use plotly's actual internal dimensions, not CSS container
-        const plotlyW = div._fullLayout?.width || containerRect.width;
-        const plotlyH = div._fullLayout?.height || containerRect.height;
-        const url = await Plotly.toImage(div, {
-          format: 'png',
-          width: Math.round(plotlyW),
-          height: Math.round(plotlyH),
-          scale: 2,
-        });
+        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: 2 });
         fullB64 = url.replace(/^data:image\/png;base64,/, '');
       } catch (e) {
         console.warn('[PlotEditor] capture failed:', e);
@@ -357,34 +345,27 @@ export function PlotEditor() {
     if (!fullB64) { fullB64 = localOutputRef.current; }
     if (!fullB64) return;
 
-    // Step 2: Apply crop
-    // Crop fractions are relative to the CSS container.
-    // The image is at plotly's internal size × scale.
-    // Map crop fractions through: container → plotly → image pixels.
+    // Step 2: Always crop — if no user crop, use the full image (invisible default crop).
+    // Unified workflow: capture → crop → save. Same code path regardless.
+    // Crop fractions × image natural dimensions works because the plotly image
+    // (via autosize + scale) is proportional to the container.
+    const crop = (currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02)
+      ? currentCrop
+      : { x: 0, y: 0, w: 1, h: 1 }; // default: full image
+
     let outputB64 = fullB64;
-    if (currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02) {
+    {
       const full = await new Promise<HTMLImageElement>((res, rej) => {
         const i = new Image(); i.onload = () => res(i); i.onerror = rej;
         i.src = `data:image/png;base64,${fullB64}`;
       });
-      // Container fractions → image pixels
-      // The image is (plotlyW * scale) × (plotlyH * scale) pixels.
-      // The crop fractions are relative to containerW × containerH.
-      // Ratio: imagePixels / containerPixels
-      const scaleX = full.naturalWidth / (containerRect?.width || full.naturalWidth);
-      const scaleY = full.naturalHeight / (containerRect?.height || full.naturalHeight);
-      const sx = Math.round(currentCrop.x * (containerRect?.width || full.naturalWidth) * scaleX);
-      const sy = Math.round(currentCrop.y * (containerRect?.height || full.naturalHeight) * scaleY);
-      const sw = Math.max(1, Math.round(currentCrop.w * (containerRect?.width || full.naturalWidth) * scaleX));
-      const sh = Math.max(1, Math.round(currentCrop.h * (containerRect?.height || full.naturalHeight) * scaleY));
-      // Clamp to image bounds
-      const csx = Math.min(sx, full.naturalWidth - 1);
-      const csy = Math.min(sy, full.naturalHeight - 1);
-      const csw = Math.min(sw, full.naturalWidth - csx);
-      const csh = Math.min(sh, full.naturalHeight - csy);
+      const sx = Math.max(0, Math.round(crop.x * full.naturalWidth));
+      const sy = Math.max(0, Math.round(crop.y * full.naturalHeight));
+      const sw = Math.max(1, Math.min(full.naturalWidth - sx, Math.round(crop.w * full.naturalWidth)));
+      const sh = Math.max(1, Math.min(full.naturalHeight - sy, Math.round(crop.h * full.naturalHeight)));
       const c = document.createElement('canvas');
-      c.width = csw; c.height = csh;
-      c.getContext('2d')!.drawImage(full, csx, csy, csw, csh, 0, 0, csw, csh);
+      c.width = sw; c.height = sh;
+      c.getContext('2d')!.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
       outputB64 = c.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
     }
 
