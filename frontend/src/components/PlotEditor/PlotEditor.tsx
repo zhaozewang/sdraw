@@ -312,9 +312,14 @@ export function PlotEditor() {
     });
   }, []);
 
+  // Use ref so handleSave always reads the latest cropRect
+  const cropRectRef = useRef(cropRect);
+  cropRectRef.current = cropRect;
+
   const handleSave = useCallback(async () => {
     if (!elementId) return;
     const currentJson = getCurrentPlotlyJson();
+    const currentCrop = cropRectRef.current;
     let finalImage = localOutput;
 
     // Capture via Plotly.toImage — this reads directly from plotly's internal
@@ -333,17 +338,21 @@ export function PlotEditor() {
     // Apply crop — fractions map to image since plotly autosize fills container
     let cropped = finalImage;
     if (!finalImage) { console.warn('[PlotEditor] No image captured'); }
-    if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02) {
+    console.log('[PlotEditor] save: crop =', currentCrop, 'hasImage =', !!finalImage);
+    if (finalImage && currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02) {
       try {
         const img = await loadImage(finalImage);
-        const sx = Math.round(cropRect.x * img.naturalWidth);
-        const sy = Math.round(cropRect.y * img.naturalHeight);
-        const sw = Math.round(cropRect.w * img.naturalWidth);
-        const sh = Math.round(cropRect.h * img.naturalHeight);
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, sw); canvas.height = Math.max(1, sh);
-        canvas.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-        cropped = canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+        const sx = Math.round(currentCrop.x * img.naturalWidth);
+        const sy = Math.round(currentCrop.y * img.naturalHeight);
+        const sw = Math.round(currentCrop.w * img.naturalWidth);
+        const sh = Math.round(currentCrop.h * img.naturalHeight);
+        console.log('[PlotEditor] crop pixels:', { imgW: img.naturalWidth, imgH: img.naturalHeight, sx, sy, sw, sh });
+        if (sw > 0 && sh > 0) {
+          const canvas = document.createElement('canvas');
+          canvas.width = sw; canvas.height = sh;
+          canvas.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+          cropped = canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+        }
       } catch (e) {
         console.warn('[PlotEditor] crop failed:', e);
       }
@@ -352,7 +361,7 @@ export function PlotEditor() {
     const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
     if (el) {
       const updates: Record<string, any> = {
-        metadata: { ...el.metadata, code: codeRef.current, lastOutput: cropped, lastStdout: localStdout, lastError: localError, plotCrop: cropRect, plotlyJson: currentJson },
+        metadata: { ...el.metadata, code: codeRef.current, lastOutput: cropped, lastStdout: localStdout, lastError: localError, plotCrop: currentCrop, plotlyJson: currentJson },
       };
       if (cropped) {
         try {
@@ -363,7 +372,7 @@ export function PlotEditor() {
       updateElement(elementId, updates); pushHistory('Save plot');
       setPlotlyJson(currentJson);
     }
-  }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, updateElement, pushHistory, loadImage, getCurrentPlotlyJson]);
+  }, [elementId, localOutput, localStdout, localError, plotlyJson, updateElement, pushHistory, loadImage, getCurrentPlotlyJson]);
 
   const handleClose = useCallback(() => {
     if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
