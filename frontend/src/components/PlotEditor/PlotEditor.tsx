@@ -369,7 +369,13 @@ export function PlotEditor() {
       i.src = `data:image/png;base64,${outputB64}`;
     });
 
-    // Step 4: Update element — set lastOutput, node dimensions, and all metadata
+    // Step 4: Cancel any pending debounced persist (it would overwrite with stale data)
+    if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
+
+    // Step 5: Update local state so the UI reflects the save immediately
+    setLocalOutput(outputB64);
+
+    // Step 6: Update element — set lastOutput, node dimensions, and all metadata
     const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
     if (el) {
       const newHeight = out.naturalWidth > 0
@@ -390,8 +396,9 @@ export function PlotEditor() {
       });
       pushHistory('Save plot');
 
-      // Step 5: Persist to disk so the image survives page refresh
-      setTimeout(() => saveBoard(), 200);
+      // Step 7: Persist to disk after React processes the state update
+      await new Promise(r => setTimeout(r, 100));
+      await saveBoard();
     }
   }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard]);
 
