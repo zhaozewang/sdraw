@@ -418,9 +418,22 @@ export function PlotEditor() {
       });
       pushHistory('Save plot');
 
+      // Verify the update took effect
+      const verify = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
+      console.log('[PlotEditor] AFTER updateElement:', { w: verify?.width, h: verify?.height, expectedH: newHeight });
+
       // Step 7: Persist to disk after React processes the state update
       await new Promise(r => setTimeout(r, 100));
+
+      // Verify again after React tick
+      const verify2 = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
+      console.log('[PlotEditor] AFTER 100ms:', { w: verify2?.width, h: verify2?.height });
+
       await saveBoard();
+
+      // Verify after save
+      const verify3 = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
+      console.log('[PlotEditor] AFTER saveBoard:', { w: verify3?.width, h: verify3?.height });
     }
   }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard]);
 
