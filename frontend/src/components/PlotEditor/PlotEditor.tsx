@@ -317,13 +317,19 @@ export function PlotEditor() {
     const currentJson = getCurrentPlotlyJson();
     let finalImage = localOutput;
 
-    // Capture plotly using scale — this preserves the exact on-screen layout
-    // (fonts, margins, tick labels all identical) and just increases pixel density.
-    // The image dimensions = plotly_internal_size * scale, and since autosize=true
-    // the internal size matches the container, so crop fractions map directly.
-    if (currentJson && plotlyDivRef.current) {
+    // Capture at the container's exact CSS dimensions with 2x pixel density.
+    // width/height = container CSS size ensures the aspect ratio matches exactly.
+    // scale = 2 doubles pixel density without changing the layout (fonts stay same).
+    const container = plotlyContainerRef.current;
+    if (currentJson && plotlyDivRef.current && container) {
       try {
-        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: captureScale });
+        const rect = container.getBoundingClientRect();
+        const url = await Plotly.toImage(plotlyDivRef.current, {
+          format: 'png',
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          scale: captureScale,
+        });
         finalImage = url.replace(/^data:image\/png;base64,/, '');
       } catch {}
     }
