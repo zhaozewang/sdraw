@@ -205,19 +205,21 @@ export function PlotEditor() {
   const codeRef = useRef('');
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const persistToStore = useCallback(() => {
+  // Code-only persist (debounced) — only saves code changes, never touches
+  // width/height/lastOutput. The Save button handles everything else.
+  const persistCode = useCallback(() => {
     if (!elementId) return;
     const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
     if (!el) return;
     const code = codeRef.current;
-    if (code !== el.metadata?.code || localOutput !== el.metadata?.lastOutput || localStdout !== el.metadata?.lastStdout || localError !== el.metadata?.lastError) {
-      updateElement(elementId, { metadata: { ...el.metadata, code, lastOutput: localOutput, lastStdout: localStdout, lastError: localError } });
+    if (code !== el.metadata?.code) {
+      updateElement(elementId, { metadata: { ...el.metadata, code } });
     }
-  }, [elementId, localOutput, localStdout, localError, updateElement]);
+  }, [elementId, updateElement]);
   const schedulePersist = useCallback(() => {
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
-    persistTimerRef.current = setTimeout(() => persistToStore(), 2000);
-  }, [persistToStore]);
+    persistTimerRef.current = setTimeout(() => persistCode(), 2000);
+  }, [persistCode]);
 
   useEffect(() => {
     if (elementId && element && initRef.current !== elementId) {
