@@ -346,6 +346,20 @@ export function PlotEditor() {
     if (!fullB64) { fullB64 = localOutputRef.current; }
     if (!fullB64) return;
 
+    // Log full capture size
+    try {
+      const fullImg = await new Promise<HTMLImageElement>((res, rej) => {
+        const i = new Image(); i.onload = () => res(i); i.onerror = rej;
+        i.src = `data:image/png;base64,${fullB64}`;
+      });
+      const containerRect = plotlyContainerRef.current?.getBoundingClientRect();
+      console.log('[PlotEditor] captured:', {
+        imgW: fullImg.naturalWidth, imgH: fullImg.naturalHeight,
+        containerW: containerRect ? Math.round(containerRect.width) : '?',
+        containerH: containerRect ? Math.round(containerRect.height) : '?',
+      });
+    } catch {}
+
     // Step 2: Apply crop
     let outputB64 = fullB64;
     if (currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02) {
@@ -387,7 +401,14 @@ export function PlotEditor() {
       const newHeight = out.naturalWidth > 0
         ? Math.round(el.width * (out.naturalHeight / out.naturalWidth))
         : el.height;
-      console.log('[PlotEditor] save dimensions:', { oldW: el.width, oldH: el.height, newH: newHeight, imgW: out.naturalWidth, imgH: out.naturalHeight, hasCrop: !!currentCrop });
+      const containerRect = plotlyContainerRef.current?.getBoundingClientRect();
+      console.log('[PlotEditor] save:', {
+        container: containerRect ? { w: Math.round(containerRect.width), h: Math.round(containerRect.height) } : null,
+        capturedFull: { w: 'see above', h: 'see above' },
+        outputImg: { w: out.naturalWidth, h: out.naturalHeight },
+        crop: currentCrop,
+        node: { oldW: el.width, oldH: el.height, newH: newHeight },
+      });
       updateElement(elementId, {
         width: el.width,
         height: newHeight,
