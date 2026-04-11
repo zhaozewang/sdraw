@@ -186,7 +186,7 @@ export function PlotEditor() {
   const [isRunning, setIsRunning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
-  const [captureDpi, setCaptureDpi] = useState(2);
+  const [captureDpi, setCaptureDpi] = useState(1);
   const [cropRect, setCropRect] = useState<CropRect | null>(null);
   const [cropMode, setCropMode] = useState(false);
 
@@ -409,9 +409,9 @@ export function PlotEditor() {
 
           {hasPlotly && (
             <div className="flex items-center gap-0.5 mr-1">
-              {([1, 2, 3] as const).map(d => (
+              {([0.5, 1, 2] as const).map(d => (
                 <button key={d} onClick={() => setCaptureDpi(d)} title={`${d}x resolution`}
-                  className={`px-1 py-0.5 text-xs rounded ${captureDpi === d ? (isDark ? 'bg-blue-500/30 text-blue-300' : 'bg-blue-500 text-white') : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')}`}>
+                  className={`px-1.5 py-0.5 text-xs rounded ${captureDpi === d ? 'text-blue-400 font-medium' : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')}`}>
                   {d}x
                 </button>
               ))}
