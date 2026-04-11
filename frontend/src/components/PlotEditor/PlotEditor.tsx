@@ -363,11 +363,17 @@ export function PlotEditor() {
       outputB64 = c.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
     }
 
-    // Step 3: Compute aspect ratio from output image
-    const out = await new Promise<HTMLImageElement>((res, rej) => {
-      const i = new Image(); i.onload = () => res(i); i.onerror = rej;
-      i.src = `data:image/png;base64,${outputB64}`;
-    });
+    // Step 3: Load output image to get dimensions for aspect ratio
+    let out: HTMLImageElement;
+    try {
+      out = await new Promise<HTMLImageElement>((res, rej) => {
+        const i = new Image(); i.onload = () => res(i); i.onerror = rej;
+        i.src = `data:image/png;base64,${outputB64}`;
+      });
+    } catch {
+      console.warn('[PlotEditor] failed to load output image for dimensions');
+      return;
+    }
 
     // Step 4: Cancel any pending debounced persist (it would overwrite with stale data)
     if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
@@ -381,6 +387,7 @@ export function PlotEditor() {
       const newHeight = out.naturalWidth > 0
         ? Math.round(el.width * (out.naturalHeight / out.naturalWidth))
         : el.height;
+      console.log('[PlotEditor] save dimensions:', { oldW: el.width, oldH: el.height, newH: newHeight, imgW: out.naturalWidth, imgH: out.naturalHeight, hasCrop: !!currentCrop });
       updateElement(elementId, {
         width: el.width,
         height: newHeight,
