@@ -18,15 +18,26 @@ function generateId() { return Math.random().toString(36).slice(2, 10); }
 interface CropRect { x: number; y: number; w: number; h: number; }
 
 // ─── Draggable Splitter ────────────────────────────────────────
-function Splitter({ dir, onDrag }: { dir: 'h' | 'v'; onDrag: (delta: number) => void }) {
+function Splitter({ dir, containerRef, onResize }: {
+  dir: 'h' | 'v';
+  containerRef: React.RefObject<HTMLElement | null>;
+  onResize: (pct: number) => void;
+}) {
   const onDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    const start = dir === 'h' ? e.clientX : e.clientY;
-    const onMove = (ev: MouseEvent) => onDrag((dir === 'h' ? ev.clientX : ev.clientY) - start);
+    const container = containerRef.current;
+    if (!container) return;
+    const onMove = (ev: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      const pct = dir === 'h'
+        ? ((ev.clientX - rect.left) / rect.width) * 100
+        : ((ev.clientY - rect.top) / rect.height) * 100;
+      onResize(pct);
+    };
     const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  }, [dir, onDrag]);
+  }, [dir, containerRef, onResize]);
 
   return (
     <div
@@ -200,7 +211,7 @@ export function PlotEditor() {
     }
   }, [elementId, element]);
 
-  // CodeMirror — always dark theme for code
+  // CodeMirror — follows canvas theme
   useEffect(() => {
     if (!editorRef.current || !elementId) return;
     if (viewRef.current) { viewRef.current.destroy(); viewRef.current = null; }
@@ -209,6 +220,7 @@ export function PlotEditor() {
       { key: 'Escape', run: () => { handleCloseRef.current(); return true; } },
       { key: 'Shift-Tab', run: (v) => { indentLess(v); return true; } },
     ]);
+    const monoFont = '"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
     const exts = [
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(),
       history(), indentOnInput(), bracketMatching(), python(),
@@ -217,20 +229,29 @@ export function PlotEditor() {
       EditorView.updateListener.of((u) => {
         if (u.docChanged) { const c = u.state.doc.toString(); codeRef.current = c; setLocalCode(c); schedulePersist(); }
       }),
-      oneDark,
       EditorView.theme({
         '&': { height: '100%', fontSize: '13px' },
-        '.cm-scroller': { overflow: 'auto', fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' },
+        '.cm-scroller': { overflow: 'auto', fontFamily: monoFont },
         '.cm-content': { padding: '12px 0' },
         '.cm-gutters': { borderRight: 'none', minWidth: '3em' },
       }),
     ];
+    if (isDark) {
+      exts.push(oneDark);
+    } else {
+      exts.push(EditorView.theme({
+        '&': { backgroundColor: '#fafafa' },
+        '.cm-gutters': { backgroundColor: '#f5f5f5', color: '#999' },
+        '.cm-activeLine': { backgroundColor: 'rgba(0,0,0,0.04)' },
+        '.cm-activeLineGutter': { backgroundColor: 'rgba(0,0,0,0.06)' },
+      }));
+    }
     const st = EditorState.create({ doc: codeRef.current, extensions: exts });
     const v = new EditorView({ state: st, parent: editorRef.current });
     viewRef.current = v;
     requestAnimationFrame(() => v.focus());
     return () => { v.destroy(); viewRef.current = null; };
-  }, [elementId]);
+  }, [elementId, isDark]);
 
   const handleRunRef = useRef<() => void>(() => {});
   const handleCloseRef = useRef<() => void>(() => {});
@@ -320,22 +341,8 @@ export function PlotEditor() {
   handleCloseRef.current = handleSaveAndClose;
   useEffect(() => { return () => { if (persistTimerRef.current) clearTimeout(persistTimerRef.current); }; }, []);
 
-  // Splitter drag handlers
-  const hSplitStart = useRef(leftPct);
-  const vSplitStart = useRef(codePct);
-  const onHSplit = useCallback((delta: number) => {
-    const body = bodyRef.current; if (!body) return;
-    const pct = hSplitStart.current + (delta / body.clientWidth) * 100;
-    setLeftPct(Math.max(25, Math.min(75, pct)));
-  }, []);
-  const onVSplit = useCallback((delta: number) => {
-    const left = leftRef.current; if (!left) return;
-    const pct = vSplitStart.current + (delta / left.clientHeight) * 100;
-    setCodePct(Math.max(30, Math.min(90, pct)));
-  }, []);
-  // Reset start on mousedown
-  useEffect(() => { hSplitStart.current = leftPct; }, [leftPct]);
-  useEffect(() => { vSplitStart.current = codePct; }, [codePct]);
+  const onHSplit = useCallback((pct: number) => setLeftPct(Math.max(25, Math.min(75, pct))), []);
+  const onVSplit = useCallback((pct: number) => setCodePct(Math.max(30, Math.min(90, pct))), []);
 
   if (!elementId || !element) return null;
   const hasPlotly = !!plotlyJson;
@@ -347,39 +354,40 @@ export function PlotEditor() {
       {/* Dark translucent backdrop */}
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
 
-      <div className="relative m-4 flex-1 flex flex-col rounded-xl shadow-2xl overflow-hidden border border-white/10"
-        style={{ backgroundColor: '#1e1e2e' }}
+      <div className={`relative m-4 flex-1 flex flex-col rounded-xl shadow-2xl overflow-hidden ${isDark ? 'border border-white/10' : 'border border-gray-200'}`}
+        style={{ backgroundColor: isDark ? '#1e1e2e' : '#ffffff' }}
         onClick={e => e.stopPropagation()}>
 
         {/* Compact toolbar */}
-        <div className="h-9 flex items-center px-3 gap-1.5 shrink-0 select-none border-b border-white/[0.06]" style={{ backgroundColor: '#181825' }}>
+        <div className="h-9 flex items-center px-3 gap-1.5 shrink-0 select-none"
+          style={{ backgroundColor: isDark ? '#181825' : '#f8f8f8', borderBottom: isDark ? '1px solid rgba(255,255,255,0.06)' : '1px solid #e5e5e5' }}>
           {/* Run/Stop */}
           {isRunning ? (
-            <button onClick={handleAbort} className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded text-red-300 hover:text-red-200" style={{ backgroundColor: 'rgba(239,68,68,0.15)' }}>
+            <button onClick={handleAbort} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-red-300' : 'text-red-600'}`}
+              style={{ backgroundColor: isDark ? 'rgba(239,68,68,0.15)' : 'rgba(239,68,68,0.1)' }}>
               <Square size={10} fill="currentColor" /> Stop
             </button>
           ) : (
-            <button onClick={handleRun} className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded text-green-300 hover:text-green-200" style={{ backgroundColor: 'rgba(34,197,94,0.15)' }}>
+            <button onClick={handleRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
+              style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.1)' }}>
               <Play size={10} /> Run
             </button>
           )}
-          <span className="text-[10px] text-white/30">{isRunning ? '' : '\u2318\u23CE'}</span>
+          <span className={`text-[10px] ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{isRunning ? '' : '\u2318\u23CE'}</span>
 
-          <div className="w-px h-4 bg-white/10 mx-1" />
+          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
 
-          {/* Python env */}
-          <span className="text-[10px] text-white/30 truncate max-w-[140px]" title={activePythonEnv || 'default'}>
+          <span className={`text-[10px] truncate max-w-[140px] ${isDark ? 'text-white/30' : 'text-gray-400'}`} title={activePythonEnv || 'default'}>
             {(activePythonEnv || 'default').split('/').pop()}
           </span>
 
           <div className="flex-1" />
 
-          {/* Output controls */}
           {hasPlotly && (
             <div className="flex items-center gap-0.5 mr-1">
               {([1, 2, 3] as const).map(d => (
                 <button key={d} onClick={() => setCaptureDpi(d)} title={`${d}x resolution`}
-                  className={`px-1 py-0.5 text-[10px] rounded ${captureDpi === d ? 'bg-blue-500/30 text-blue-300' : 'text-white/30 hover:text-white/50'}`}>
+                  className={`px-1 py-0.5 text-[10px] rounded ${captureDpi === d ? (isDark ? 'bg-blue-500/30 text-blue-300' : 'bg-blue-500 text-white') : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')}`}>
                   {d}x
                 </button>
               ))}
@@ -387,34 +395,32 @@ export function PlotEditor() {
           )}
 
           {hasOutput && !cropMode && (
-            <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded ${cropRect ? 'text-blue-400' : 'text-white/40 hover:text-white/60'}`}>
+            <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
               <Crop size={9} /> {cropRect ? 'Edit Crop' : 'Crop'}
             </button>
           )}
           {cropMode && (
-            <button onClick={() => setCropMode(false)} className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-blue-300 rounded bg-blue-500/20">
+            <button onClick={() => setCropMode(false)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
               <Check size={9} /> Done
             </button>
           )}
           {cropRect && !cropMode && (
-            <button onClick={() => setCropRect(null)} className="text-[10px] text-red-400/60 hover:text-red-400 px-1">
-              <X size={9} />
-            </button>
+            <button onClick={() => setCropRect(null)} className="text-[10px] text-red-400/60 hover:text-red-400 px-1"><X size={9} /></button>
           )}
 
-          <div className="w-px h-4 bg-white/10 mx-1" />
+          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
 
           {hasOutput && (
             <>
-              <button onClick={handleSave} className="text-[10px] text-white/40 hover:text-white/70 px-1.5 py-0.5 rounded hover:bg-white/5" title="Save to canvas">
+              <button onClick={handleSave} className={`px-1.5 py-0.5 rounded ${isDark ? 'text-white/40 hover:text-white/70 hover:bg-white/5' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`} title="Save to canvas">
                 <Save size={11} />
               </button>
-              <button onClick={handleSaveAndClose} className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded text-white/80 hover:text-white bg-blue-600/60 hover:bg-blue-600/80">
+              <button onClick={handleSaveAndClose} className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
                 Save & Close
               </button>
             </>
           )}
-          <button onClick={handleClose} className="text-white/30 hover:text-white/60 p-0.5 rounded hover:bg-white/5 ml-0.5" title="Close without saving">
+          <button onClick={handleClose} className={`p-0.5 rounded ml-0.5 ${isDark ? 'text-white/30 hover:text-white/60 hover:bg-white/5' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`} title="Close without saving">
             <X size={14} />
           </button>
         </div>
@@ -429,14 +435,14 @@ export function PlotEditor() {
             {/* Console/Error */}
             {hasConsole && (
               <>
-                <Splitter dir="v" onDrag={onVSplit} />
-                <div className="overflow-auto min-h-0" style={{ height: `${100 - codePct}%`, backgroundColor: '#11111b' }}>
+                <Splitter dir="v" containerRef={leftRef} onResize={onVSplit} />
+                <div className="overflow-auto min-h-0" style={{ height: `${100 - codePct}%`, backgroundColor: isDark ? '#11111b' : '#f5f5f5' }}>
                   {localStdout && (
-                    <pre className="px-3 py-2 text-xs text-[#a6adc8] whitespace-pre-wrap break-words"
+                    <pre className={`px-3 py-2 text-xs whitespace-pre-wrap break-words ${isDark ? 'text-[#a6adc8]' : 'text-gray-600'}`}
                       style={{ fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace' }}>{localStdout}</pre>
                   )}
                   {localError && (
-                    <pre className="px-3 py-2 text-xs text-[#f38ba8] whitespace-pre-wrap break-words"
+                    <pre className={`px-3 py-2 text-xs whitespace-pre-wrap break-words ${isDark ? 'text-[#f38ba8]' : 'text-red-600'}`}
                       style={{ fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace' }}>{localError}</pre>
                   )}
                 </div>
@@ -445,19 +451,19 @@ export function PlotEditor() {
           </div>
 
           {/* Horizontal splitter */}
-          <Splitter dir="h" onDrag={onHSplit} />
+          <Splitter dir="h" containerRef={bodyRef} onResize={onHSplit} />
 
           {/* Right: output */}
-          <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: '#1a1a2e' }}>
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: isDark ? '#1a1a2e' : '#fafafa' }}>
             <div className="flex-1 overflow-hidden flex flex-col min-h-0">
               {isRunning ? (
                 <div className="w-full h-full flex items-center justify-center">
-                  <div className="flex items-center gap-2 text-sm text-white/30"><Loader2 size={18} className="animate-spin" /> Executing...</div>
+                  <div className={`flex items-center gap-2 text-sm ${isDark ? 'text-white/30' : 'text-gray-400'}`}><Loader2 size={18} className="animate-spin" /> Executing...</div>
                 </div>
               ) : (
                 <>
                   {hasPlotly && (
-                    <div className="flex-1 min-h-0 relative overflow-hidden" style={{ backgroundColor: '#fff' }} ref={plotlyContainerRef}>
+                    <div className="flex-1 min-h-0 relative overflow-hidden bg-white" ref={plotlyContainerRef}>
                       <div ref={plotlyRefCallback} className="absolute inset-0 overflow-hidden" />
                       {cropMode && <CropEditor cropRect={cropRect} onChange={setCropRect} containerRef={plotlyContainerRef} />}
                       {!cropMode && cropRect && cropRect.w > 0.01 && <CropIndicator cropRect={cropRect} />}
@@ -471,17 +477,17 @@ export function PlotEditor() {
                   )}
 
                   {!hasOutput && (
-                    <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-white/25 select-none px-8">
+                    <div className={`w-full h-full flex flex-col items-center justify-center gap-3 select-none px-8 ${isDark ? 'text-white/25' : 'text-gray-300'}`}>
                       {hasRun ? (
                         <>
                           <span className="text-sm">No output captured</span>
-                          <span className="text-xs text-white/15 text-center">Create a matplotlib figure or a plotly <code className="text-white/25">fig = go.Figure(...)</code></span>
+                          <span className={`text-xs text-center ${isDark ? 'text-white/15' : 'text-gray-300'}`}>Create a matplotlib figure or a plotly <code className={isDark ? 'text-white/25' : 'text-gray-400'}>fig = go.Figure(...)</code></span>
                         </>
                       ) : (
                         <>
                           <Play size={20} />
                           <span className="text-sm">Run to see output</span>
-                          <span className="text-[10px] text-white/15">{'\u2318'}+Enter</span>
+                          <span className={`text-[10px] ${isDark ? 'text-white/15' : 'text-gray-300'}`}>{'\u2318'}+Enter</span>
                         </>
                       )}
                     </div>
