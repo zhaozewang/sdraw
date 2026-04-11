@@ -34,24 +34,48 @@ const HANDLE_CURSORS: Record<HandlePos, string> = { nw: 'nwse-resize', ne: 'nesw
  * - Moving the crop box by dragging inside it
  * All coordinates are fractions (0–1) of the container size.
  */
-function CropOverlay({ cropRect, onCropChange, containerRef }: {
+function CropOverlay({ cropRect, onCropChange, containerRef, imageRef }: {
   cropRect: CropRect | null;
   onCropChange: (rect: CropRect | null) => void;
   containerRef: React.RefObject<HTMLDivElement | null>;
+  imageRef: React.RefObject<HTMLImageElement | null>;
 }) {
   const cropRef = useRef(cropRect);
   cropRef.current = cropRect;
   const suppressClickRef = useRef(false);
 
+  // Get the actual rendered image rect within the object-contain container
+  const getImageRect = useCallback(() => {
+    const img = imageRef.current;
+    if (!img || !img.naturalWidth || !img.naturalHeight) return null;
+    const container = img.getBoundingClientRect();
+    const imgAspect = img.naturalWidth / img.naturalHeight;
+    const containerAspect = container.width / container.height;
+    let rw: number, rh: number;
+    if (imgAspect > containerAspect) {
+      rw = container.width;
+      rh = container.width / imgAspect;
+    } else {
+      rh = container.height;
+      rw = container.height * imgAspect;
+    }
+    return {
+      left: container.left + (container.width - rw) / 2,
+      top: container.top + (container.height - rh) / 2,
+      width: rw,
+      height: rh,
+    };
+  }, [imageRef]);
+
+  // Convert mouse position to fraction of the rendered image area
   const toFrac = useCallback((e: MouseEvent | React.MouseEvent) => {
-    const el = containerRef.current;
-    if (!el) return { fx: 0, fy: 0 };
-    const r = el.getBoundingClientRect();
+    const r = getImageRect();
+    if (!r) return { fx: 0, fy: 0 };
     return {
       fx: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
       fy: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)),
     };
-  }, [containerRef]);
+  }, [getImageRect]);
 
   // Start drawing a new crop (on background click)
   const handleBgMouseDown = useCallback((e: React.MouseEvent) => {
@@ -153,6 +177,34 @@ function CropOverlay({ cropRect, onCropChange, containerRef }: {
   // Expose suppressClickRef for parent backdrop handler
   (CropOverlay as any)._suppressClick = suppressClickRef;
 
+  // Compute the image area offset within the container for positioning overlays
+  const [imgOffset, setImgOffset] = useState({ left: 0, top: 0, width: 0, height: 0 });
+  useEffect(() => {
+    const update = () => {
+      const img = imageRef.current;
+      const container = containerRef.current;
+      if (!img || !container || !img.naturalWidth) return;
+      const cr = container.getBoundingClientRect();
+      const ir = getImageRect();
+      if (!ir) return;
+      setImgOffset({
+        left: ir.left - cr.left,
+        top: ir.top - cr.top,
+        width: ir.width,
+        height: ir.height,
+      });
+    };
+    update();
+    // Update on image load and window resize
+    const img = imageRef.current;
+    img?.addEventListener('load', update);
+    window.addEventListener('resize', update);
+    return () => {
+      img?.removeEventListener('load', update);
+      window.removeEventListener('resize', update);
+    };
+  }, [imageRef, containerRef, getImageRect, cropRect]);
+
   const handles: { pos: HandlePos; cx: number; cy: number }[] = cropRect ? [
     { pos: 'nw', cx: cropRect.x, cy: cropRect.y },
     { pos: 'ne', cx: cropRect.x + cropRect.w, cy: cropRect.y },
@@ -166,48 +218,59 @@ function CropOverlay({ cropRect, onCropChange, containerRef }: {
       style={{ cursor: 'crosshair', zIndex: 5 }}
       onMouseDown={handleBgMouseDown}
     >
-      {cropRect && cropRect.w > 0 && (
-        <>
-          {/* Gray mask */}
-          <svg className="absolute inset-0 w-full h-full" style={{ pointerEvents: 'none' }} preserveAspectRatio="none" viewBox="0 0 1 1">
-            <defs>
-              <mask id="crop-mask-editor">
-                <rect x="0" y="0" width="1" height="1" fill="white" />
-                <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" />
-              </mask>
-            </defs>
-            <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.5)" mask="url(#crop-mask-editor)" />
-            <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
-              fill="none" stroke="#3b82f6" strokeWidth="0.003" />
-          </svg>
-          {/* Move area */}
-          <div
-            data-crop-area="move"
-            onMouseDown={handleMove}
-            style={{
-              position: 'absolute',
-              left: `${cropRect.x * 100}%`, top: `${cropRect.y * 100}%`,
-              width: `${cropRect.w * 100}%`, height: `${cropRect.h * 100}%`,
-              cursor: 'move', zIndex: 6,
-            }}
-          />
-          {/* Corner handles */}
-          {handles.map(({ pos, cx, cy }) => (
-            <div
-              key={pos}
-              data-crop-area="handle"
-              onMouseDown={(e) => handleResize(pos, e)}
-              style={{
-                position: 'absolute',
-                left: `calc(${cx * 100}% - ${HANDLE_SIZE / 2}px)`,
-                top: `calc(${cy * 100}% - ${HANDLE_SIZE / 2}px)`,
-                width: HANDLE_SIZE, height: HANDLE_SIZE,
-                backgroundColor: '#3b82f6', border: '1.5px solid white',
-                borderRadius: 2, cursor: HANDLE_CURSORS[pos], zIndex: 10,
-              }}
-            />
-          ))}
-        </>
+      {/* Image-area positioned overlay */}
+      {imgOffset.width > 0 && (
+        <div style={{
+          position: 'absolute',
+          left: imgOffset.left, top: imgOffset.top,
+          width: imgOffset.width, height: imgOffset.height,
+          pointerEvents: 'none',
+        }}>
+          {cropRect && cropRect.w > 0 && (
+            <>
+              {/* Gray mask over image area */}
+              <svg className="absolute inset-0 w-full h-full" preserveAspectRatio="none" viewBox="0 0 1 1">
+                <defs>
+                  <mask id="crop-mask-editor">
+                    <rect x="0" y="0" width="1" height="1" fill="white" />
+                    <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h} fill="black" />
+                  </mask>
+                </defs>
+                <rect x="0" y="0" width="1" height="1" fill="rgba(0,0,0,0.5)" mask="url(#crop-mask-editor)" />
+                <rect x={cropRect.x} y={cropRect.y} width={cropRect.w} height={cropRect.h}
+                  fill="none" stroke="#3b82f6" strokeWidth="0.003" />
+              </svg>
+              {/* Move area */}
+              <div
+                data-crop-area="move"
+                onMouseDown={handleMove}
+                style={{
+                  position: 'absolute',
+                  left: `${cropRect.x * 100}%`, top: `${cropRect.y * 100}%`,
+                  width: `${cropRect.w * 100}%`, height: `${cropRect.h * 100}%`,
+                  cursor: 'move', pointerEvents: 'auto', zIndex: 6,
+                }}
+              />
+              {/* Corner handles */}
+              {handles.map(({ pos, cx, cy }) => (
+                <div
+                  key={pos}
+                  data-crop-area="handle"
+                  onMouseDown={(e) => handleResize(pos, e)}
+                  style={{
+                    position: 'absolute',
+                    left: `calc(${cx * 100}% - ${HANDLE_SIZE / 2}px)`,
+                    top: `calc(${cy * 100}% - ${HANDLE_SIZE / 2}px)`,
+                    width: HANDLE_SIZE, height: HANDLE_SIZE,
+                    backgroundColor: '#3b82f6', border: '1.5px solid white',
+                    borderRadius: 2, cursor: HANDLE_CURSORS[pos],
+                    pointerEvents: 'auto', zIndex: 10,
+                  }}
+                />
+              ))}
+            </>
+          )}
+        </div>
       )}
       {/* Hint when no crop */}
       {!cropRect && (
@@ -251,6 +314,7 @@ export function PlotEditor() {
   const cropContainerRef = useRef<HTMLDivElement>(null);
 
   const plotlyDivRef = useRef<HTMLDivElement>(null);
+  const cropImageRef = useRef<HTMLImageElement>(null);
   const initRef = useRef<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -600,6 +664,7 @@ export function PlotEditor() {
                   {showCropUI && capturedImage && (
                     <div className="flex-1 min-h-0 relative" ref={cropContainerRef}>
                       <img
+                        ref={cropImageRef}
                         src={`data:image/png;base64,${capturedImage}`}
                         alt="Captured view"
                         className="absolute inset-0 w-full h-full"
@@ -610,6 +675,7 @@ export function PlotEditor() {
                         cropRect={cropRect}
                         onCropChange={setCropRect}
                         containerRef={cropContainerRef}
+                        imageRef={cropImageRef}
                       />
                     </div>
                   )}
@@ -621,8 +687,8 @@ export function PlotEditor() {
                     </div>
                   )}
 
-                  {/* Stdout */}
-                  {localStdout && (
+                  {/* Stdout — hidden during crop mode so image gets full height */}
+                  {localStdout && !showCropUI && (
                     <div className={`border-t border-border ${!showInteractive && !showCropUI && !showStaticImage ? 'flex-1' : ''}`}>
                       <div className="px-3 py-1 bg-inspector-section border-b border-border">
                         <span className="text-2xs font-semibold text-on-surface-muted uppercase tracking-wider">Console</span>
@@ -634,8 +700,8 @@ export function PlotEditor() {
                     </div>
                   )}
 
-                  {/* Error */}
-                  {localError && (
+                  {/* Error — hidden during crop mode */}
+                  {localError && !showCropUI && (
                     <div className={`border-t border-border ${!showInteractive && !showCropUI && !showStaticImage && !localStdout ? 'flex-1 flex items-start' : ''}`}>
                       <pre className="p-4 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap break-words w-full"
                         style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}>
