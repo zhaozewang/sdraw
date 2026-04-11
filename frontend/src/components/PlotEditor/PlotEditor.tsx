@@ -504,12 +504,13 @@ export function PlotEditor() {
     useUIStore.getState().setPlotEditorElementId(null);
   }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, capturedImage, captureDpi, updateElement, pushHistory, applyCrop]);
 
-  // Render plotly figure interactively
+  // Render plotly figure interactively.
+  // Re-fires when plotlyJson changes OR when switching back from crop mode
+  // (capturedImage goes null → plotly div remounts and needs re-rendering).
   useEffect(() => {
-    if (!plotlyJson || !plotlyDivRef.current) return;
+    if (!plotlyJson || !plotlyDivRef.current || capturedImage) return;
     try {
       const spec = JSON.parse(plotlyJson);
-      // Strip fixed width/height so plotly fills the container responsively
       const { width: _w, height: _h, ...restLayout } = (spec.layout || {});
       Plotly.react(plotlyDivRef.current, spec.data || [], {
         ...restLayout,
@@ -518,7 +519,7 @@ export function PlotEditor() {
       }, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'] });
     } catch (e) { console.warn('[PlotEditor] Failed to render plotly:', e); }
     return () => { if (plotlyDivRef.current) Plotly.purge(plotlyDivRef.current); };
-  }, [plotlyJson]);
+  }, [plotlyJson, capturedImage]);
 
   handleRunRef.current = handleRun;
   handleCloseRef.current = handleClose;
