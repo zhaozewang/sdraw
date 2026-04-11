@@ -509,9 +509,12 @@ export function PlotEditor() {
     if (!plotlyJson || !plotlyDivRef.current) return;
     try {
       const spec = JSON.parse(plotlyJson);
+      // Strip fixed width/height so plotly fills the container responsively
+      const { width: _w, height: _h, ...restLayout } = (spec.layout || {});
       Plotly.react(plotlyDivRef.current, spec.data || [], {
-        ...(spec.layout || {}), autosize: true,
-        margin: spec.layout?.margin || { l: 0, r: 0, t: 30, b: 0 },
+        ...restLayout,
+        autosize: true,
+        margin: restLayout.margin || { l: 0, r: 0, t: 30, b: 0 },
       }, { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ['sendDataToCloud', 'toImage'] });
     } catch (e) { console.warn('[PlotEditor] Failed to render plotly:', e); }
     return () => { if (plotlyDivRef.current) Plotly.purge(plotlyDivRef.current); };
@@ -641,8 +644,8 @@ export function PlotEditor() {
                 <>
                   {/* Interactive plotly with optional crop overlay */}
                   {showInteractive && (
-                    <div className="flex-1 min-h-0 relative">
-                      <div ref={plotlyDivRef} className="absolute inset-0" />
+                    <div className="flex-1 min-h-0 relative overflow-hidden">
+                      <div ref={plotlyDivRef} className="absolute inset-0 overflow-hidden" />
                       {/* Show crop overlay on interactive view (display only, no interaction) */}
                       {cropRect && cropRect.w > 0.02 && (
                         <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
