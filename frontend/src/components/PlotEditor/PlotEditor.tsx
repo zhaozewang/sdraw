@@ -644,7 +644,7 @@ export function PlotEditor() {
                 <>
                   {/* Interactive plotly with optional crop overlay */}
                   {showInteractive && (
-                    <div className="flex-1 min-h-0 relative overflow-hidden">
+                    <div className="flex-1 min-h-0 relative overflow-hidden bg-white dark:bg-neutral-900">
                       <div ref={plotlyDivRef} className="absolute inset-0 overflow-hidden" />
                       {/* Show crop overlay on interactive view (display only, no interaction) */}
                       {cropRect && cropRect.w > 0.02 && (
@@ -665,7 +665,7 @@ export function PlotEditor() {
 
                   {/* Crop UI: static captured image with interactive crop overlay */}
                   {showCropUI && capturedImage && (
-                    <div className="flex-1 min-h-0 relative" ref={cropContainerRef}>
+                    <div className="flex-1 min-h-0 relative bg-neutral-900" ref={cropContainerRef}>
                       <img
                         ref={cropImageRef}
                         src={`data:image/png;base64,${capturedImage}`}
