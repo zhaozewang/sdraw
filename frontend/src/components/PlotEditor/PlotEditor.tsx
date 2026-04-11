@@ -18,26 +18,47 @@ function generateId() { return Math.random().toString(36).slice(2, 10); }
 interface CropRect { x: number; y: number; w: number; h: number; }
 
 // ─── Draggable Splitter ────────────────────────────────────────
-function Splitter({ dir, containerRef, onResize }: {
+// During drag: updates layout via direct DOM style (no React re-renders).
+// On mouseup: commits final value to state → single React re-render + Plotly resize.
+function Splitter({ dir, containerRef, siblingRef, onCommit, clamp }: {
   dir: 'h' | 'v';
   containerRef: React.RefObject<HTMLElement | null>;
-  onResize: (pct: number) => void;
+  siblingRef: React.RefObject<HTMLElement | null>;  // the element whose size changes
+  onCommit: (pct: number) => void;
+  clamp: (pct: number) => number;
 }) {
   const onDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const container = containerRef.current;
-    if (!container) return;
+    const sibling = siblingRef.current;
+    if (!container || !sibling) return;
+
+    const prop = dir === 'h' ? 'width' : 'height';
+
     const onMove = (ev: MouseEvent) => {
       const rect = container.getBoundingClientRect();
-      const pct = dir === 'h'
+      const pct = clamp(dir === 'h'
         ? ((ev.clientX - rect.left) / rect.width) * 100
-        : ((ev.clientY - rect.top) / rect.height) * 100;
-      onResize(pct);
+        : ((ev.clientY - rect.top) / rect.height) * 100);
+      sibling.style[prop] = `${pct}%`;
     };
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+
+    const onUp = (ev: MouseEvent) => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      const rect = container.getBoundingClientRect();
+      const pct = clamp(dir === 'h'
+        ? ((ev.clientX - rect.left) / rect.width) * 100
+        : ((ev.clientY - rect.top) / rect.height) * 100);
+      sibling.style[prop] = '';  // clear inline style, let React take over
+      onCommit(pct);
+      // Trigger plotly resize after layout settles
+      requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+    };
+
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  }, [dir, containerRef, onResize]);
+  }, [dir, containerRef, siblingRef, onCommit, clamp]);
 
   return (
     <div
@@ -175,6 +196,7 @@ export function PlotEditor() {
   const bodyRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
 
+  const codeWrapRef = useRef<HTMLDivElement>(null);
   const plotlyContainerRef = useRef<HTMLDivElement>(null);
   const plotlyDivRef = useRef<HTMLDivElement | null>(null);
   const initRef = useRef<string | null>(null);
@@ -341,8 +363,8 @@ export function PlotEditor() {
   handleCloseRef.current = handleSaveAndClose;
   useEffect(() => { return () => { if (persistTimerRef.current) clearTimeout(persistTimerRef.current); }; }, []);
 
-  const onHSplit = useCallback((pct: number) => setLeftPct(Math.max(25, Math.min(75, pct))), []);
-  const onVSplit = useCallback((pct: number) => setCodePct(Math.max(30, Math.min(90, pct))), []);
+  const clampH = useCallback((p: number) => Math.max(25, Math.min(75, p)), []);
+  const clampV = useCallback((p: number) => Math.max(30, Math.min(90, p)), []);
 
   if (!elementId || !element) return null;
   const hasPlotly = !!plotlyJson;
@@ -430,12 +452,14 @@ export function PlotEditor() {
           {/* Left: code + console */}
           <div className="flex flex-col min-h-0 overflow-hidden" style={{ width: `${leftPct}%` }} ref={leftRef}>
             {/* Code editor */}
-            <div ref={editorRef} className="overflow-hidden" style={{ height: hasConsole ? `${codePct}%` : '100%', minHeight: 0 }} />
+            <div ref={codeWrapRef} className="overflow-hidden" style={{ height: hasConsole ? `${codePct}%` : '100%', minHeight: 0 }}>
+              <div ref={editorRef} className="w-full h-full overflow-hidden" />
+            </div>
 
             {/* Console/Error */}
             {hasConsole && (
               <>
-                <Splitter dir="v" containerRef={leftRef} onResize={onVSplit} />
+                <Splitter dir="v" containerRef={leftRef} siblingRef={codeWrapRef} onCommit={setCodePct} clamp={clampV} />
                 <div className="overflow-auto min-h-0" style={{ height: `${100 - codePct}%`, backgroundColor: isDark ? '#11111b' : '#f5f5f5' }}>
                   {localStdout && (
                     <pre className={`px-3 py-2 text-xs whitespace-pre-wrap break-words ${isDark ? 'text-[#a6adc8]' : 'text-gray-600'}`}
@@ -451,7 +475,7 @@ export function PlotEditor() {
           </div>
 
           {/* Horizontal splitter */}
-          <Splitter dir="h" containerRef={bodyRef} onResize={onHSplit} />
+          <Splitter dir="h" containerRef={bodyRef} siblingRef={leftRef} onCommit={setLeftPct} clamp={clampH} />
 
           {/* Right: output */}
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: isDark ? '#1a1a2e' : '#fafafa' }}>
