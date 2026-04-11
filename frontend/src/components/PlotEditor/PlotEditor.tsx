@@ -186,7 +186,7 @@ export function PlotEditor() {
   const [isRunning, setIsRunning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [executionId, setExecutionId] = useState<string | null>(null);
-  const captureScale = 2; // pixel density multiplier — preserves on-screen layout, just sharper
+  const saveBoard = useBoardStore(s => s.saveBoard);
   const [cropRect, setCropRect] = useState<CropRect | null>(null);
   const [cropMode, setCropMode] = useState(false);
 
@@ -322,73 +322,62 @@ export function PlotEditor() {
   const localErrorRef = useRef(localError);
   localErrorRef.current = localError;
 
-  // Save: capture + crop + update canvas node + close
-  // Uses refs for ALL state to guarantee freshness regardless of useCallback deps
+  // Save: capture at 1:1 scale (exact on-screen match) + crop + update node + persist to file
   const handleSave = useCallback(async () => {
     if (!elementId) return;
 
-    // 1. Read current state from refs
     const currentCrop = cropRectRef.current;
     const currentJson = getCurrentPlotlyJson();
 
-    // 2. Capture plotly view
-    let capturedB64: string | null = localOutputRef.current;
+    // Step 1: Capture at 1:1 — no scale, no width/height override.
+    // This produces an image at plotly's current display size,
+    // which matches the container (autosize=true). Crop fractions
+    // from the CropEditor (also relative to the container) then
+    // map directly: fraction * naturalDimension = correct pixel.
+    let fullB64: string | null = null;
     if (plotlyDivRef.current) {
       try {
-        const dataUrl = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: captureScale });
-        capturedB64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png' });
+        fullB64 = url.replace(/^data:image\/png;base64,/, '');
       } catch (e) {
         console.warn('[PlotEditor] capture failed:', e);
       }
     }
+    if (!fullB64) { fullB64 = localOutputRef.current; }
+    if (!fullB64) return;
 
-    if (!capturedB64) {
-      console.warn('[PlotEditor] no image to save');
-      return;
-    }
-
-    // 3. Apply crop if set
-    let outputB64 = capturedB64;
+    // Step 2: Apply crop
+    let outputB64 = fullB64;
     if (currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02) {
-      try {
-        const full = await new Promise<HTMLImageElement>((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = reject;
-          img.src = `data:image/png;base64,${capturedB64}`;
-        });
-        const sx = Math.round(currentCrop.x * full.naturalWidth);
-        const sy = Math.round(currentCrop.y * full.naturalHeight);
-        const sw = Math.max(1, Math.round(currentCrop.w * full.naturalWidth));
-        const sh = Math.max(1, Math.round(currentCrop.h * full.naturalHeight));
-        const c = document.createElement('canvas');
-        c.width = sw; c.height = sh;
-        c.getContext('2d')!.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
-        outputB64 = c.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
-      } catch (e) {
-        console.warn('[PlotEditor] crop failed:', e);
-      }
+      const full = await new Promise<HTMLImageElement>((res, rej) => {
+        const i = new Image(); i.onload = () => res(i); i.onerror = rej;
+        i.src = `data:image/png;base64,${fullB64}`;
+      });
+      const sx = Math.round(currentCrop.x * full.naturalWidth);
+      const sy = Math.round(currentCrop.y * full.naturalHeight);
+      const sw = Math.max(1, Math.round(currentCrop.w * full.naturalWidth));
+      const sh = Math.max(1, Math.round(currentCrop.h * full.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = sw; c.height = sh;
+      c.getContext('2d')!.drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+      outputB64 = c.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
     }
 
-    // 4. Compute correct aspect ratio from the output image
-    let newHeight: number | undefined;
-    try {
-      const out = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = `data:image/png;base64,${outputB64}`;
-      });
-      if (out.naturalWidth > 0 && out.naturalHeight > 0) {
-        const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
-        if (el) newHeight = Math.round(el.width * (out.naturalHeight / out.naturalWidth));
-      }
-    } catch {}
+    // Step 3: Compute aspect ratio from output image
+    const out = await new Promise<HTMLImageElement>((res, rej) => {
+      const i = new Image(); i.onload = () => res(i); i.onerror = rej;
+      i.src = `data:image/png;base64,${outputB64}`;
+    });
 
-    // 5. Update element
+    // Step 4: Update element — set lastOutput, node dimensions, and all metadata
     const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
     if (el) {
-      const updates: Record<string, any> = {
+      const newHeight = out.naturalWidth > 0
+        ? Math.round(el.width * (out.naturalHeight / out.naturalWidth))
+        : el.height;
+      updateElement(elementId, {
+        width: el.width,
+        height: newHeight,
         metadata: {
           ...el.metadata,
           code: codeRef.current,
@@ -398,12 +387,13 @@ export function PlotEditor() {
           plotCrop: currentCrop,
           plotlyJson: currentJson,
         },
-      };
-      if (newHeight !== undefined) updates.height = newHeight;
-      updateElement(elementId, updates);
+      });
       pushHistory('Save plot');
+
+      // Step 5: Persist to disk so the image survives page refresh
+      setTimeout(() => saveBoard(), 200);
     }
-  }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson]);
+  }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard]);
 
   const handleClose = useCallback(() => {
     if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
