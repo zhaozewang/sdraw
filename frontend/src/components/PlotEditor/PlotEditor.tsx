@@ -295,17 +295,6 @@ export function PlotEditor() {
 
   const handleAbort = useCallback(async () => { if (executionId) { try { await api.abortPlot(executionId); } catch {} } }, [executionId]);
 
-  const applyCrop = useCallback((b64: string, crop: CropRect): Promise<string> => {
-    return new Promise((resolve) => {
-      const img = new Image(); img.onload = () => {
-        const sx = Math.round(crop.x * img.width), sy = Math.round(crop.y * img.height);
-        const sw = Math.round(crop.w * img.width), sh = Math.round(crop.h * img.height);
-        const c = document.createElement('canvas'); c.width = sw; c.height = sh;
-        c.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-        resolve(c.toDataURL('image/png').replace(/^data:image\/png;base64,/, ''));
-      }; img.src = `data:image/png;base64,${b64}`;
-    });
-  }, []);
 
   const getCurrentPlotlyJson = useCallback(() => {
     if (!plotlyJson || !plotlyDivRef.current) return plotlyJson;
@@ -313,29 +302,73 @@ export function PlotEditor() {
     return plotlyJson;
   }, [plotlyJson]);
 
+  // Load a base64 image and return its natural dimensions
+  const loadImage = useCallback((b64: string): Promise<HTMLImageElement> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = `data:image/png;base64,${b64}`;
+    });
+  }, []);
+
   const handleSave = useCallback(async () => {
     if (!elementId) return;
     const currentJson = getCurrentPlotlyJson();
     let finalImage = localOutput;
-    if (currentJson && plotlyDivRef.current) {
+
+    // Capture plotly at current view
+    const container = plotlyContainerRef.current;
+    if (currentJson && plotlyDivRef.current && container) {
       try {
-        const c = plotlyDivRef.current.getBoundingClientRect();
-        // Use scale (not width/height) so the capture matches the on-screen layout exactly.
-        // Setting width/height causes plotly to re-layout at those dimensions, shifting margins.
         const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: captureDpi });
         finalImage = url.replace(/^data:image\/png;base64,/, '');
       } catch {}
     }
+
+    // Apply crop with coordinate correction
     let cropped = finalImage;
-    if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02) { try { cropped = await applyCrop(finalImage, cropRect); } catch {} }
+    if (finalImage && cropRect && cropRect.w > 0.02 && cropRect.h > 0.02 && container) {
+      try {
+        const img = await loadImage(finalImage);
+        const containerRect = container.getBoundingClientRect();
+
+        // The crop fractions are relative to the container div.
+        // The captured image may have different dimensions than the container.
+        // Compute the mapping: what fraction of the image corresponds to the container.
+        const scaleX = img.naturalWidth / containerRect.width;
+        const scaleY = img.naturalHeight / containerRect.height;
+
+        // Adjusted crop in image-pixel space
+        const sx = Math.round(cropRect.x * containerRect.width * scaleX);
+        const sy = Math.round(cropRect.y * containerRect.height * scaleY);
+        const sw = Math.round(cropRect.w * containerRect.width * scaleX);
+        const sh = Math.round(cropRect.h * containerRect.height * scaleY);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = sw; canvas.height = sh;
+        canvas.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        cropped = canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+      } catch (e) {
+        console.warn('[PlotEditor] crop failed:', e);
+      }
+    }
+
     const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
     if (el) {
-      const updates: Record<string, any> = { metadata: { ...el.metadata, code: codeRef.current, lastOutput: cropped, lastStdout: localStdout, lastError: localError, plotCrop: cropRect, plotlyJson: currentJson } };
-      if (cropped) { try { const img = new Image(); img.src = `data:image/png;base64,${cropped}`; await new Promise<void>(r => { img.onload = () => r(); img.onerror = () => r(); }); if (img.naturalWidth > 0) updates.height = Math.round(el.width * (img.naturalHeight / img.naturalWidth)); } catch {} }
+      const updates: Record<string, any> = {
+        metadata: { ...el.metadata, code: codeRef.current, lastOutput: cropped, lastStdout: localStdout, lastError: localError, plotCrop: cropRect, plotlyJson: currentJson },
+      };
+      if (cropped) {
+        try {
+          const img = await loadImage(cropped);
+          if (img.naturalWidth > 0) updates.height = Math.round(el.width * (img.naturalHeight / img.naturalWidth));
+        } catch {}
+      }
       updateElement(elementId, updates); pushHistory('Save plot');
       setPlotlyJson(currentJson);
     }
-  }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, captureDpi, updateElement, pushHistory, applyCrop, getCurrentPlotlyJson]);
+  }, [elementId, localOutput, localStdout, localError, plotlyJson, cropRect, captureDpi, updateElement, pushHistory, loadImage, getCurrentPlotlyJson]);
 
   const handleClose = useCallback(() => {
     if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
