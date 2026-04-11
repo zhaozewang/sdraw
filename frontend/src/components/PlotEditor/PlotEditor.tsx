@@ -320,7 +320,9 @@ export function PlotEditor() {
     if (currentJson && plotlyDivRef.current) {
       try {
         const c = plotlyDivRef.current.getBoundingClientRect();
-        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', width: Math.round(c.width * captureDpi), height: Math.round(c.height * captureDpi), scale: 1 });
+        // Use scale (not width/height) so the capture matches the on-screen layout exactly.
+        // Setting width/height causes plotly to re-layout at those dimensions, shifting margins.
+        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png', scale: captureDpi });
         finalImage = url.replace(/^data:image\/png;base64,/, '');
       } catch {}
     }
@@ -381,7 +383,7 @@ export function PlotEditor() {
         onClick={e => e.stopPropagation()}>
 
         {/* Compact toolbar */}
-        <div className="h-9 flex items-center px-3 gap-1.5 shrink-0 select-none"
+        <div className="h-10 flex items-center px-3 gap-2 shrink-0 select-none"
           style={{ backgroundColor: isDark ? '#181825' : '#f8f8f8', borderBottom: isDark ? '1px solid rgba(255,255,255,0.06)' : '1px solid #e5e5e5' }}>
           {/* Run/Stop */}
           {isRunning ? (
@@ -395,11 +397,11 @@ export function PlotEditor() {
               <Play size={10} /> Run
             </button>
           )}
-          <span className={`text-[10px] ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{isRunning ? '' : '\u2318\u23CE'}</span>
+          <span className={`text-xs ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{isRunning ? '' : '\u2318\u23CE'}</span>
 
           <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
 
-          <span className={`text-[10px] truncate max-w-[140px] ${isDark ? 'text-white/30' : 'text-gray-400'}`} title={activePythonEnv || 'default'}>
+          <span className={`text-xs truncate max-w-[140px] ${isDark ? 'text-white/30' : 'text-gray-400'}`} title={activePythonEnv || 'default'}>
             {(activePythonEnv || 'default').split('/').pop()}
           </span>
 
@@ -409,7 +411,7 @@ export function PlotEditor() {
             <div className="flex items-center gap-0.5 mr-1">
               {([1, 2, 3] as const).map(d => (
                 <button key={d} onClick={() => setCaptureDpi(d)} title={`${d}x resolution`}
-                  className={`px-1 py-0.5 text-[10px] rounded ${captureDpi === d ? (isDark ? 'bg-blue-500/30 text-blue-300' : 'bg-blue-500 text-white') : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')}`}>
+                  className={`px-1 py-0.5 text-xs rounded ${captureDpi === d ? (isDark ? 'bg-blue-500/30 text-blue-300' : 'bg-blue-500 text-white') : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')}`}>
                   {d}x
                 </button>
               ))}
@@ -417,17 +419,17 @@ export function PlotEditor() {
           )}
 
           {hasOutput && !cropMode && (
-            <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
+            <button onClick={() => setCropMode(true)} className={`flex items-center gap-1 px-1.5 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
               <Crop size={9} /> {cropRect ? 'Edit Crop' : 'Crop'}
             </button>
           )}
           {cropMode && (
-            <button onClick={() => setCropMode(false)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
+            <button onClick={() => setCropMode(false)} className={`flex items-center gap-1 px-1.5 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
               <Check size={9} /> Done
             </button>
           )}
           {cropRect && !cropMode && (
-            <button onClick={() => setCropRect(null)} className="text-[10px] text-red-400/60 hover:text-red-400 px-1"><X size={9} /></button>
+            <button onClick={() => setCropRect(null)} className="text-xs text-red-400/60 hover:text-red-400 px-1"><X size={9} /></button>
           )}
 
           <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
@@ -437,7 +439,7 @@ export function PlotEditor() {
               <button onClick={handleSave} className={`px-1.5 py-0.5 rounded ${isDark ? 'text-white/40 hover:text-white/70 hover:bg-white/5' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`} title="Save to canvas">
                 <Save size={11} />
               </button>
-              <button onClick={handleSaveAndClose} className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
+              <button onClick={handleSaveAndClose} className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded text-white bg-blue-600 hover:bg-blue-700">
                 Save & Close
               </button>
             </>
@@ -511,7 +513,7 @@ export function PlotEditor() {
                         <>
                           <Play size={20} />
                           <span className="text-sm">Run to see output</span>
-                          <span className={`text-[10px] ${isDark ? 'text-white/15' : 'text-gray-300'}`}>{'\u2318'}+Enter</span>
+                          <span className={`text-xs ${isDark ? 'text-white/15' : 'text-gray-300'}`}>{'\u2318'}+Enter</span>
                         </>
                       )}
                     </div>
