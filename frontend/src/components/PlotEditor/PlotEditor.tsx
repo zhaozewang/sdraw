@@ -329,15 +329,22 @@ export function PlotEditor() {
     const currentCrop = cropRectRef.current;
     const currentJson = getCurrentPlotlyJson();
 
-    // Step 1: Capture at 1:1 — no scale, no width/height override.
-    // This produces an image at plotly's current display size,
-    // which matches the container (autosize=true). Crop fractions
-    // from the CropEditor (also relative to the container) then
-    // map directly: fraction * naturalDimension = correct pixel.
+    // Step 1: Capture at the container's exact dimensions.
+    // Plotly.toImage({format:'png'}) without width/height uses plotly's
+    // internal default size, which does NOT match the container.
+    // We must pass the container dimensions so the image pixels map
+    // 1:1 to the crop fractions (which are relative to the container).
+    // scale=2 doubles pixel density without changing the layout.
     let fullB64: string | null = null;
-    if (plotlyDivRef.current) {
+    const containerRect = plotlyContainerRef.current?.getBoundingClientRect();
+    if (plotlyDivRef.current && containerRect) {
       try {
-        const url = await Plotly.toImage(plotlyDivRef.current, { format: 'png' });
+        const url = await Plotly.toImage(plotlyDivRef.current, {
+          format: 'png',
+          width: Math.round(containerRect.width),
+          height: Math.round(containerRect.height),
+          scale: 2,
+        });
         fullB64 = url.replace(/^data:image\/png;base64,/, '');
       } catch (e) {
         console.warn('[PlotEditor] capture failed:', e);
@@ -345,20 +352,6 @@ export function PlotEditor() {
     }
     if (!fullB64) { fullB64 = localOutputRef.current; }
     if (!fullB64) return;
-
-    // Log full capture size
-    try {
-      const fullImg = await new Promise<HTMLImageElement>((res, rej) => {
-        const i = new Image(); i.onload = () => res(i); i.onerror = rej;
-        i.src = `data:image/png;base64,${fullB64}`;
-      });
-      const containerRect = plotlyContainerRef.current?.getBoundingClientRect();
-      console.log('[PlotEditor] captured:', {
-        imgW: fullImg.naturalWidth, imgH: fullImg.naturalHeight,
-        containerW: containerRect ? Math.round(containerRect.width) : '?',
-        containerH: containerRect ? Math.round(containerRect.height) : '?',
-      });
-    } catch {}
 
     // Step 2: Apply crop
     let outputB64 = fullB64;
