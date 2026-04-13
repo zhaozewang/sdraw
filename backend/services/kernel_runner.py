@@ -85,44 +85,68 @@ def _write_frame(stream: io.BufferedWriter, obj: dict[str, Any]) -> None:
 # its module-level import side effects running here.
 
 
-def _capture_matplotlib(dpi: int) -> str | None:
+def _capture_matplotlib_all(dpi: int) -> list[dict[str, Any]]:
+    """Capture EVERY open matplotlib figure as a PNG base64, in creation order.
+
+    Returns a list of `{"image": b64, "plotly_json": None}` dicts. Empty if
+    matplotlib isn't installed or no figures have any axes. All figures are
+    closed at the end so they don't leak into the next run.
+    """
     try:
         import matplotlib.pyplot as plt
     except ImportError:
-        return None
-    fig = plt.gcf()
-    if not fig.get_axes():
-        plt.close("all")
-        return None
-    buf = io.BytesIO()
+        return []
+    out: list[dict[str, Any]] = []
     try:
-        fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
-    except Exception:
+        for num in plt.get_fignums():
+            fig = plt.figure(num)
+            if not fig.get_axes():
+                continue
+            buf = io.BytesIO()
+            try:
+                fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+            except Exception:
+                continue
+            out.append({
+                "image": base64.b64encode(buf.getvalue()).decode("ascii"),
+                "plotly_json": None,
+            })
+    finally:
         plt.close("all")
-        return None
-    plt.close("all")
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+    return out
 
 
-def _capture_plotly(ns: dict[str, Any]) -> tuple[str | None, str | None]:
+def _capture_plotly_all(ns: dict[str, Any]) -> list[dict[str, Any]]:
+    """Capture EVERY plotly Figure instance in the namespace, in insertion order.
+
+    Returns `{"image": b64 or None, "plotly_json": json}` per figure. The
+    image is None if kaleido isn't installed; the frontend renders from
+    plotly_json directly in that case.
+    """
     try:
         import plotly.graph_objects as go
     except ImportError:
-        return None, None
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()  # dedup by id() in case the same fig is bound twice
     for val in ns.values():
-        if isinstance(val, go.Figure):
-            try:
-                plotly_json = val.to_json()
-            except Exception:
-                plotly_json = None
-            image_b64 = None
-            try:
-                img_bytes = val.to_image(format="png", scale=2)
-                image_b64 = base64.b64encode(img_bytes).decode("ascii")
-            except Exception:
-                pass  # kaleido not installed; frontend renders the JSON spec
-            return plotly_json, image_b64
-    return None, None
+        if not isinstance(val, go.Figure):
+            continue
+        if id(val) in seen:
+            continue
+        seen.add(id(val))
+        try:
+            plotly_json = val.to_json()
+        except Exception:
+            plotly_json = None
+        image_b64: str | None = None
+        try:
+            img_bytes = val.to_image(format="png", scale=2)
+            image_b64 = base64.b64encode(img_bytes).decode("ascii")
+        except Exception:
+            pass  # kaleido not installed; frontend renders the JSON spec
+        out.append({"image": image_b64, "plotly_json": plotly_json})
+    return out
 
 
 # ----- Execution core -------------------------------------------------------
@@ -158,28 +182,32 @@ def _run_user_code(
     finally:
         sys.stdout = old_stdout
 
-    image_data: str | None = None
-    plotly_json: str | None = None
+    figures: list[dict[str, Any]] = []
     if want_figure:
-        image_data = _capture_matplotlib(dpi)
-        plotly_json, plotly_image = _capture_plotly(ns)
-        if not image_data:
-            image_data = plotly_image
+        # Matplotlib figures come out in creation order; plotly figures come
+        # out in namespace-insertion order. Matplotlib first matches user
+        # intuition ("the figure I saw first is on the left").
+        figures = _capture_matplotlib_all(dpi) + _capture_plotly_all(ns)
     else:
         # Close any stray matplotlib figures so they don't leak into the
-        # next plot run. We don't return the image.
+        # next plot run.
         try:
             import matplotlib.pyplot as plt
             plt.close("all")
         except ImportError:
             pass
 
+    # Backwards-compatible top-level `image` / `plotly_json` fields alias
+    # the first captured figure, so any caller expecting the old single-figure
+    # shape keeps working transparently.
+    first = figures[0] if figures else {}
     return {
         "ok": exec_error is None,
         "stdout": captured.getvalue(),
         "error": exec_error,
-        "image": image_data,
-        "plotly_json": plotly_json,
+        "image": first.get("image"),
+        "plotly_json": first.get("plotly_json"),
+        "figures": figures,
     }
 
 

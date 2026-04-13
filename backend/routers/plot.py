@@ -42,12 +42,24 @@ class ExecutePlotRequest(BaseModel):
     setup_timeout: int = 120
 
 
+class FigureCapture(BaseModel):
+    """One captured figure from a plot cell. Multi-figure cells return a
+    list of these; single-figure cells return a list of length 1. The
+    top-level `image_base64` and `plotly_json` on ExecutePlotResponse alias
+    the first entry for backwards compatibility."""
+    image: str | None = None
+    plotly_json: str | None = None
+
+
 class ExecutePlotResponse(BaseModel):
     success: bool
     image_base64: str | None = None
     stdout: str | None = None
     error: str | None = None
     plotly_json: str | None = None  # interactive plotly figure spec
+    # All captured figures, in order (matplotlib first, then plotly).
+    # Single-figure cells have len(figures) == 1. Empty on error / no output.
+    figures: list[FigureCapture] = []
 
 
 class ValidateEnvRequest(BaseModel):
@@ -173,6 +185,15 @@ async def execute_plot(body: ExecutePlotRequest):
                 exec_error = parsed.get("error")
                 plotly_json = parsed.get("plotly_json")
 
+                # Legacy plot_runner.py produces a single figure; normalize
+                # to the same figures[] shape the kernel path returns so the
+                # frontend has one code path.
+                legacy_figures = (
+                    [FigureCapture(image=image_b64, plotly_json=plotly_json)]
+                    if (image_b64 or plotly_json)
+                    else []
+                )
+
                 if exec_error:
                     return ExecutePlotResponse(
                         success=False,
@@ -180,6 +201,7 @@ async def execute_plot(body: ExecutePlotRequest):
                         stdout=stdout_text,
                         error=exec_error,
                         plotly_json=plotly_json,
+                        figures=legacy_figures,
                     )
 
                 return ExecutePlotResponse(
@@ -187,6 +209,7 @@ async def execute_plot(body: ExecutePlotRequest):
                     image_base64=image_b64,
                     stdout=stdout_text,
                     plotly_json=plotly_json,
+                    figures=legacy_figures,
                 )
             except _json.JSONDecodeError:
                 pass
@@ -486,12 +509,18 @@ class KernelStatusResponse(BaseModel):
 
 
 def _kernel_response_to_execute_response(resp: dict) -> ExecutePlotResponse:
+    raw_figures = resp.get("figures") or []
+    figures = [
+        FigureCapture(image=f.get("image"), plotly_json=f.get("plotly_json"))
+        for f in raw_figures
+    ]
     return ExecutePlotResponse(
         success=bool(resp.get("ok")),
         image_base64=resp.get("image"),
         stdout=(resp.get("stdout") or None),
         error=resp.get("error"),
         plotly_json=resp.get("plotly_json"),
+        figures=figures,
     )
 
 

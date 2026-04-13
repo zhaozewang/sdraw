@@ -7,7 +7,7 @@ description: Per-board persistent Python kernels for sdraw. A board-level "Pytho
 
 ## Status
 
-**Shipped.** 22/22 backend tests green. Frontend + VS Code extension typecheck clean. Browser QA checklist at the bottom is the only still-open item.
+**Shipped.** 26/26 backend tests green. Frontend + VS Code extension typecheck clean. Browser QA checklist at the bottom is the only still-open item.
 
 ## Why it exists
 
@@ -116,21 +116,21 @@ These were debated and resolved; don't relitigate without a concrete reason.
 | `backend/services/kernel_manager.py` | Per-board `KernelProcess` pool. `asyncio.Lock` per kernel. Auto-restart on env change, cwd change, crash. Staleness-based auto setup. Singleton instance: `kernel_manager`. |
 | `backend/routers/plot.py` | `/api/plot/execute` dispatches to the kernel when `board_id` is set; `/api/plot/kernel/{execute,setup,restart,shutdown,status}`. |
 | `backend/main.py` | Lifespan shutdown calls `kernel_manager.shutdown_all()`. |
-| `backend/tests/test_kernel_runner.py` | 10 subprocess-level protocol tests. |
-| `backend/tests/test_kernel_manager.py` | 12 manager-level tests incl. cwd/project-root resolution. |
+| `backend/tests/test_kernel_runner.py` | 13 subprocess-level protocol tests (incl. multi-figure matplotlib + backwards-compat + no-figures). |
+| `backend/tests/test_kernel_manager.py` | 13 manager-level tests incl. cwd/project-root resolution. |
 
 ### Frontend
 
 | File | Responsibility |
 |---|---|
 | `frontend/src/types/board.ts` | `BoardSetup` interface, `DEFAULT_BOARD_SETUP`, `CURRENT_SCHEMA_VERSION`, `Board.setup`. |
-| `frontend/src/store/boardStore.ts` | `setSetupCode` / `setSetupTimeout` / `runSetup` / `restartKernel`; `kernelStatus` field (in-memory only); `closeBoard` fires kernel shutdown. |
+| `frontend/src/store/boardStore.ts` | `setSetupCode` / `setSetupTimeout` / `runSetup` / `restartKernel`; `kernelStatus` field (in-memory only); `closeBoard` fires kernel shutdown. Multi-figure: `distributePlotFigures(sourceId, figures, stdout, error)` auto-spawns sibling elements and updates their `metadata.lastOutput` per figureIndex. `runAllPlots()` + `runAllStatus` for sequential Run All (Setup then every source plot cell in z-order). |
 | `frontend/src/store/uiStore.ts` | `setupEditorOpen`, `openSetupEditor`, `closeSetupEditor`. |
 | `frontend/src/api/client.ts` | `executePlot` takes an optional `kernel` options bag (boardId, setupCode, setupTimeout). `runSetup`, `restartKernel`, `shutdownKernel`, `kernelStatus`. |
 | `frontend/src/components/shared/CodeMirrorEditor.tsx` | Reusable CodeMirror 6 wrapper — used by `SetupEditor` and by the PlotEditor's setup tab. Preserves both hard-won CodeMirror fixes (see gotchas). |
 | `frontend/src/components/SetupEditor/SetupEditor.tsx` | Standalone modal for editing `board.setup.code` when no plot is open (Cmd+; / toolbar button). |
-| `frontend/src/components/PlotEditor/PlotEditor.tsx` | Tabbed modal: **Plot code** (⌘1) / **Python Setup** (⌘2). Dedicated always-visible "Run Setup" toolbar button with status dot. "Setup failed" banner with tab-switch button. |
-| `frontend/src/components/Toolbar/Toolbar.tsx` | Python Setup button (Terminal icon) with live kernel-status dot. |
+| `frontend/src/components/PlotEditor/PlotEditor.tsx` | Tabbed modal: **Plot code** (⌘1) / **Python Setup** (⌘2). Dedicated always-visible "Run Setup" toolbar button with status dot. "Setup failed" banner with tab-switch button. Multi-figure thumbnail strip + sibling-aware code resolution (if the clicked element has `metadata.sourceElementId`, code is read from and persisted to the source). |
+| `frontend/src/components/Toolbar/Toolbar.tsx` | Python Setup pill (Braces icon) + Run All pill with `RunAllConfirmDialog`. Both use the compact `h-6 / text-2xs` sizing. |
 | `frontend/src/hooks/useKeyboardShortcuts.ts` | `Cmd+;` opens the standalone SetupEditor. |
 | `frontend/src/App.tsx` | Mounts `<SetupEditor />`; `beforeunload` fires a `sendBeacon` to shut down the current board's kernel. |
 
@@ -220,6 +220,7 @@ Kept as chronology, not instructions. All shipped 2026-04-13.
 | 5 | Kernel shutdown on `closeBoard`; `beforeunload` `sendBeacon` safety net; "Setup failed:" banner in PlotEditor with "Open setup" button. |
 | 6 | PlotEditor tabs: **Plot code** (⌘1) / **Python Setup** (⌘2). Renamed "Board Setup" → "Python Setup" in all user-facing strings (schema field stayed `setup`). Setup-failed banner's button switches tabs instead of stacking modals. |
 | 7 | `find_project_root()` walks up from .sdraw dir to find `pyproject.toml` etc. Kernel subprocess spawns with `cwd = <board file's directory>`; `SDRAW_PROJECT_ROOT` env var carries the resolved project root; `kernel_runner` prepends **both** to `sys.path` (cwd first, project root second). Kernel restarts when either cwd OR project_root changes. Dedicated always-visible "Run Setup" button in the PlotEditor toolbar. Three regression tests: nested-board package imports, board-dir relative paths, and cwd-change restart. |
+| 8 | **Multi-figure plot cells + Run All.** `kernel_runner` now captures *every* open matplotlib figure (`plt.get_fignums()` loop) and *every* `plotly.Figure` in the user namespace, returning a `figures: [...]` list. Top-level `image` / `plotly_json` alias `figures[0]` for backwards compat. `ExecutePlotResponse` gains a `figures: list[FigureCapture]` field; legacy subprocess path normalizes its single-figure output to match. Frontend: `boardStore.distributePlotFigures(sourceId, figures, stdout, error)` distributes N figures across N referencing elements (source + siblings), auto-spawning new sibling elements in a row next to the source when the code produces more figures than there are refs. Siblings use `metadata.sourceElementId` + `metadata.figureIndex` — no new board-level concept. `PlotEditor` resolves code from the source element if the user opened a sibling, shows a thumbnail strip of all figures in the preview pane (click to re-open the editor on that element), and renders a clear "Figure N missing" placeholder when the code no longer produces enough figures for an existing sibling. New `boardStore.runAllPlots()` runs Python Setup once then every source plot cell in z-order, with a Toolbar confirm dialog (`RunAllConfirmDialog`). Also: Python Setup pill in the main Toolbar shrunk to `h-6 / text-2xs` and a matching "Run All" button added next to it. |
 
 ## Browser QA checklist (the one open item)
 

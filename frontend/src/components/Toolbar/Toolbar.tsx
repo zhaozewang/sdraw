@@ -37,7 +37,47 @@ import {
   Moon,
   Settings,
   Braces,
+  PlayCircle,
+  Loader2,
 } from 'lucide-react';
+
+function RunAllConfirmDialog({ plotCount, onConfirm, onCancel }: {
+  plotCount: number;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onCancel}>
+      <div className="bg-white dark:bg-surface-primary rounded-lg shadow-xl w-[400px]" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-gray-200 dark:border-border">
+          <h2 className="text-sm font-semibold text-gray-800 dark:text-on-surface-primary">Run All Plots?</h2>
+        </div>
+        <div className="px-4 py-4 space-y-2">
+          <p className="text-sm text-gray-700 dark:text-on-surface-secondary">
+            This will run Python Setup and then every plot cell on the board in order.
+          </p>
+          <p className="text-xs text-gray-500 dark:text-on-surface-muted">
+            {plotCount === 0
+              ? 'No plot cells found on this board.'
+              : `Plot cells to run: ${plotCount}. This may take a while if your plots are slow.`}
+          </p>
+        </div>
+        <div className="px-4 py-3 border-t border-gray-100 dark:border-border flex justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 dark:text-on-surface-secondary hover:bg-gray-100 dark:hover:bg-surface-tertiary rounded">
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={plotCount === 0}
+            className={`px-3 py-1.5 text-sm rounded text-white ${plotCount === 0 ? 'bg-blue-300 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600'}`}
+          >
+            Run All
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function SavePromptDialog({ onSave, onDiscard, onCancel }: {
   onSave: () => void;
@@ -73,9 +113,12 @@ export function Toolbar() {
   const board = useBoardStore(s => s.board);
   const isDirty = useBoardStore(s => s.isDirty);
   const kernelStatus = useBoardStore(s => s.kernelStatus);
+  const runAllStatus = useBoardStore(s => s.runAllStatus);
+  const runAllPlots = useBoardStore(s => s.runAllPlots);
   const saveBoard = useBoardStore(s => s.saveBoard);
   const undo = useBoardStore(s => s.undo);
   const redo = useBoardStore(s => s.redo);
+  const [runAllConfirmOpen, setRunAllConfirmOpen] = useState(false);
   const historyIndex = useBoardStore(s => s.historyIndex);
   const historyLength = useBoardStore(s => s.history.length);
   const addElement = useBoardStore(s => s.addElement);
@@ -279,13 +322,13 @@ export function Toolbar() {
         <button
           onClick={() => useUIStore.getState().openSetupEditor()}
           title="Python Setup — shared code that runs before every plot on this board (⌘;)"
-          className={`flex items-center gap-1.5 h-7 px-2.5 rounded-md border text-xs font-medium transition-colors ${
+          className={`flex items-center gap-1 h-6 px-2 rounded border text-2xs font-medium transition-colors ${
             board.setup?.code
               ? 'border-accent/40 bg-accent/10 text-accent hover:bg-accent/15'
               : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
           }`}
         >
-          <Braces size={14} className="shrink-0" />
+          <Braces size={12} className="shrink-0" />
           <span>Python Setup</span>
           {board.setup?.code && (
             <span
@@ -297,6 +340,30 @@ export function Toolbar() {
               }`}
             />
           )}
+        </button>
+
+        {/* Run All — runs Python Setup then every plot cell source element
+            in z-order. Asks for confirmation before executing. */}
+        <button
+          onClick={() => setRunAllConfirmOpen(true)}
+          disabled={runAllStatus.state === 'running'}
+          title="Run Python Setup and every plot cell on this board in order"
+          className={`flex items-center gap-1 h-6 px-2 rounded border text-2xs font-medium transition-colors ${
+            runAllStatus.state === 'running'
+              ? 'border-blue-400/40 bg-blue-400/10 text-blue-500 cursor-wait'
+              : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
+          }`}
+        >
+          {runAllStatus.state === 'running' ? (
+            <Loader2 size={12} className="shrink-0 animate-spin" />
+          ) : (
+            <PlayCircle size={12} className="shrink-0" />
+          )}
+          <span>
+            {runAllStatus.state === 'running'
+              ? `Running ${runAllStatus.current}/${runAllStatus.total}`
+              : 'Run All'}
+          </span>
         </button>
 
         <Separator />
@@ -399,6 +466,25 @@ export function Toolbar() {
           onSave={handleSaveAndLeave}
           onDiscard={handleDiscardAndLeave}
           onCancel={() => setShowSavePrompt(false)}
+        />
+      )}
+
+      {runAllConfirmOpen && (
+        <RunAllConfirmDialog
+          plotCount={
+            board.elements.filter(
+              el =>
+                el.type === 'plot' &&
+                (el.metadata?.sourceElementId === undefined ||
+                  el.metadata?.sourceElementId === null) &&
+                ((el.metadata?.code ?? '') as string).trim().length > 0,
+            ).length
+          }
+          onConfirm={() => {
+            setRunAllConfirmOpen(false);
+            runAllPlots();
+          }}
+          onCancel={() => setRunAllConfirmOpen(false)}
         />
       )}
     </>

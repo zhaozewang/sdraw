@@ -40,6 +40,19 @@ export interface KernelRunResult {
   error: string | null;
 }
 
+/** One figure captured from a plot cell. */
+export interface PlotFigure {
+  image: string | null;
+  plotly_json: string | null;
+}
+
+/** Run-all status broadcast to the UI. */
+export type RunAllStatus =
+  | { state: 'idle' }
+  | { state: 'running'; current: number; total: number; label: string }
+  | { state: 'done'; successes: number; failures: number }
+  | { state: 'error'; message: string };
+
 interface BoardState {
   // Current board
   board: Board | null;
@@ -50,6 +63,24 @@ interface BoardState {
   kernelStatus: KernelStatus;
   runSetup: (code?: string) => Promise<KernelRunResult>;
   restartKernel: () => Promise<void>;
+
+  // Multi-figure plot support
+  /** Distribute N figures across N referencing elements (source + siblings),
+   * auto-spawning new sibling elements when N exceeds the current reference
+   * count. Returns the updated ordered list of reference element IDs. */
+  distributePlotFigures: (
+    sourceElementId: string,
+    figures: PlotFigure[],
+    stdout: string | null,
+    error: string | null,
+  ) => string[];
+
+  // Run-all-plots support
+  runAllStatus: RunAllStatus;
+  /** Run setup (if non-empty) then every plot cell source element in
+   * z-order. Each element's executePlot call reuses the auto-distribute
+   * logic, so multi-figure cells keep working. Safe to call from the UI. */
+  runAllPlots: () => Promise<void>;
 
   // Undo/redo
   history: HistoryEntry[];
@@ -183,6 +214,230 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     } catch {
       set({ kernelStatus: 'error' });
     }
+  },
+
+  runAllStatus: { state: 'idle' } as RunAllStatus,
+
+  distributePlotFigures: (sourceElementId, figures, stdout, error) => {
+    const { board } = get();
+    if (!board) return [];
+    const source = board.elements.find(el => el.id === sourceElementId);
+    if (!source) return [];
+
+    // Collect current references: the source itself plus any siblings
+    // whose metadata.sourceElementId points at this source. Sort by
+    // figureIndex so the order matches the figures list.
+    const rawSiblings = board.elements.filter(
+      el => el.metadata?.sourceElementId === sourceElementId,
+    );
+    type Ref = { id: string; figureIndex: number };
+    const existingRefs: Ref[] = [
+      { id: source.id, figureIndex: source.metadata?.figureIndex ?? 0 },
+      ...rawSiblings.map(s => ({
+        id: s.id,
+        figureIndex: s.metadata?.figureIndex ?? 0,
+      })),
+    ].sort((a, b) => a.figureIndex - b.figureIndex);
+
+    // Spawn new siblings if the code now produces more figures than
+    // we have references for. Lay them out to the right in a row.
+    const newSiblings: BoardElement[] = [];
+    for (let i = existingRefs.length; i < figures.length; i++) {
+      const offset = i - existingRefs.length + 1;
+      const newEl: BoardElement = {
+        ...structuredClone(source),
+        id: uuidv4(),
+        x: source.x + offset * (source.width + 20),
+        y: source.y,
+        metadata: {
+          ...(source.metadata ?? {}),
+          sourceElementId: sourceElementId,
+          figureIndex: i,
+          // Inherit nothing transient from the source:
+          code: undefined,
+          lastOutput: null,
+          lastStdout: null,
+          lastError: null,
+          plotlyJson: null,
+          plotCrop: null,
+          figureMissing: false,
+        },
+      };
+      newSiblings.push(newEl);
+      existingRefs.push({ id: newEl.id, figureIndex: i });
+    }
+
+    const refIdToFigureIndex = new Map(existingRefs.map(r => [r.id, r.figureIndex]));
+
+    // Update every referencing element with its figure's output, or flag
+    // it as missing when the code now produces fewer figures than refs.
+    const updatedElements = board.elements.map(el => {
+      const figIdx = refIdToFigureIndex.get(el.id);
+      if (figIdx === undefined) return el;
+      const fig = figures[figIdx];
+      const isSource = el.id === sourceElementId;
+      const nextMeta: Record<string, any> = {
+        ...el.metadata,
+        lastStdout: stdout,
+        lastError: error,
+      };
+      // Ensure source has a concrete figureIndex so all refs are
+      // queryable uniformly.
+      if (isSource && nextMeta.figureIndex === undefined) {
+        nextMeta.figureIndex = 0;
+      }
+      if (fig) {
+        nextMeta.lastOutput = fig.image;
+        nextMeta.plotlyJson = fig.plotly_json;
+        nextMeta.figureMissing = false;
+      } else {
+        nextMeta.lastOutput = null;
+        nextMeta.plotlyJson = null;
+        nextMeta.figureMissing = true;
+        if (!error) {
+          nextMeta.lastError =
+            `Figure ${figIdx} missing: code now produces only ${figures.length} figure${figures.length === 1 ? '' : 's'}.`;
+        }
+      }
+      return { ...el, metadata: nextMeta };
+    });
+
+    // Bake the new siblings' per-figure output into their metadata so the
+    // canvas immediately renders the correct figure for each.
+    const newSiblingsWithFigure = newSiblings.map(sib => {
+      const figIdx = sib.metadata.figureIndex;
+      const fig = figures[figIdx];
+      return {
+        ...sib,
+        metadata: {
+          ...sib.metadata,
+          lastOutput: fig?.image ?? null,
+          plotlyJson: fig?.plotly_json ?? null,
+          lastStdout: stdout,
+          lastError: error,
+          figureMissing: !fig,
+        },
+      };
+    });
+
+    set({
+      board: {
+        ...board,
+        elements: [...updatedElements, ...newSiblingsWithFigure],
+      },
+      isDirty: true,
+    });
+
+    return existingRefs.map(r => r.id);
+  },
+
+  runAllPlots: async () => {
+    const { board, boardFilePath } = get();
+    if (!board) return;
+
+    // Collect only SOURCE plot elements (skip siblings that share code).
+    const sources = board.elements
+      .filter(
+        el =>
+          el.type === 'plot' &&
+          (el.metadata?.sourceElementId === undefined ||
+            el.metadata?.sourceElementId === null) &&
+          (el.metadata?.code ?? '').trim().length > 0,
+      )
+      .sort((a, b) => a.z_index - b.z_index);
+
+    if (sources.length === 0) {
+      set({ runAllStatus: { state: 'done', successes: 0, failures: 0 } });
+      return;
+    }
+
+    const env = board.pythonEnvPath ?? null;
+    const cwd = boardFilePath ? boardFilePath.replace(/\/[^/]+$/, '') : null;
+    const setupCode = board.setup?.code ?? '';
+    const setupTimeout = board.setup?.timeout ?? 120;
+
+    // Force setup to re-run once at the start of a Run All by explicitly
+    // running it here — this gives the user a known-good baseline and
+    // clear feedback if setup itself fails.
+    if (setupCode.trim().length > 0) {
+      set({
+        runAllStatus: {
+          state: 'running',
+          current: 0,
+          total: sources.length + 1,
+          label: 'Python Setup',
+        },
+        kernelStatus: 'running',
+      });
+      try {
+        const r = await api.runSetup(board.id, setupCode, env, setupTimeout, cwd);
+        if (!r.success) {
+          set({
+            runAllStatus: {
+              state: 'error',
+              message: `Python Setup failed:\n${r.error ?? 'unknown error'}`,
+            },
+            kernelStatus: 'error',
+          });
+          return;
+        }
+        set({ kernelStatus: 'ok' });
+      } catch (err: any) {
+        set({
+          runAllStatus: {
+            state: 'error',
+            message: `Python Setup failed:\n${err?.message ?? String(err)}`,
+          },
+          kernelStatus: 'error',
+        });
+        return;
+      }
+    }
+
+    let successes = 0;
+    let failures = 0;
+    for (let i = 0; i < sources.length; i++) {
+      const el = sources[i];
+      const label = el.metadata?.name || `Plot ${i + 1}`;
+      set({
+        runAllStatus: {
+          state: 'running',
+          current: i + 1 + (setupCode.trim().length > 0 ? 1 : 0),
+          total: sources.length + (setupCode.trim().length > 0 ? 1 : 0),
+          label,
+        },
+      });
+      try {
+        const r = await api.executePlot(
+          el.metadata?.code ?? '',
+          30,
+          150,
+          env,
+          undefined,
+          cwd,
+          { boardId: board.id, setupCode, setupTimeout },
+        );
+        const figures =
+          r.figures && r.figures.length > 0
+            ? r.figures
+            : r.image_base64 || r.plotly_json
+            ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
+            : [];
+        get().distributePlotFigures(el.id, figures, r.stdout, r.success ? null : r.error);
+        if (r.success) successes++;
+        else failures++;
+      } catch (err: any) {
+        failures++;
+        get().distributePlotFigures(
+          el.id,
+          [],
+          null,
+          `Run All failed for ${label}: ${err?.message ?? String(err)}`,
+        );
+      }
+    }
+
+    set({ runAllStatus: { state: 'done', successes, failures } });
   },
 
   newBoard: async (name: string, filePath: string, canvasOverrides?: Partial<CanvasSettings>) => {

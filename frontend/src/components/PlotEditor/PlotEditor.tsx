@@ -290,6 +290,18 @@ function CropImageView({ snapshot, cropRect, onChange, isDark, aspectRatio }: {
 export function PlotEditor() {
   const elementId = useUIStore(s => s.plotEditorElementId);
   const element = useBoardStore(s => elementId ? s.board?.elements.find(el => el.id === elementId) : undefined);
+  // If the user clicked a sibling (a figure-N view of another element's
+  // code), resolve the code-owning source element. For legacy single-figure
+  // elements with no sourceElementId this is just the element itself.
+  const sourceElement = useBoardStore(s => {
+    if (!element) return element;
+    const srcId = element.metadata?.sourceElementId;
+    if (!srcId) return element;
+    return s.board?.elements.find(e => e.id === srcId) ?? element;
+  });
+  const sourceElementId = sourceElement?.id ?? elementId;
+  const activeFigureIndex: number = element?.metadata?.figureIndex ?? 0;
+  const distributePlotFigures = useBoardStore(s => s.distributePlotFigures);
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const theme = useUIStore(s => s.theme);
@@ -357,15 +369,18 @@ export function PlotEditor() {
 
   // Code-only persist (debounced) — only saves code changes, never touches
   // width/height/lastOutput. The Save button handles everything else.
+  // Writes always go to the SOURCE element (the code owner), even if the
+  // user opened the editor from a sibling reference.
   const persistCode = useCallback(() => {
-    if (!elementId) return;
-    const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
+    const targetId = sourceElementId;
+    if (!targetId) return;
+    const el = useBoardStore.getState().board?.elements.find(e => e.id === targetId);
     if (!el) return;
     const code = codeRef.current;
     if (code !== el.metadata?.code) {
-      updateElement(elementId, { metadata: { ...el.metadata, code } });
+      updateElement(targetId, { metadata: { ...el.metadata, code } });
     }
-  }, [elementId, updateElement]);
+  }, [sourceElementId, updateElement]);
   const schedulePersist = useCallback(() => {
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
     persistTimerRef.current = setTimeout(() => persistCode(), 2000);
@@ -374,8 +389,12 @@ export function PlotEditor() {
   useEffect(() => {
     if (elementId && element && initRef.current !== elementId) {
       initRef.current = elementId;
-      const code = element.metadata?.code || '';
+      // Code comes from the SOURCE element (owner of metadata.code).
+      // For legacy single-figure elements this is the clicked element itself.
+      const code = sourceElement?.metadata?.code || '';
       setLocalCode(code); codeRef.current = code;
+      // Preview / stdout / error / crop come from the CLICKED element,
+      // which may be a per-figure sibling with its own cached output + crop.
       setLocalOutput(element.metadata?.lastOutput || null);
       setLocalStdout(element.metadata?.lastStdout || null);
       setLocalError(element.metadata?.lastError || null);
@@ -385,7 +404,7 @@ export function PlotEditor() {
       setActiveTab('plot');
       setSetupStdout(null); setSetupError(null);
     }
-  }, [elementId, element]);
+  }, [elementId, element, sourceElement]);
 
   // Keyboard shortcuts for tab switching inside the editor.
   // Use a capture-phase listener so it beats CodeMirror's own key handling.
@@ -457,7 +476,7 @@ export function PlotEditor() {
   const handleCloseRef = useRef<() => void>(() => {});
 
   const handleRun = useCallback(async () => {
-    if (isRunning || !elementId) return;
+    if (isRunning || !elementId || !sourceElementId) return;
     const execId = generateId();
     setIsRunning(true); setExecutionId(execId); setLocalError(null); setLocalStdout(null);
     try {
@@ -470,11 +489,43 @@ export function PlotEditor() {
         setupCode: boardState?.setup?.code ?? '',
         setupTimeout: boardState?.setup?.timeout ?? 120,
       });
-      setLocalOutput(r.image_base64); setLocalStdout(r.stdout);
-      setLocalError(r.success ? null : r.error); setPlotlyJson(r.plotly_json);
+      // Normalize to figures[]: backend always returns it now, but be
+      // defensive for any legacy caller or error path.
+      const figures =
+        r.figures && r.figures.length > 0
+          ? r.figures
+          : r.image_base64 || r.plotly_json
+          ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
+          : [];
+      // Distribute across all referencing elements (source + siblings),
+      // auto-spawning new siblings when figures.length grows. This also
+      // updates this editor's element metadata so the next effect can pick
+      // up its figure, but we also set local state immediately for snappy UX.
+      distributePlotFigures(
+        sourceElementId,
+        figures,
+        r.stdout,
+        r.success ? null : r.error,
+      );
+      const myFig = figures[activeFigureIndex];
+      if (myFig) {
+        setLocalOutput(myFig.image); setPlotlyJson(myFig.plotly_json);
+        setLocalError(r.success ? null : r.error);
+      } else if (figures.length > 0) {
+        // The clicked element's figureIndex is past the end of the new
+        // figures list. Show the missing-figure placeholder.
+        setLocalOutput(null); setPlotlyJson(null);
+        setLocalError(
+          `Figure ${activeFigureIndex} missing: code now produces only ${figures.length} figure${figures.length === 1 ? '' : 's'}.`,
+        );
+      } else {
+        setLocalOutput(null); setPlotlyJson(null);
+        setLocalError(r.success ? null : r.error);
+      }
+      setLocalStdout(r.stdout);
     } catch (err: any) { if (!String(err).includes('abort')) setLocalError(String(err)); }
     finally { setIsRunning(false); setHasRun(true); setExecutionId(null); }
-  }, [elementId, isRunning]);
+  }, [elementId, sourceElementId, activeFigureIndex, isRunning, distributePlotFigures]);
 
   const handleAbort = useCallback(async () => { if (executionId) { try { await api.abortPlot(executionId); } catch {} } }, [executionId]);
 
@@ -897,6 +948,77 @@ export function PlotEditor() {
 
           {/* Right: output */}
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: isDark ? '#1a1a2e' : '#fafafa' }}>
+            {/* Thumbnail strip — shown when the source element has more than
+                one figure (i.e. sibling references exist). Clicking a
+                thumbnail re-points the editor at the element bound to that
+                figure so the user sees its own crop and preview. */}
+            {(() => {
+              const allElements = board?.elements ?? [];
+              const refs = allElements
+                .filter(el =>
+                  el.id === sourceElementId ||
+                  el.metadata?.sourceElementId === sourceElementId
+                )
+                .sort(
+                  (a, b) =>
+                    (a.metadata?.figureIndex ?? 0) -
+                    (b.metadata?.figureIndex ?? 0)
+                );
+              if (refs.length <= 1) return null;
+              return (
+                <div
+                  className="shrink-0 flex items-center gap-2 px-3 py-2 overflow-x-auto"
+                  style={{
+                    borderBottom: isDark
+                      ? '1px solid rgba(255,255,255,0.06)'
+                      : '1px solid #e5e5e5',
+                  }}
+                >
+                  <span className={`text-2xs shrink-0 ${isDark ? 'text-white/40' : 'text-gray-500'}`}>
+                    {refs.length} figures
+                  </span>
+                  {refs.map((ref, i) => {
+                    const isActive = ref.id === elementId;
+                    const thumb = ref.metadata?.lastOutput;
+                    const missing = ref.metadata?.figureMissing;
+                    return (
+                      <button
+                        key={ref.id}
+                        onClick={() =>
+                          useUIStore.getState().setPlotEditorElementId(ref.id)
+                        }
+                        title={`Figure ${i} (${isActive ? 'current' : 'click to switch'})`}
+                        className={`shrink-0 rounded overflow-hidden border-2 transition-all ${
+                          isActive
+                            ? (isDark ? 'border-blue-400' : 'border-blue-500')
+                            : (isDark ? 'border-white/10 hover:border-white/30' : 'border-gray-200 hover:border-gray-400')
+                        }`}
+                        style={{ width: 56, height: 40 }}
+                      >
+                        {thumb ? (
+                          <img
+                            src={`data:image/png;base64,${thumb}`}
+                            alt={`fig ${i}`}
+                            className="w-full h-full object-cover"
+                            draggable={false}
+                          />
+                        ) : (
+                          <div
+                            className={`w-full h-full flex items-center justify-center text-2xs ${
+                              missing
+                                ? (isDark ? 'text-red-300 bg-red-500/10' : 'text-red-600 bg-red-50')
+                                : (isDark ? 'text-white/30 bg-white/5' : 'text-gray-400 bg-gray-100')
+                            }`}
+                          >
+                            {missing ? '∅' : i}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             <div className="flex-1 overflow-hidden flex flex-col min-h-0">
               {isRunning ? (
                 <div className="w-full h-full flex items-center justify-center">
@@ -938,7 +1060,17 @@ export function PlotEditor() {
                   )}
 
                   {/* Empty: no output at all */}
-                  {!hasOutput && (
+                  {!hasOutput && element?.metadata?.figureMissing && (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-3 select-none px-8">
+                      <div className={`text-sm font-medium ${isDark ? 'text-red-300' : 'text-red-600'}`}>
+                        Figure {activeFigureIndex} missing
+                      </div>
+                      <div className={`text-xs text-center max-w-sm ${isDark ? 'text-white/40' : 'text-gray-500'}`}>
+                        The shared code no longer produces this figure. Edit the code to produce at least {activeFigureIndex + 1} figure{activeFigureIndex === 0 ? '' : 's'}, or delete this view.
+                      </div>
+                    </div>
+                  )}
+                  {!hasOutput && !element?.metadata?.figureMissing && (
                     <div className={`w-full h-full flex flex-col items-center justify-center gap-3 select-none px-8 ${isDark ? 'text-white/25' : 'text-gray-300'}`}>
                       {hasRun ? (
                         <>

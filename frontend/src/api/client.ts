@@ -158,7 +158,14 @@ export const api = {
     cwd?: string | null,
     kernel?: { boardId?: string; setupCode?: string; setupTimeout?: number },
   ) =>
-    request<{ success: boolean; image_base64: string | null; stdout: string | null; error: string | null; plotly_json: string | null }>(
+    request<{
+      success: boolean;
+      image_base64: string | null;
+      stdout: string | null;
+      error: string | null;
+      plotly_json: string | null;
+      figures: Array<{ image: string | null; plotly_json: string | null }>;
+    }>(
       '/plot/execute',
       {
         method: 'POST',
