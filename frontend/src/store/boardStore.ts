@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import type { Board, BoardElement, CanvasSettings, ElementType, AutoExportSettings } from '@/types/board';
-import { DEFAULT_CANVAS } from '@/types/board';
+import { DEFAULT_CANVAS, DEFAULT_BOARD_SETUP, CURRENT_SCHEMA_VERSION } from '@/types/board';
 import { createElement } from '@/utils/helpers';
 import { api } from '@/api/client';
 import { toRelativeAnchor, fromRelativeAnchor } from '@/utils/snapToShape';
@@ -30,11 +30,26 @@ interface HistoryEntry {
   description: string;
 }
 
+/** Kernel lifecycle / health status for the currently-open board. */
+export type KernelStatus = 'idle' | 'running' | 'ok' | 'error' | 'unknown';
+
+/** Unified shape used by runSetup / kernel responses. */
+export interface KernelRunResult {
+  ok: boolean;
+  stdout: string | null;
+  error: string | null;
+}
+
 interface BoardState {
   // Current board
   board: Board | null;
   boardFilePath: string | null;  // where the current board is saved on disk
   isDirty: boolean;
+
+  // Per-board kernel status (lives in-memory, never persisted)
+  kernelStatus: KernelStatus;
+  runSetup: (code?: string) => Promise<KernelRunResult>;
+  restartKernel: () => Promise<void>;
 
   // Undo/redo
   history: HistoryEntry[];
@@ -51,6 +66,8 @@ interface BoardState {
   deleteCheckpoint: () => Promise<void>;
   closeBoard: () => void;
   setBoardName: (name: string) => void;
+  setSetupCode: (code: string) => void;
+  setSetupTimeout: (timeout: number) => void;
   updateAutoExport: (settings: Partial<AutoExportSettings>) => void;
   triggerAutoExport: (boardSnapshot?: Board) => Promise<void>;
   setBoardPythonEnv: (path: string | null) => void;
@@ -129,19 +146,55 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   board: null,
   boardFilePath: null,
   isDirty: false,
+  kernelStatus: 'idle' as KernelStatus,
   history: [],
   historyIndex: -1,
   imageVersions: {},
+
+  runSetup: async (code?: string) => {
+    const { board, boardFilePath } = get();
+    if (!board) return { ok: false, stdout: null, error: 'no board open' };
+    const setupCode = code ?? board.setup?.code ?? '';
+    const timeout = board.setup?.timeout ?? 120;
+    // Match plot execution: pass the board file's directory as cwd so the
+    // backend can resolve the user's project root from it.
+    const cwd = boardFilePath ? boardFilePath.replace(/\/[^/]+$/, '') : null;
+    set({ kernelStatus: 'running' });
+    try {
+      const r = await api.runSetup(board.id, setupCode, board.pythonEnvPath ?? null, timeout, cwd);
+      set({ kernelStatus: r.success ? 'ok' : 'error' });
+      return {
+        ok: r.success,
+        stdout: r.stdout,
+        error: r.error,
+      };
+    } catch (err: any) {
+      set({ kernelStatus: 'error' });
+      return { ok: false, stdout: null, error: String(err?.message ?? err) };
+    }
+  },
+
+  restartKernel: async () => {
+    const { board } = get();
+    if (!board) return;
+    try {
+      await api.restartKernel(board.id);
+      set({ kernelStatus: 'idle' });
+    } catch {
+      set({ kernelStatus: 'error' });
+    }
+  },
 
   newBoard: async (name: string, filePath: string, canvasOverrides?: Partial<CanvasSettings>) => {
     if (autoExportAbort) autoExportAbort.abort();
     autoExportAbort = new AbortController();
     const board: Board = {
-      schema_version: 1,
+      schema_version: CURRENT_SCHEMA_VERSION,
       id: uuidv4(),
       name,
       canvas: { ...DEFAULT_CANVAS, ...canvasOverrides },
       elements: [],
+      setup: { ...DEFAULT_BOARD_SETUP },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       app_version: '0.1.0',
@@ -161,6 +214,13 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     autoExportAbort = new AbortController();
     const result = await api.openBoardFromFile(filePath);
     const board = result.board;
+
+    // Safety net: backend should already have migrated, but guarantee the
+    // field exists so downstream consumers don't need null-checks everywhere.
+    if (!board.setup) {
+      board.setup = { ...DEFAULT_BOARD_SETUP };
+      board.schema_version = CURRENT_SCHEMA_VERSION;
+    }
 
     // Check link status for image elements (non-blocking)
     const checkedElements = await Promise.all(
@@ -283,13 +343,37 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         // Best-effort
       }
     }
-    set({ board: null, boardFilePath: null, isDirty: false, history: [], historyIndex: -1 });
+    // Fire-and-forget kernel shutdown — don't block close on backend latency.
+    if (board) {
+      api.shutdownKernel(board.id).catch(() => {});
+    }
+    set({ board: null, boardFilePath: null, isDirty: false, kernelStatus: 'idle', history: [], historyIndex: -1 });
   },
 
   setBoardName: (name: string) => {
     const { board } = get();
     if (!board) return;
     set({ board: { ...board, name }, isDirty: true });
+  },
+
+  setSetupCode: (code: string) => {
+    const { board } = get();
+    if (!board) return;
+    if (board.setup.code === code) return;
+    set({
+      board: { ...board, setup: { ...board.setup, code } },
+      isDirty: true,
+    });
+  },
+
+  setSetupTimeout: (timeout: number) => {
+    const { board } = get();
+    if (!board) return;
+    if (board.setup.timeout === timeout) return;
+    set({
+      board: { ...board, setup: { ...board.setup, timeout } },
+      isDirty: true,
+    });
   },
 
   setBoardPythonEnv: (path: string | null) => {

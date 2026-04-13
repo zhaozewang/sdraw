@@ -5,6 +5,7 @@ frontend/node_modules/
 # Build output
 frontend/dist/
 frontend/.vite/
+*.tsbuildinfo
 
 # Python
 __pycache__/

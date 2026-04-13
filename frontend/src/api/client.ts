@@ -149,14 +149,32 @@ export const api = {
     }),
 
   // Plot execution
-  executePlot: (code: string, timeout = 30, dpi = 150, pythonPath?: string | null, executionId?: string, cwd?: string | null) =>
+  executePlot: (
+    code: string,
+    timeout = 30,
+    dpi = 150,
+    pythonPath?: string | null,
+    executionId?: string,
+    cwd?: string | null,
+    kernel?: { boardId?: string; setupCode?: string; setupTimeout?: number },
+  ) =>
     request<{ success: boolean; image_base64: string | null; stdout: string | null; error: string | null; plotly_json: string | null }>(
       '/plot/execute',
       {
         method: 'POST',
-        body: JSON.stringify({ code, timeout, dpi, python_path: pythonPath || null, execution_id: executionId || null, cwd: cwd || null }),
+        body: JSON.stringify({
+          code,
+          timeout,
+          dpi,
+          python_path: pythonPath || null,
+          execution_id: executionId || null,
+          cwd: cwd || null,
+          board_id: kernel?.boardId ?? null,
+          setup_code: kernel?.setupCode ?? null,
+          setup_timeout: kernel?.setupTimeout ?? 120,
+        }),
       },
-      (timeout + 5) * 1000,
+      (Math.max(timeout, kernel?.setupTimeout ?? 0) + 5) * 1000,
     ),
 
   abortPlot: (executionId: string) =>
@@ -164,6 +182,43 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ execution_id: executionId }),
     }),
+
+  // Kernel lifecycle (per-board persistent Python process)
+  runSetup: (boardId: string, setupCode: string, pythonPath?: string | null, timeout = 120, cwd?: string | null) =>
+    request<{ success: boolean; image_base64: string | null; stdout: string | null; error: string | null; plotly_json: string | null }>(
+      '/plot/kernel/setup',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          board_id: boardId,
+          setup_code: setupCode,
+          python_path: pythonPath || null,
+          timeout,
+          cwd: cwd || null,
+        }),
+      },
+      (timeout + 5) * 1000,
+    ),
+
+  restartKernel: (boardId: string) =>
+    request<{ restarted: boolean; board_id: string }>('/plot/kernel/restart', {
+      method: 'POST',
+      body: JSON.stringify({ board_id: boardId }),
+    }),
+
+  shutdownKernel: (boardId: string) =>
+    request<{ shutdown: boolean; board_id: string }>('/plot/kernel/shutdown', {
+      method: 'POST',
+      body: JSON.stringify({ board_id: boardId }),
+    }),
+
+  kernelStatus: (boardId: string) =>
+    request<{
+      running: boolean;
+      last_setup_hash: string | null;
+      python_path: string | null;
+      recent_stderr: string[];
+    }>(`/plot/kernel/status?board_id=${encodeURIComponent(boardId)}`),
 
   // Python environment
   getDefaultPythonEnv: () =>

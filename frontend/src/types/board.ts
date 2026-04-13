@@ -98,12 +98,24 @@ export interface AutoExportSettings {
   fixedHeight?: number;
 }
 
+/** Board-level Python setup code. Runs once per kernel session and its
+ * globals are visible (read-only) to every plot element on the board. */
+export interface BoardSetup {
+  code: string;
+  timeout: number;
+}
+
+export const DEFAULT_BOARD_SETUP: BoardSetup = { code: '', timeout: 120 };
+
+export const CURRENT_SCHEMA_VERSION = 2;
+
 export interface Board {
   schema_version: number;
   id: string;
   name: string;
   canvas: CanvasSettings;
   elements: BoardElement[];
+  setup: BoardSetup;
   autoExport?: AutoExportSettings;
   pythonEnvPath?: string | null;
   created_at: string;

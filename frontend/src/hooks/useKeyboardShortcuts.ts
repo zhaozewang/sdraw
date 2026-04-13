@@ -18,6 +18,15 @@ export function useKeyboardShortcuts() {
       return;
     }
 
+    // Open board setup editor (Cmd+;) — always works
+    if (mod && e.key === ';') {
+      e.preventDefault();
+      if (useBoardStore.getState().board) {
+        useUIStore.getState().openSetupEditor();
+      }
+      return;
+    }
+
     // Don't handle other shortcuts when typing in inputs
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
       return;

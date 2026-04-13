@@ -11,6 +11,9 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from services.kernel_manager import kernel_manager
+from services.python_env import resolve_python as _resolve_python
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/plot", tags=["plot"])
@@ -26,42 +29,6 @@ _RUNNER_PATH = os.path.join(
 _running_procs: dict[str, subprocess.Popen] = {}
 
 
-def _resolve_python(python_path: str | None) -> str:
-    """Resolve the Python executable to use.
-
-    - None or empty or "default" → the backend's own interpreter (sys.executable)
-    - A path to a venv directory → find the python inside it
-    - A direct path to a python binary → use as-is
-
-    NOTE: We do NOT resolve() symlinks because venv python binaries are
-    typically symlinks to system python, but they still activate the venv's
-    site-packages when invoked via the symlink path.
-    """
-    if not python_path or python_path == "default":
-        return sys.executable
-
-    p = Path(python_path).expanduser()
-
-    # If user gave a venv directory, find the python inside
-    if p.is_dir():
-        # Unix: venv/bin/python, Windows: venv/Scripts/python.exe
-        for candidate in [
-            p / "bin" / "python3",
-            p / "bin" / "python",
-            p / "Scripts" / "python.exe",
-            p / "Scripts" / "python3.exe",
-        ]:
-            if candidate.exists():
-                return str(candidate)
-        raise FileNotFoundError(f"No python found in venv: {p}")
-
-    # Direct path to a binary (don't resolve symlinks!)
-    if p.exists():
-        return str(p)
-
-    raise FileNotFoundError(f"Python not found: {p}")
-
-
 class ExecutePlotRequest(BaseModel):
     code: str
     timeout: int = 30  # seconds
@@ -69,6 +36,10 @@ class ExecutePlotRequest(BaseModel):
     python_path: str | None = None  # None = use default
     execution_id: str | None = None  # for cancellation tracking
     cwd: str | None = None  # working directory for execution
+    # Kernel path (Phase 3 wires this up; Phase 2 leaves it dormant):
+    board_id: str | None = None
+    setup_code: str | None = None
+    setup_timeout: int = 120
 
 
 class ExecutePlotResponse(BaseModel):
@@ -94,7 +65,37 @@ class ValidateEnvResponse(BaseModel):
 
 @router.post("/execute", response_model=ExecutePlotResponse)
 async def execute_plot(body: ExecutePlotRequest):
-    """Execute Python code in a subprocess and capture plot output."""
+    """Execute Python code and capture plot output.
+
+    If `board_id` is set, dispatch through the per-board kernel (setup code
+    runs automatically when stale). Otherwise fall back to the legacy
+    subprocess-per-execute path.
+
+    NOTE: the kernel path ignores `cwd` and `execution_id`. `cwd` matters
+    less because imports resolve via sys.path; cancellation is handled by
+    killing the kernel via /api/plot/kernel/restart.
+    """
+    if body.board_id:
+        try:
+            resp = await kernel_manager.exec_plot(
+                board_id=body.board_id,
+                plot_code=body.code,
+                setup_code=body.setup_code or "",
+                python_path=body.python_path,
+                dpi=body.dpi,
+                timeout=body.timeout,
+                setup_timeout=body.setup_timeout,
+                cwd=body.cwd,
+            )
+        except asyncio.TimeoutError:
+            return ExecutePlotResponse(
+                success=False,
+                error=f"Execution timed out ({body.timeout}s limit).",
+            )
+        except FileNotFoundError as exc:
+            return ExecutePlotResponse(success=False, error=str(exc))
+        return _kernel_response_to_execute_response(resp)
+
     logger.info("execute_plot called with python_path=%r", body.python_path)
     try:
         python = _resolve_python(body.python_path)
@@ -448,3 +449,112 @@ async def _check_python(python: str, is_default: bool) -> ValidateEnvResponse:
         )
     except Exception:
         return ValidateEnvResponse(valid=False, error="Could not parse Python output")
+
+
+# ---- Per-board kernel routes --------------------------------------------------
+
+
+class KernelExecuteRequest(BaseModel):
+    board_id: str
+    plot_code: str
+    setup_code: str = ""
+    python_path: str | None = None
+    dpi: int = 150
+    timeout: int = 30
+    setup_timeout: int = 120
+    cwd: str | None = None
+
+
+class KernelSetupRequest(BaseModel):
+    board_id: str
+    setup_code: str
+    python_path: str | None = None
+    dpi: int = 150
+    timeout: int = 120
+    cwd: str | None = None
+
+
+class KernelLifecycleRequest(BaseModel):
+    board_id: str
+
+
+class KernelStatusResponse(BaseModel):
+    running: bool
+    last_setup_hash: str | None
+    python_path: str | None
+    recent_stderr: list[str]
+
+
+def _kernel_response_to_execute_response(resp: dict) -> ExecutePlotResponse:
+    return ExecutePlotResponse(
+        success=bool(resp.get("ok")),
+        image_base64=resp.get("image"),
+        stdout=(resp.get("stdout") or None),
+        error=resp.get("error"),
+        plotly_json=resp.get("plotly_json"),
+    )
+
+
+@router.post("/kernel/execute", response_model=ExecutePlotResponse)
+async def kernel_execute(body: KernelExecuteRequest):
+    """Run a plot cell inside the given board's kernel. Auto-runs setup
+    if the setup hash has changed since the last successful run.
+    """
+    try:
+        resp = await kernel_manager.exec_plot(
+            board_id=body.board_id,
+            plot_code=body.plot_code,
+            setup_code=body.setup_code or "",
+            python_path=body.python_path,
+            dpi=body.dpi,
+            timeout=body.timeout,
+            setup_timeout=body.setup_timeout,
+            cwd=body.cwd,
+        )
+    except asyncio.TimeoutError:
+        return ExecutePlotResponse(
+            success=False,
+            error=f"Execution timed out ({body.timeout}s limit).",
+        )
+    except FileNotFoundError as exc:
+        return ExecutePlotResponse(success=False, error=str(exc))
+    return _kernel_response_to_execute_response(resp)
+
+
+@router.post("/kernel/setup", response_model=ExecutePlotResponse)
+async def kernel_setup(body: KernelSetupRequest):
+    """Run setup code explicitly in the given board's kernel."""
+    try:
+        resp = await kernel_manager.exec_setup(
+            board_id=body.board_id,
+            setup_code=body.setup_code,
+            python_path=body.python_path,
+            dpi=body.dpi,
+            timeout=body.timeout,
+            cwd=body.cwd,
+        )
+    except asyncio.TimeoutError:
+        return ExecutePlotResponse(
+            success=False,
+            error=f"Setup timed out ({body.timeout}s limit).",
+        )
+    except FileNotFoundError as exc:
+        return ExecutePlotResponse(success=False, error=str(exc))
+    return _kernel_response_to_execute_response(resp)
+
+
+@router.post("/kernel/restart")
+async def kernel_restart(body: KernelLifecycleRequest):
+    await kernel_manager.restart(body.board_id)
+    return {"restarted": True, "board_id": body.board_id}
+
+
+@router.post("/kernel/shutdown")
+async def kernel_shutdown(body: KernelLifecycleRequest):
+    await kernel_manager.shutdown(body.board_id)
+    return {"shutdown": True, "board_id": body.board_id}
+
+
+@router.get("/kernel/status", response_model=KernelStatusResponse)
+async def kernel_status(board_id: str):
+    return KernelStatusResponse(**kernel_manager.status(board_id))

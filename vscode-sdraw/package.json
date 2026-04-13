@@ -1,0 +1,80 @@
+{
+  "name": "sdraw",
+  "displayName": "sDraw",
+  "description": "Scientific figure composition board — open .sdraw files directly in VS Code",
+  "version": "0.1.0",
+  "publisher": "zhaozewang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "scientific",
+    "figure",
+    "plot",
+    "board",
+    "sdraw"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "sdraw.board",
+        "displayName": "sDraw Board",
+        "selector": [
+          {
+            "filenamePattern": "*.sdraw"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sdraw.newBoard",
+        "title": "sDraw: New Board"
+      },
+      {
+        "command": "sdraw.showOutput",
+        "title": "sDraw: Show Backend Output"
+      }
+    ],
+    "configuration": {
+      "title": "sDraw",
+      "properties": {
+        "sdraw.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Python executable. Leave empty to auto-detect (checks backend/venv first, then system python3)."
+        },
+        "sdraw.backendPort": {
+          "type": "number",
+          "default": 0,
+          "description": "Fixed port for the backend server. 0 = auto-select an available port."
+        },
+        "sdraw.useDevServer": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use the Vite dev server (port 3000) instead of the built frontend. Enable this during frontend development for hot reload."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package",
+    "vscode:prepublish": "node esbuild.js --production"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.2"
+  }
+}

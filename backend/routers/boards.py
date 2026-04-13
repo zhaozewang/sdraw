@@ -113,13 +113,15 @@ class OpenBoardFromFileRequest(BaseModel):
 @router.post("/open")
 async def open_board_from_file(body: OpenBoardFromFileRequest):
     """Load a board from .sdraw file, merging cached data if available."""
-    from services.board_cache import merge_cache_into_board
+    from services.board_cache import merge_cache_into_board, migrate_board_schema
 
     p = Path(body.path).resolve()
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Board file not found")
     try:
         data = json.loads(p.read_text())
+        # Upgrade older schema versions in-memory (next save persists it)
+        data = migrate_board_schema(data)
         # Merge cached data (plotlyJson, thumbnail) from ~/.sdraw/cache/
         data = merge_cache_into_board(data)
         return {"path": str(p), "board": data}

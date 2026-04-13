@@ -7,11 +7,13 @@ import { InsertPanel } from '@/components/InsertPanel/InsertPanel';
 import { StatusBar } from '@/components/StatusBar/StatusBar';
 import { Settings } from '@/components/Settings/Settings';
 import { PlotEditor } from '@/components/PlotEditor/PlotEditor';
+import { SetupEditor } from '@/components/SetupEditor/SetupEditor';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAutoSave } from '@/hooks/useAutoSave';
+import { useVSCodeBridge } from '@/hooks/useVSCodeBridge';
 import { api } from '@/api/client';
 import type { DirEntry } from '@/types/board';
 import { getLastDirectory, saveLastDirectory, fetchUserHome, getLastDirectoryOrHome } from '@/utils/helpers';
@@ -1265,6 +1267,7 @@ function Editor() {
       <ExportDialog />
       <Settings />
       <PlotEditor />
+      <SetupEditor />
     </div>
   );
 }
@@ -1277,6 +1280,28 @@ function AppContent() {
   const boardFilePath = useBoardStore(s => s.boardFilePath);
   const openBoard = useBoardStore(s => s.openBoard);
   const [initializing, setInitializing] = useState(true);
+
+  // VS Code webview bridge (no-op when not in VS Code)
+  useVSCodeBridge();
+
+  // Best-effort kernel shutdown on tab close. The backend's shutdown_all
+  // hook is the real safety net; this just avoids orphaned kernels in the
+  // common case where the process keeps running (dev server, etc.).
+  useEffect(() => {
+    const handler = () => {
+      const b = useBoardStore.getState().board;
+      if (!b) return;
+      try {
+        const url = '/api/plot/kernel/shutdown';
+        const payload = JSON.stringify({ board_id: b.id });
+        navigator.sendBeacon?.(url, new Blob([payload], { type: 'application/json' }));
+      } catch {
+        // best-effort
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, []);
 
   // Listen for Electron "show-preferences" IPC event (Cmd+,)
   useEffect(() => {

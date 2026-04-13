@@ -115,12 +115,21 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class BoardSetup(BaseModel):
+    """Board-level Python setup code. Runs once per kernel session and its
+    globals are visible (read-only) to every plot element on the board.
+    """
+    code: str = ""
+    timeout: int = 120  # seconds
+
+
 class Board(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str = "Untitled Board"
     canvas: CanvasSettings = Field(default_factory=CanvasSettings)
     elements: list[BoardElement] = Field(default_factory=list)
+    setup: BoardSetup = Field(default_factory=BoardSetup)
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
     app_version: str = "0.1.0"

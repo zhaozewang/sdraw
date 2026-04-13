@@ -78,11 +78,14 @@ class WorkspaceService:
 
     def load_board(self, board_id: str) -> Board | None:
         """Load a single board by ID. Returns None if not found."""
+        from services.board_cache import migrate_board_schema
+
         board_path = self.boards_dir / f"{board_id}.sdraw"
         if not board_path.exists():
             return None
         try:
             data = json.loads(board_path.read_text(encoding="utf-8"))
+            data = migrate_board_schema(data)
             return Board(**data)
         except (json.JSONDecodeError, Exception) as exc:
             logger.error("Failed to load board %s: %s", board_id, exc)

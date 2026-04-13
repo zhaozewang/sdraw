@@ -63,6 +63,11 @@ interface UIState {
   plotEditorElementId: string | null;
   setPlotEditorElementId: (id: string | null) => void;
 
+  // Board setup editor modal (per-board Python kernel setup code)
+  setupEditorOpen: boolean;
+  openSetupEditor: () => void;
+  closeSetupEditor: () => void;
+
   // Python environment for plot execution
   pythonEnvPath: string | null; // null = default (built-in)
   setPythonEnvPath: (path: string | null) => void;
@@ -161,6 +166,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   setSnapTargetId: (id) => set({ snapTargetId: id }),
   plotEditorElementId: null,
   setPlotEditorElementId: (id) => set({ plotEditorElementId: id }),
+  setupEditorOpen: false,
+  openSetupEditor: () => set({ setupEditorOpen: true }),
+  closeSetupEditor: () => set({ setupEditorOpen: false }),
   pythonEnvPath: (() => { try { return localStorage.getItem('sdraw_python_env') || null; } catch { return null; } })(),
   setPythonEnvPath: (path) => {
     try {

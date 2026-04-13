@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    from services.kernel_manager import kernel_manager
+    await kernel_manager.shutdown_all()
     await watcher.stop()
     logger.info("sDraw backend stopped")
 

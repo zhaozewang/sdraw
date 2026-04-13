@@ -2,15 +2,16 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
-import { Play, Square, Loader2, X, Crop, Check, Save } from 'lucide-react';
+import { Play, Square, Loader2, X, Crop, Check, Save, Braces } from 'lucide-react';
+import { CodeMirrorEditor } from '@/components/shared/CodeMirrorEditor';
 import Plotly from 'plotly.js-dist-min';
 
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
+import { EditorState, Prec } from '@codemirror/state';
 import { python } from '@codemirror/lang-python';
 import { indentWithTab } from '@codemirror/commands';
 import { defaultKeymap, history, historyKeymap, indentMore, indentLess } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from '@codemirror/language';
+import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, indentUnit } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
 
 function generateId() { return Math.random().toString(36).slice(2, 10); }
@@ -311,6 +312,34 @@ export function PlotEditor() {
   const [cropSnapshot, setCropSnapshot] = useState<string | null>(null);
   const [cropAspectRatio, setCropAspectRatio] = useState<number | null>(null); // w/h pixel ratio, null = free
 
+  // Tab within the editor: plot code or shared board-level Python setup.
+  const [activeTab, setActiveTab] = useState<'plot' | 'setup'>('plot');
+  const board = useBoardStore(s => s.board);
+  const setSetupCode = useBoardStore(s => s.setSetupCode);
+  const runSetup = useBoardStore(s => s.runSetup);
+  const kernelStatus = useBoardStore(s => s.kernelStatus);
+  const setupCode = board?.setup?.code ?? '';
+  const hasSetupCode = setupCode.trim().length > 0;
+  const [setupStdout, setSetupStdout] = useState<string | null>(null);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const [isSetupRunning, setIsSetupRunning] = useState(false);
+
+  const handleSetupRun = useCallback(async () => {
+    if (isSetupRunning) return;
+    setIsSetupRunning(true);
+    setSetupError(null);
+    setSetupStdout(null);
+    try {
+      const r = await runSetup();
+      setSetupStdout(r.stdout);
+      setSetupError(r.ok ? null : r.error);
+    } catch (err: any) {
+      setSetupError(String(err));
+    } finally {
+      setIsSetupRunning(false);
+    }
+  }, [isSetupRunning, runSetup]);
+
   // Layout: horizontal split (left width %), vertical split (code height %)
   const [leftPct, setLeftPct] = useState(45);
   const [codePct, setCodePct] = useState(75);
@@ -353,24 +382,47 @@ export function PlotEditor() {
       setCropRect(element.metadata?.plotCrop || null);
       setPlotlyJson(element.metadata?.plotlyJson || null);
       setCropMode(false); setIsRunning(false); setHasRun(false); setExecutionId(null);
+      setActiveTab('plot');
+      setSetupStdout(null); setSetupError(null);
     }
   }, [elementId, element]);
+
+  // Keyboard shortcuts for tab switching inside the editor.
+  // Use a capture-phase listener so it beats CodeMirror's own key handling.
+  useEffect(() => {
+    if (!elementId) return;
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === '1') {
+        e.preventDefault();
+        setActiveTab('plot');
+      } else if (mod && e.key === '2') {
+        e.preventDefault();
+        setActiveTab('setup');
+      }
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [elementId]);
 
   // CodeMirror — follows canvas theme
   useEffect(() => {
     if (!editorRef.current || !elementId) return;
     if (viewRef.current) { viewRef.current.destroy(); viewRef.current = null; }
-    const km = keymap.of([
+    const km = Prec.highest(keymap.of([
       { key: 'Mod-Enter', run: () => { handleRunRef.current(); return true; } },
       { key: 'Escape', run: () => { handleCloseRef.current(); return true; } },
       { key: 'Shift-Tab', run: (v) => { indentLess(v); return true; } },
-    ]);
+    ]));
     const monoFont = '"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
     const exts = [
+      km,
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(),
       history(), indentOnInput(), bracketMatching(), python(),
-      syntaxHighlighting(defaultHighlightStyle),
-      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]), km,
+      // Python convention: 4-space indent and 4-wide tab display
+      indentUnit.of('    '),
+      EditorState.tabSize.of(4),
+      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) { const c = u.state.doc.toString(); codeRef.current = c; setLocalCode(c); schedulePersist(); }
       }),
@@ -382,8 +434,11 @@ export function PlotEditor() {
       }),
     ];
     if (isDark) {
+      // oneDark bundles its own syntax highlighting — don't add defaultHighlightStyle
+      // which is designed for light backgrounds and would override oneDark's token colors.
       exts.push(oneDark);
     } else {
+      exts.push(syntaxHighlighting(defaultHighlightStyle));
       exts.push(EditorView.theme({
         '&': { backgroundColor: '#fafafa' },
         '.cm-gutters': { backgroundColor: '#f5f5f5', color: '#999' },
@@ -406,10 +461,15 @@ export function PlotEditor() {
     const execId = generateId();
     setIsRunning(true); setExecutionId(execId); setLocalError(null); setLocalStdout(null);
     try {
-      const env = useBoardStore.getState().board?.pythonEnvPath ?? useUIStore.getState().pythonEnvPath;
+      const boardState = useBoardStore.getState().board;
+      const env = boardState?.pythonEnvPath ?? useUIStore.getState().pythonEnvPath;
       const bp = useBoardStore.getState().boardFilePath;
       const cwd = bp ? bp.replace(/\/[^/]+$/, '') : null;
-      const r = await api.executePlot(codeRef.current, 30, 150, env, execId, cwd);
+      const r = await api.executePlot(codeRef.current, 30, 150, env, execId, cwd, {
+        boardId: boardState?.id,
+        setupCode: boardState?.setup?.code ?? '',
+        setupTimeout: boardState?.setup?.timeout ?? 120,
+      });
       setLocalOutput(r.image_base64); setLocalStdout(r.stdout);
       setLocalError(r.success ? null : r.error); setPlotlyJson(r.plotly_json);
     } catch (err: any) { if (!String(err).includes('abort')) setLocalError(String(err)); }
@@ -602,22 +662,125 @@ export function PlotEditor() {
         style={{ backgroundColor: isDark ? '#1e1e2e' : '#ffffff' }}
         onClick={e => e.stopPropagation()}>
 
+        {/* Tabs row: Plot code | Python Setup */}
+        <div
+          className="h-9 flex items-end px-3 gap-0.5 shrink-0 select-none"
+          style={{
+            backgroundColor: isDark ? '#11111b' : '#f0f0f0',
+            borderBottom: isDark ? '1px solid rgba(255,255,255,0.06)' : '1px solid #e5e5e5',
+          }}
+        >
+          {([
+            { id: 'plot' as const, label: 'Plot code', shortcut: '⌘1' },
+            { id: 'setup' as const, label: 'Python Setup', shortcut: '⌘2' },
+          ]).map(tab => {
+            const isActive = activeTab === tab.id;
+            const isSetupTab = tab.id === 'setup';
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 px-3 h-7 rounded-t-md text-xs font-medium transition-colors ${
+                  isActive
+                    ? (isDark ? 'bg-[#1e1e2e] text-white/90' : 'bg-white text-gray-800 border-t border-l border-r border-gray-200')
+                    : (isDark ? 'text-white/40 hover:text-white/70' : 'text-gray-500 hover:text-gray-800')
+                }`}
+                style={isActive ? { marginBottom: '-1px' } : undefined}
+                title={
+                  isSetupTab
+                    ? 'Shared Python setup for this board — runs once, visible to every plot'
+                    : 'This plot\u2019s code'
+                }
+              >
+                {isSetupTab && <Braces size={11} />}
+                {tab.label}
+                {isSetupTab && hasSetupCode && (
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      kernelStatus === 'running' ? 'bg-blue-400 animate-pulse'
+                      : kernelStatus === 'ok' ? 'bg-green-500'
+                      : kernelStatus === 'error' ? 'bg-red-500'
+                      : 'bg-gray-400'
+                    }`}
+                  />
+                )}
+                {isSetupTab && !hasSetupCode && (
+                  <span className={`text-2xs ${isDark ? 'text-white/30' : 'text-gray-400'}`}>empty</span>
+                )}
+                <span className={`text-2xs opacity-60 ${isDark ? 'text-white/40' : 'text-gray-400'}`}>{tab.shortcut}</span>
+              </button>
+            );
+          })}
+          <div className="flex-1" />
+        </div>
+
         {/* Compact toolbar */}
         <div className="h-10 flex items-center px-3 gap-2 shrink-0 select-none"
           style={{ backgroundColor: isDark ? '#181825' : '#f8f8f8', borderBottom: isDark ? '1px solid rgba(255,255,255,0.06)' : '1px solid #e5e5e5' }}>
-          {/* Run/Stop */}
-          {isRunning ? (
-            <button onClick={handleAbort} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-red-300' : 'text-red-600'}`}
-              style={{ backgroundColor: isDark ? 'rgba(239,68,68,0.15)' : 'rgba(239,68,68,0.1)' }}>
-              <Square size={12} fill="currentColor" /> Stop
+          {/* Run / Stop — context-aware to the active tab so Cmd+Enter feels natural */}
+          {activeTab === 'plot' ? (
+            isRunning ? (
+              <button onClick={handleAbort} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-red-300' : 'text-red-600'}`}
+                style={{ backgroundColor: isDark ? 'rgba(239,68,68,0.15)' : 'rgba(239,68,68,0.1)' }}>
+                <Square size={12} fill="currentColor" /> Stop
+              </button>
+            ) : (
+              <button onClick={handleRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
+                style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.1)' }}>
+                <Play size={12} /> Run plot
+              </button>
+            )
+          ) : isSetupRunning ? (
+            <button disabled className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-white/30' : 'text-gray-400'}`}>
+              <Loader2 size={12} className="animate-spin" /> Running…
             </button>
           ) : (
-            <button onClick={handleRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
+            <button onClick={handleSetupRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
               style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.1)' }}>
-              <Play size={12} /> Run
+              <Play size={12} /> Run setup
             </button>
           )}
-          <span className={`text-xs ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{isRunning ? '' : '\u2318\u23CE'}</span>
+          <span className={`text-xs ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{(activeTab === 'plot' ? isRunning : isSetupRunning) ? '' : '\u2318\u23CE'}</span>
+
+          {/* Always-visible "Run Setup" shortcut: runs the board's shared setup
+              from either tab, so users never have to go hunting for it. */}
+          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
+          <button
+            onClick={handleSetupRun}
+            disabled={isSetupRunning || !hasSetupCode}
+            title={
+              !hasSetupCode
+                ? 'Python Setup is empty — switch to the "Python Setup" tab to add shared imports and data loading'
+                : 'Run the board\u2019s shared Python setup'
+            }
+            className={`flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
+              !hasSetupCode
+                ? (isDark ? 'text-white/25 border-white/10 cursor-not-allowed' : 'text-gray-400 border-gray-200 cursor-not-allowed')
+                : isSetupRunning
+                ? (isDark ? 'text-blue-300 border-blue-500/40 bg-blue-500/10' : 'text-blue-600 border-blue-300 bg-blue-50')
+                : kernelStatus === 'error'
+                ? (isDark ? 'text-red-300 border-red-500/40 bg-red-500/10 hover:bg-red-500/20' : 'text-red-700 border-red-300 bg-red-50 hover:bg-red-100')
+                : kernelStatus === 'ok'
+                ? (isDark ? 'text-green-300 border-green-500/40 bg-green-500/10 hover:bg-green-500/20' : 'text-green-700 border-green-300 bg-green-50 hover:bg-green-100')
+                : (isDark ? 'text-white/70 border-white/15 hover:bg-white/5' : 'text-gray-700 border-gray-300 hover:bg-gray-50')
+            }`}
+          >
+            {isSetupRunning ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Braces size={12} />
+            )}
+            Run Setup
+            {hasSetupCode && !isSetupRunning && (
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  kernelStatus === 'ok' ? 'bg-green-500'
+                  : kernelStatus === 'error' ? 'bg-red-500'
+                  : 'bg-gray-400'
+                }`}
+              />
+            )}
+          </button>
 
           <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
 
@@ -679,8 +842,9 @@ export function PlotEditor() {
           </button>
         </div>
 
-        {/* Body: code+console | splitter | output */}
-        <div className="flex-1 flex min-h-0" ref={bodyRef}>
+        {/* Body: the plot tab renders code+console | splitter | output;
+            the Python Setup tab renders a simpler shared setup editor. */}
+        <div className="flex-1 flex min-h-0" ref={bodyRef} style={{ display: activeTab === 'plot' ? 'flex' : 'none' }}>
           {/* Left: code + console */}
           <div className="flex flex-col min-h-0 overflow-hidden" style={{ width: `${leftPct}%` }} ref={leftRef}>
             {/* Code editor */}
@@ -696,6 +860,28 @@ export function PlotEditor() {
                   {localStdout && (
                     <pre className={`px-3 py-2 text-xs whitespace-pre-wrap break-words ${isDark ? 'text-[#a6adc8]' : 'text-gray-600'}`}
                       style={{ fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace' }}>{localStdout}</pre>
+                  )}
+                  {localError && localError.startsWith('Setup failed:') && (
+                    <div className={`px-3 py-2 flex items-start gap-2 border-b ${isDark ? 'bg-red-950/40 border-red-900/40' : 'bg-red-50 border-red-200'}`}>
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-xs font-semibold mb-1 ${isDark ? 'text-red-300' : 'text-red-700'}`}>
+                          Board setup failed
+                        </div>
+                        <div className={`text-2xs ${isDark ? 'text-red-200/70' : 'text-red-600/80'}`}>
+                          Fix the setup code and re-run this plot.
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setActiveTab('setup')}
+                        className={`shrink-0 px-2 py-0.5 text-2xs font-medium rounded ${
+                          isDark
+                            ? 'bg-red-900/60 text-red-200 hover:bg-red-900'
+                            : 'bg-white text-red-700 hover:bg-red-100 border border-red-300'
+                        }`}
+                      >
+                        Open setup
+                      </button>
+                    </div>
                   )}
                   {localError && (
                     <pre className={`px-3 py-2 text-xs whitespace-pre-wrap break-words ${isDark ? 'text-[#f38ba8]' : 'text-red-600'}`}
@@ -773,6 +959,53 @@ export function PlotEditor() {
             </div>
           </div>
         </div>
+
+        {/* Python Setup tab body */}
+        {activeTab === 'setup' && (
+          <div className="flex-1 flex flex-col min-h-0">
+            <div
+              className={`h-7 shrink-0 flex items-center px-3 text-2xs ${
+                isDark ? 'text-white/40 bg-[#181825] border-b border-white/5' : 'text-gray-500 bg-gray-50 border-b border-gray-200'
+              }`}
+            >
+              Runs once per board. Variables you define here are visible to every plot on this board.
+            </div>
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <CodeMirrorEditor
+                initialCode={setupCode}
+                remountKey={`setup:${board?.id}:${isDark}`}
+                onChange={setSetupCode}
+                onRun={handleSetupRun}
+                onEscape={handleClose}
+                isDark={isDark}
+                autoFocus
+              />
+            </div>
+            {(setupStdout || setupError) && (
+              <div
+                className="shrink-0 max-h-[35%] overflow-auto"
+                style={{ backgroundColor: isDark ? '#11111b' : '#f5f5f5' }}
+              >
+                {setupStdout && (
+                  <pre
+                    className={`px-3 py-2 text-xs whitespace-pre-wrap break-words ${isDark ? 'text-[#a6adc8]' : 'text-gray-600'}`}
+                    style={{ fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace' }}
+                  >
+                    {setupStdout}
+                  </pre>
+                )}
+                {setupError && (
+                  <pre
+                    className={`px-3 py-2 text-xs whitespace-pre-wrap break-words ${isDark ? 'text-[#f38ba8]' : 'text-red-600'}`}
+                    style={{ fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace' }}
+                  >
+                    {setupError}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

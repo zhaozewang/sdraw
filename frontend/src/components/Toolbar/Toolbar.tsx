@@ -36,6 +36,7 @@ import {
   Sun,
   Moon,
   Settings,
+  Braces,
 } from 'lucide-react';
 
 function SavePromptDialog({ onSave, onDiscard, onCancel }: {
@@ -71,6 +72,7 @@ function SavePromptDialog({ onSave, onDiscard, onCancel }: {
 export function Toolbar() {
   const board = useBoardStore(s => s.board);
   const isDirty = useBoardStore(s => s.isDirty);
+  const kernelStatus = useBoardStore(s => s.kernelStatus);
   const saveBoard = useBoardStore(s => s.saveBoard);
   const undo = useBoardStore(s => s.undo);
   const redo = useBoardStore(s => s.redo);
@@ -270,6 +272,32 @@ export function Toolbar() {
 
         {/* Python env picker */}
         <PythonEnvPicker />
+
+        {/* Python Setup — shared imports/data that run once per board.
+            Labeled pill (not just an icon) to make the feature discoverable
+            and distinct from the Terminal-icon Python env picker next to it. */}
+        <button
+          onClick={() => useUIStore.getState().openSetupEditor()}
+          title="Python Setup — shared code that runs before every plot on this board (⌘;)"
+          className={`flex items-center gap-1.5 h-7 px-2.5 rounded-md border text-xs font-medium transition-colors ${
+            board.setup?.code
+              ? 'border-accent/40 bg-accent/10 text-accent hover:bg-accent/15'
+              : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
+          }`}
+        >
+          <Braces size={14} className="shrink-0" />
+          <span>Python Setup</span>
+          {board.setup?.code && (
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                kernelStatus === 'running' ? 'bg-blue-400 animate-pulse'
+                : kernelStatus === 'ok' ? 'bg-green-500'
+                : kernelStatus === 'error' ? 'bg-red-500'
+                : 'bg-gray-400'
+              }`}
+            />
+          )}
+        </button>
 
         <Separator />
 

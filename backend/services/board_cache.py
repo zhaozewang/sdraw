@@ -20,6 +20,26 @@ CACHE_ROOT = Path.home() / ".sdraw" / "cache"
 _CACHE_METADATA_KEYS = {"plotlyJson"}
 _CACHE_BOARD_KEYS = {"thumbnail"}
 
+CURRENT_SCHEMA_VERSION = 2
+
+
+def migrate_board_schema(board: dict) -> dict:
+    """Upgrade an in-memory board dict to the current schema version.
+
+    Returns the same dict reference with any missing fields populated.
+    Does NOT write to disk — the next normal save will persist the upgrade.
+    """
+    version = board.get("schema_version", 1)
+
+    # v1 → v2: introduce board-level setup block
+    if version < 2:
+        if "setup" not in board or not isinstance(board.get("setup"), dict):
+            board["setup"] = {"code": "", "timeout": 120}
+        board["schema_version"] = 2
+
+    # Future migrations chain here.
+    return board
+
 
 def _cache_dir(board_id: str) -> Path:
     return CACHE_ROOT / board_id
