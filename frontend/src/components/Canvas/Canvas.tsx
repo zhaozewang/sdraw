@@ -492,7 +492,13 @@ export function Canvas() {
       if (change.type === 'dimensions' && change.id && change.dimensions) {
         const el = b.elements.find(e => e.id === change.id);
         if (el && !el.locked) {
-          // Skip no-op dimension updates (React Flow fires these on initial measure)
+          // Skip no-op dimension updates (React Flow fires these on initial measure).
+          // Do NOT overwrite plot elements — their dimensions are owned by the user
+          // (resize / Inspector) and by distributePlotFigures on re-run. React Flow's
+          // layout measurements can come in at subtly different values than what we
+          // stored, which previously caused a feedback loop where the dimension sync
+          // would "correct" a plot's height to a stale measured value.
+          if (el.type === 'plot') continue;
           const newW = change.dimensions.width;
           const newH = change.dimensions.height;
           if (Math.abs(el.width - newW) > 0.5 || Math.abs(el.height - newH) > 0.5) {

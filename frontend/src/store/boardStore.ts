@@ -101,12 +101,18 @@ function mergeAgentCodeIntoLayout(
 
 /**
  * Read width/height from a base64-encoded PNG by parsing the IHDR chunk.
- * Synchronous and DOM-free so it can run inside a store update.
+ * Synchronous and DOM-free so it can run inside a store update. Tolerant
+ * of a `data:image/png;base64,` prefix and of stray whitespace in the
+ * base64 string (some encoders wrap at 76 chars).
  */
 function readPngDimensions(b64: string | null | undefined): { width: number; height: number } | null {
   if (!b64) return null;
   try {
-    const header = atob(b64.slice(0, 48));
+    // Strip data-URL prefix if present, then remove whitespace so atob
+    // sees a clean base64 stream.
+    const clean = b64.replace(/^data:image\/[^;]+;base64,/, '').replace(/\s+/g, '');
+    // 48 base64 chars = 36 bytes, which covers through the IHDR width+height.
+    const header = atob(clean.slice(0, 48));
     if (header.charCodeAt(0) !== 0x89 || header.charCodeAt(1) !== 0x50) return null;
     const w =
       (header.charCodeAt(16) << 24) | (header.charCodeAt(17) << 16) |
@@ -121,60 +127,34 @@ function readPngDimensions(b64: string | null | undefined): { width: number; hei
   }
 }
 
-/** Load a base64 PNG into an HTMLImageElement. */
-function loadImageB64(b64: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = `data:image/png;base64,${b64}`;
-  });
-}
-
 /**
- * Canvas-crop a base64 PNG to a fractional rectangle. Returns the cropped
- * image as a base64 string (no data URL prefix). On any failure, returns the
- * original image unchanged so the caller still has a valid lastOutput.
+ * Synchronously compute the element height that matches a fresh figure's
+ * natural aspect ratio. Used only for UNCROPPED plots — cropped plots are
+ * frozen during Run All and never routed through this function. Reads the
+ * PNG header bytes directly (no image decode) so it can't fail on large
+ * figures.
  */
-async function cropImageB64(
-  fullB64: string,
-  crop: { x: number; y: number; w: number; h: number },
-): Promise<string> {
-  try {
-    const img = await loadImageB64(fullB64);
-    const sx = Math.max(0, Math.round(crop.x * img.naturalWidth));
-    const sy = Math.max(0, Math.round(crop.y * img.naturalHeight));
-    const sw = Math.max(1, Math.min(img.naturalWidth - sx, Math.round(crop.w * img.naturalWidth)));
-    const sh = Math.max(1, Math.min(img.naturalHeight - sy, Math.round(crop.h * img.naturalHeight)));
-    const cvs = document.createElement('canvas');
-    cvs.width = sw; cvs.height = sh;
-    cvs.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-    return cvs.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
-  } catch {
-    return fullB64;
-  }
-}
-
-/**
- * Given an element and a newly-rendered figure image, return the height that
- * preserves the element's current width while matching the effective display
- * aspect ratio. The effective aspect accounts for any stored plotCrop (crop
- * fractions are relative to the full figure). Returns the original height if
- * the PNG can't be decoded.
- */
-function heightForFigure(
-  el: BoardElement,
+function syncHeightForFigure(
+  elWidth: number,
+  fallbackHeight: number,
   imageB64: string | null | undefined,
   plotCrop: { w?: number; h?: number } | null | undefined,
 ): number {
+  if (!imageB64 || elWidth <= 0) return fallbackHeight;
   const dims = readPngDimensions(imageB64);
-  if (!dims) return el.height;
-  const cropW = plotCrop && plotCrop.w && plotCrop.w > 0.02 ? plotCrop.w : 1;
-  const cropH = plotCrop && plotCrop.h && plotCrop.h > 0.02 ? plotCrop.h : 1;
+  if (!dims) return fallbackHeight;
+  const cropW =
+    plotCrop && typeof plotCrop.w === 'number' && plotCrop.w > 0.02
+      ? plotCrop.w
+      : 1;
+  const cropH =
+    plotCrop && typeof plotCrop.h === 'number' && plotCrop.h > 0.02
+      ? plotCrop.h
+      : 1;
   const effW = dims.width * cropW;
   const effH = dims.height * cropH;
-  if (effW <= 0) return el.height;
-  return Math.max(1, Math.round(el.width * (effH / effW)));
+  if (effW <= 0 || effH <= 0) return fallbackHeight;
+  return Math.max(1, Math.round(elWidth * (effH / effW)));
 }
 
 /** Kernel lifecycle / health status for the currently-open board. */
@@ -493,31 +473,64 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     // Update every referencing element with its figure's output, or flag
     // it as missing when the code now produces fewer figures than refs.
-    // Async so we can canvas-crop the image for panels that have a
-    // stored plotCrop — matches what the PlotEditor save path does.
-    const updatedElements = await Promise.all(board.elements.map(async el => {
+    //
+    // Policy for cropped plots: Run All treats them as FROZEN. Dimensions,
+    // stored image, and plotly JSON are all preserved. The crop captures
+    // the user's exact intent (plotly camera/zoom, chosen region, chosen
+    // aspect) and the backend kaleido render on a fresh Run All may not
+    // reproduce that intent byte-for-byte (plotly camera can drift by a
+    // fraction on re-render, kaleido vs interactive canvas can produce
+    // slightly different viewports, etc.). To re-render a cropped plot
+    // the user opens the editor and hits Save, which is the one place
+    // that captures a fresh image at exactly the state they want.
+    //
+    // Uncropped plots get full refresh: new image, new dimensions, etc.
+    const updatedElements = board.elements.map(el => {
       const figIdx = refIdToFigureIndex.get(el.id);
       if (figIdx === undefined) return el;
       const fig = figures[figIdx];
       const isSource = el.id === sourceElementId;
+      const plotCrop = el.metadata?.plotCrop;
+      const hasStoredCrop = plotCrop && plotCrop.w > 0.02 && plotCrop.h > 0.02;
+
+      // Cropped plot → update only stdout/error/figureIndex, leave the
+      // image/dims/plotly_json strictly alone.
+      if (hasStoredCrop) {
+        const nextMeta: Record<string, any> = {
+          ...el.metadata,
+          lastStdout: stdout,
+          lastError: error,
+        };
+        if (isSource && nextMeta.figureIndex === undefined) {
+          nextMeta.figureIndex = 0;
+        }
+        // If the code no longer produces this figure index, flag it
+        // as missing so the user sees a clear error, but still don't
+        // touch dimensions.
+        if (!fig) {
+          nextMeta.figureMissing = true;
+          if (!error) {
+            nextMeta.lastError =
+              `Figure ${figIdx} missing: code now produces only ${figures.length} figure${figures.length === 1 ? '' : 's'}.`;
+          }
+        }
+        return { ...el, metadata: nextMeta };
+      }
+
+      // Uncropped plot → full refresh path.
       const nextMeta: Record<string, any> = {
         ...el.metadata,
         lastStdout: stdout,
         lastError: error,
       };
-      // Ensure source has a concrete figureIndex so all refs are
-      // queryable uniformly.
       if (isSource && nextMeta.figureIndex === undefined) {
         nextMeta.figureIndex = 0;
       }
-      let effectiveImage: string | null = null;
+      const nextHeight = fig?.image
+        ? syncHeightForFigure(el.width, el.height, fig.image, null)
+        : el.height;
       if (fig) {
-        const plotCrop = nextMeta.plotCrop;
-        const hasCrop = plotCrop && plotCrop.w > 0.02 && plotCrop.h > 0.02;
-        effectiveImage = fig.image && hasCrop
-          ? await cropImageB64(fig.image, plotCrop)
-          : fig.image;
-        nextMeta.lastOutput = effectiveImage;
+        nextMeta.lastOutput = fig.image ?? null;
         nextMeta.plotlyJson = fig.plotly_json;
         nextMeta.figureMissing = false;
       } else {
@@ -529,22 +542,20 @@ export const useBoardStore = create<BoardState>((set, get) => ({
             `Figure ${figIdx} missing: code now produces only ${figures.length} figure${figures.length === 1 ? '' : 's'}.`;
         }
       }
-      // Sync element height to the cropped image's aspect ratio. Using
-      // the already-cropped image means we pass a null crop rect to
-      // heightForFigure — the PNG dimensions are the final display dims.
-      const nextHeight = effectiveImage
-        ? heightForFigure(el, effectiveImage, null)
-        : el.height;
+
       return { ...el, height: nextHeight, metadata: nextMeta };
-    }));
+    });
 
     // Bake the new siblings' per-figure output into their metadata so the
     // canvas immediately renders the correct figure for each. New siblings
-    // start uncropped, so height is derived directly from the image.
+    // start uncropped, so height comes directly from the full image's
+    // natural aspect ratio (via the same sync PNG-header path).
     const newSiblingsWithFigure = newSiblings.map(sib => {
       const figIdx = sib.metadata.figureIndex;
       const fig = figures[figIdx];
-      const nextHeight = fig?.image ? heightForFigure(sib, fig.image, null) : sib.height;
+      const nextHeight = fig?.image
+        ? syncHeightForFigure(sib.width, sib.height, fig.image, null)
+        : sib.height;
       return {
         ...sib,
         height: nextHeight,
