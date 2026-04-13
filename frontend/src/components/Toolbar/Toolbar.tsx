@@ -39,6 +39,7 @@ import {
   Braces,
   PlayCircle,
   Loader2,
+  AlertTriangle,
 } from 'lucide-react';
 
 function RunAllConfirmDialog({ plotCount, onConfirm, onCancel }: {
@@ -47,31 +48,46 @@ function RunAllConfirmDialog({ plotCount, onConfirm, onCancel }: {
   onCancel: () => void;
 }) {
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onCancel}>
-      <div className="bg-white dark:bg-surface-primary rounded-lg shadow-xl w-[400px]" onClick={e => e.stopPropagation()}>
-        <div className="px-4 py-3 border-b border-gray-200 dark:border-border">
-          <h2 className="text-sm font-semibold text-gray-800 dark:text-on-surface-primary">Run All Plots?</h2>
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={onCancel}>
+      <div
+        className="rounded-lg shadow-xl w-[420px] border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b border-rose-200 dark:border-rose-900/60 flex items-center gap-2">
+          <AlertTriangle size={16} className="text-rose-600 dark:text-rose-400 shrink-0" />
+          <h2 className="text-sm font-semibold text-rose-800 dark:text-rose-200">
+            Run All will overwrite current plot outputs
+          </h2>
         </div>
         <div className="px-4 py-4 space-y-2">
-          <p className="text-sm text-gray-700 dark:text-on-surface-secondary">
-            This will run Python Setup and then every plot cell on the board in order.
+          <p className="text-sm text-rose-900/90 dark:text-rose-100/90">
+            This runs Python Setup, then every plot cell on the board in order.
+            Each plot's current rendered output (and any unsaved crops) will be
+            replaced with a fresh run.
           </p>
-          <p className="text-xs text-gray-500 dark:text-on-surface-muted">
+          <p className="text-xs text-rose-700 dark:text-rose-300/80">
             {plotCount === 0
               ? 'No plot cells found on this board.'
               : `Plot cells to run: ${plotCount}. This may take a while if your plots are slow.`}
           </p>
         </div>
-        <div className="px-4 py-3 border-t border-gray-100 dark:border-border flex justify-end gap-2">
-          <button onClick={onCancel} className="px-3 py-1.5 text-sm text-gray-600 dark:text-on-surface-secondary hover:bg-gray-100 dark:hover:bg-surface-tertiary rounded">
+        <div className="px-4 py-3 border-t border-rose-200 dark:border-rose-900/60 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-3 py-1.5 text-sm text-rose-900/80 dark:text-rose-200/80 hover:bg-rose-100 dark:hover:bg-rose-900/40 rounded"
+          >
             Cancel
           </button>
           <button
             onClick={onConfirm}
             disabled={plotCount === 0}
-            className={`px-3 py-1.5 text-sm rounded text-white ${plotCount === 0 ? 'bg-blue-300 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600'}`}
+            className={`px-3 py-1.5 text-sm rounded text-white font-medium ${
+              plotCount === 0
+                ? 'bg-rose-300 cursor-not-allowed'
+                : 'bg-rose-600 hover:bg-rose-700'
+            }`}
           >
-            Run All
+            Run All anyway
           </button>
         </div>
       </div>

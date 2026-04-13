@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Play, Loader2, X, RotateCcw, Braces } from 'lucide-react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
-import { api } from '@/api/client';
 import { CodeMirrorEditor } from '@/components/shared/CodeMirrorEditor';
 
 /**
@@ -31,32 +30,30 @@ export function SetupEditor() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
+  // Track whether the modal was open in the PREVIOUS render. We sync
+  // localCode from board.setup.code during the render where `open` flips
+  // from false → true, NOT in a useEffect — otherwise React's child-first
+  // effect order causes CodeMirrorEditor to mount with the stale
+  // `localCode = ''` and never update (its remountKey hasn't changed),
+  // which is exactly the "first open shows no code" bug.
+  const [wasOpen, setWasOpen] = useState(false);
 
   // Code changes: keep a ref so handleRun always reads the latest value
   // regardless of the React closure it was captured in.
   const codeRef = useRef('');
   codeRef.current = localCode;
 
-  const initializedForBoardRef = useRef<string | null>(null);
-
-  // Initialize / reinitialize when the modal opens for a new board.
-  useEffect(() => {
-    if (!open || !board) return;
-    if (initializedForBoardRef.current !== board.id) {
-      initializedForBoardRef.current = board.id;
-      setLocalCode(board.setup?.code ?? '');
-      setLocalStdout(null);
-      setLocalError(null);
-      setHasRun(false);
-    }
-  }, [open, board]);
-
-  // Reset when closed so the next open starts clean.
-  useEffect(() => {
-    if (!open) {
-      initializedForBoardRef.current = null;
-    }
-  }, [open]);
+  if (open && !wasOpen) {
+    // Modal just opened — sync local state from the current board synchronously
+    // so CodeMirrorEditor mounts with the correct initialCode on first paint.
+    setWasOpen(true);
+    setLocalCode(board?.setup?.code ?? '');
+    setLocalStdout(null);
+    setLocalError(null);
+    setHasRun(false);
+  } else if (!open && wasOpen) {
+    setWasOpen(false);
+  }
 
   const handleCodeChange = useCallback((code: string) => {
     setLocalCode(code);
