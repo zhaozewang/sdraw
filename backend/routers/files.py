@@ -25,6 +25,14 @@ MIME_MAP = {
     ".tiff": "image/tiff",
 }
 
+# Hard cap on the raw size of a single embedded image. Files larger than this
+# are not base64-embedded into the .sdraw file — the linked path is kept so
+# the image renders on this device, but the render guarantee on a fresh
+# device is lost for that one image. Chosen to accommodate typical scientific
+# rasters (microscopy stacks, large PNG renders) while keeping .sdraw files
+# from ballooning into the hundreds of MB.
+MAX_EMBED_BYTES = 50 * 1024 * 1024  # 50 MB
+
 
 def _get_dimensions(path: Path) -> dict | None:
     """Get image dimensions using Pillow. Returns None for SVGs or on error."""
@@ -80,7 +88,12 @@ class EmbedImageRequest(BaseModel):
 
 @router.post("/image/embed")
 async def embed_image(body: EmbedImageRequest):
-    """Read an image file, return base64 data + metadata for embedding."""
+    """Read an image file, return base64 data + metadata for embedding.
+
+    Files larger than MAX_EMBED_BYTES are reported as oversized and their
+    bytes are NOT returned — the caller keeps the linked path and accepts a
+    reduced render guarantee (image won't render if source is missing).
+    """
     import base64
     p = Path(body.path).resolve()
     if not p.exists() or not p.is_file():
@@ -90,9 +103,25 @@ async def embed_image(body: EmbedImageRequest):
     if mime is None:
         return {"exists": False, "data": None, "mime": None, "mtime": None}
     try:
+        stat = p.stat()
+        if stat.st_size > MAX_EMBED_BYTES:
+            return {
+                "exists": True,
+                "data": None,
+                "mime": mime,
+                "mtime": stat.st_mtime,
+                "oversized": True,
+                "size": stat.st_size,
+                "max_size": MAX_EMBED_BYTES,
+            }
         data = base64.b64encode(p.read_bytes()).decode('ascii')
-        mtime = p.stat().st_mtime
-        return {"exists": True, "data": data, "mime": mime, "mtime": mtime}
+        return {
+            "exists": True,
+            "data": data,
+            "mime": mime,
+            "mtime": stat.st_mtime,
+            "size": stat.st_size,
+        }
     except OSError as exc:
         return {"exists": False, "data": None, "mime": None, "mtime": None, "error": str(exc)}
 

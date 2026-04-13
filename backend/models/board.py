@@ -133,6 +133,7 @@ class Board(BaseModel):
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
     app_version: str = "0.1.0"
+    thumbnail: Optional[str] = None
 
 
 class WorkspaceConfig(BaseModel):

@@ -2,6 +2,11 @@ import { useEffect, useRef } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 
 const CHECKPOINT_INTERVAL = 3000;
+// Full save flushes the store (including freshly rendered plot PNGs and
+// re-embedded images) to the .sdraw file so the render guarantee holds
+// without requiring an explicit Save click. Longer than checkpoint because
+// it re-embeds images and captures a thumbnail.
+const FULL_SAVE_INTERVAL = 8000;
 const EXPORT_INTERVAL = 5000;
 
 export function useAutoSave() {
@@ -9,6 +14,7 @@ export function useAutoSave() {
   const board = useBoardStore(s => s.board);
   const boardId = board?.id;
   const checkpointTimerRef = useRef<number>();
+  const fullSaveTimerRef = useRef<number>();
   const exportIntervalRef = useRef<number>();
   const lastExportFingerprintRef = useRef('');
   const lastExportBoardIdRef = useRef<string | undefined>();
@@ -21,7 +27,7 @@ export function useAutoSave() {
     }
   }, [boardId]);
 
-  // Checkpoint save (crash recovery)
+  // Checkpoint save (crash recovery) — lightweight, no embed/thumbnail.
   useEffect(() => {
     if (!isDirty || !board) return;
 
@@ -31,6 +37,26 @@ export function useAutoSave() {
 
     return () => {
       if (checkpointTimerRef.current) clearTimeout(checkpointTimerRef.current);
+    };
+  }, [isDirty, board]);
+
+  // Full autosave — flushes store (plot PNGs, embedded images, thumbnail)
+  // to the .sdraw file so the render guarantee holds without explicit Save.
+  // Any new edit before the debounce fires resets the timer, so a continuous
+  // typing burst produces one write rather than many.
+  useEffect(() => {
+    if (!isDirty || !board) return;
+
+    fullSaveTimerRef.current = window.setTimeout(() => {
+      const state = useBoardStore.getState();
+      if (!state.isDirty || !state.board || !state.boardFilePath) return;
+      state.saveBoard().catch(() => {
+        // Best-effort — checkpoint still covers crash recovery.
+      });
+    }, FULL_SAVE_INTERVAL);
+
+    return () => {
+      if (fullSaveTimerRef.current) clearTimeout(fullSaveTimerRef.current);
     };
   }, [isDirty, board]);
 

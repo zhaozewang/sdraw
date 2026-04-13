@@ -87,7 +87,7 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
         onResizeAbsolute={onResizeAbsolute}
         onResizeEnd={onResizeEnd}
         getRect={getRect}
-        aspectRatio={element.metadata?.lockAspectRatio ? element.width / element.height : undefined}
+        lockAspect={!!element.metadata?.lockAspectRatio}
         rotation={rotation}
         onRotate={r => updateElement(elementId, { rotation: r })}
         onRotateEnd={() => pushHistory('Rotate')}

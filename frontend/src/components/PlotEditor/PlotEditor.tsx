@@ -501,7 +501,7 @@ export function PlotEditor() {
       // auto-spawning new siblings when figures.length grows. This also
       // updates this editor's element metadata so the next effect can pick
       // up its figure, but we also set local state immediately for snappy UX.
-      distributePlotFigures(
+      await distributePlotFigures(
         sourceElementId,
         figures,
         r.stdout,
@@ -713,6 +713,16 @@ export function PlotEditor() {
         style={{ backgroundColor: isDark ? '#1e1e2e' : '#ffffff' }}
         onClick={e => e.stopPropagation()}>
 
+        {/* Floating close — pinned to the true upper-right corner of the
+            dialog, floating over the tabs row's empty space. */}
+        <button
+          onClick={handleClose}
+          title="Close without saving"
+          className={`absolute top-1.5 right-2 z-20 p-1 rounded ${isDark ? 'text-white/40 hover:text-white/80 hover:bg-white/10' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'}`}
+        >
+          <X size={16} />
+        </button>
+
         {/* Tabs row: Plot code | Python Setup */}
         <div
           className="h-9 flex items-end px-3 gap-0.5 shrink-0 select-none"
@@ -763,134 +773,6 @@ export function PlotEditor() {
             );
           })}
           <div className="flex-1" />
-        </div>
-
-        {/* Compact toolbar */}
-        <div className="h-10 flex items-center px-3 gap-2 shrink-0 select-none"
-          style={{ backgroundColor: isDark ? '#181825' : '#f8f8f8', borderBottom: isDark ? '1px solid rgba(255,255,255,0.06)' : '1px solid #e5e5e5' }}>
-          {/* Run / Stop — context-aware to the active tab so Cmd+Enter feels natural */}
-          {activeTab === 'plot' ? (
-            isRunning ? (
-              <button onClick={handleAbort} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-red-300' : 'text-red-600'}`}
-                style={{ backgroundColor: isDark ? 'rgba(239,68,68,0.15)' : 'rgba(239,68,68,0.1)' }}>
-                <Square size={12} fill="currentColor" /> Stop
-              </button>
-            ) : (
-              <button onClick={handleRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
-                style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.1)' }}>
-                <Play size={12} /> Run plot
-              </button>
-            )
-          ) : isSetupRunning ? (
-            <button disabled className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-white/30' : 'text-gray-400'}`}>
-              <Loader2 size={12} className="animate-spin" /> Running…
-            </button>
-          ) : (
-            <button onClick={handleSetupRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
-              style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.1)' }}>
-              <Play size={12} /> Run setup
-            </button>
-          )}
-          <span className={`text-xs ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{(activeTab === 'plot' ? isRunning : isSetupRunning) ? '' : '\u2318\u23CE'}</span>
-
-          {/* Always-visible "Run Setup" shortcut: runs the board's shared setup
-              from either tab, so users never have to go hunting for it. */}
-          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
-          <button
-            onClick={handleSetupRun}
-            disabled={isSetupRunning || !hasSetupCode}
-            title={
-              !hasSetupCode
-                ? 'Python Setup is empty — switch to the "Python Setup" tab to add shared imports and data loading'
-                : 'Run the board\u2019s shared Python setup'
-            }
-            className={`flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
-              !hasSetupCode
-                ? (isDark ? 'text-white/25 border-white/10 cursor-not-allowed' : 'text-gray-400 border-gray-200 cursor-not-allowed')
-                : isSetupRunning
-                ? (isDark ? 'text-blue-300 border-blue-500/40 bg-blue-500/10' : 'text-blue-600 border-blue-300 bg-blue-50')
-                : kernelStatus === 'error'
-                ? (isDark ? 'text-red-300 border-red-500/40 bg-red-500/10 hover:bg-red-500/20' : 'text-red-700 border-red-300 bg-red-50 hover:bg-red-100')
-                : kernelStatus === 'ok'
-                ? (isDark ? 'text-green-300 border-green-500/40 bg-green-500/10 hover:bg-green-500/20' : 'text-green-700 border-green-300 bg-green-50 hover:bg-green-100')
-                : (isDark ? 'text-white/70 border-white/15 hover:bg-white/5' : 'text-gray-700 border-gray-300 hover:bg-gray-50')
-            }`}
-          >
-            {isSetupRunning ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <Braces size={12} />
-            )}
-            Run Setup
-            {hasSetupCode && !isSetupRunning && (
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  kernelStatus === 'ok' ? 'bg-green-500'
-                  : kernelStatus === 'error' ? 'bg-red-500'
-                  : 'bg-gray-400'
-                }`}
-              />
-            )}
-          </button>
-
-          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
-
-          <span className={`text-xs truncate max-w-[140px] ${isDark ? 'text-white/30' : 'text-gray-400'}`} title={activePythonEnv || 'default'}>
-            {(activePythonEnv || 'default').split('/').pop()}
-          </span>
-
-          <div className="flex-1" />
-
-          {hasPlotly && !cropMode && (
-            <button onClick={enterCropMode} className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
-              <Crop size={12} /> {cropRect ? 'Edit Crop' : 'Crop'}
-            </button>
-          )}
-          {cropMode && (
-            <div className="flex items-center gap-1.5">
-              {/* Aspect ratio selector */}
-              {([
-                { label: 'Free', ratio: null },
-                { label: '1:1', ratio: 1 },
-                { label: '4:3', ratio: 4/3 },
-                { label: '3:4', ratio: 3/4 },
-                { label: '16:9', ratio: 16/9 },
-                { label: '9:16', ratio: 9/16 },
-              ] as const).map(({ label, ratio }) => (
-                <button key={label} onClick={() => setCropAspectRatio(ratio)}
-                  className={`px-1.5 py-0.5 text-xs rounded ${
-                    cropAspectRatio === ratio
-                      ? (isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100')
-                      : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')
-                  }`}>
-                  {label}
-                </button>
-              ))}
-
-              <div className={`w-px h-4 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
-
-              <button onClick={exitCropMode} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
-                <Check size={12} /> Crop
-              </button>
-              {cropRect && (
-                <button onClick={() => { setCropRect(null); exitCropMode(); }} className={`px-1.5 py-0.5 text-xs rounded ${isDark ? 'text-white/25 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
-                  Clear
-                </button>
-              )}
-            </div>
-          )}
-
-          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
-
-          {hasOutput && (
-            <button onClick={handleSaveAndClose} disabled={isSaving}
-              className={`flex items-center gap-1 px-3 py-1 text-xs font-medium rounded text-white ${isSaving ? 'bg-blue-400 cursor-wait' : 'bg-blue-600 hover:bg-blue-700'}`}>
-              {isSaving ? <><Loader2 size={12} className="animate-spin" /> Saving...</> : <><Save size={12} /> Save</>}
-            </button>
-          )}
-          <button onClick={handleClose} className={`p-0.5 rounded ml-0.5 ${isDark ? 'text-white/30 hover:text-white/60 hover:bg-white/5' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`} title="Close without saving">
-            <X size={14} />
-          </button>
         </div>
 
         {/* Body: the plot tab renders code+console | splitter | output;
@@ -1046,16 +928,10 @@ export function PlotEditor() {
                     />
                   )}
 
-                  {/* Static image only (no interactive view available) */}
+                  {/* Static image only (matplotlib — no interactive view) */}
                   {!hasPlotly && localOutput && (
                     <div className="flex-1 min-h-0 relative flex items-center justify-center p-4">
                       <img src={`data:image/png;base64,${localOutput}`} alt="Plot" className="max-w-full max-h-full object-contain" draggable={false} />
-                      {/* Banner: run to get interactive view */}
-                      {element?.type === 'plot' && element?.metadata?.code && (
-                        <div className={`absolute top-2 left-2 right-2 text-center text-xs px-3 py-1.5 rounded ${isDark ? 'bg-yellow-900/40 text-yellow-300/80' : 'bg-yellow-100 text-yellow-700'}`}>
-                          Run to enable interactive view
-                        </div>
-                      )}
                     </div>
                   )}
 
@@ -1138,6 +1014,134 @@ export function PlotEditor() {
             )}
           </div>
         )}
+
+        {/* Bottom status bar — Run / Setup / Crop / Save controls. Pinned
+            below the body like VS Code's bottom bar so the primary surface
+            stays uncluttered and the close button lives in the true
+            upper-right corner. */}
+        <div className="h-10 flex items-center px-3 gap-2 shrink-0 select-none"
+          style={{ backgroundColor: isDark ? '#181825' : '#f8f8f8', borderTop: isDark ? '1px solid rgba(255,255,255,0.06)' : '1px solid #e5e5e5' }}>
+          {/* Run / Stop — context-aware to the active tab so Cmd+Enter feels natural */}
+          {activeTab === 'plot' ? (
+            isRunning ? (
+              <button onClick={handleAbort} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-red-300' : 'text-red-600'}`}
+                style={{ backgroundColor: isDark ? 'rgba(239,68,68,0.15)' : 'rgba(239,68,68,0.1)' }}>
+                <Square size={12} fill="currentColor" /> Stop
+              </button>
+            ) : (
+              <button onClick={handleRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
+                style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.1)' }}>
+                <Play size={12} /> Run plot
+              </button>
+            )
+          ) : isSetupRunning ? (
+            <button disabled className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-white/30' : 'text-gray-400'}`}>
+              <Loader2 size={12} className="animate-spin" /> Running…
+            </button>
+          ) : (
+            <button onClick={handleSetupRun} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-green-300' : 'text-green-700'}`}
+              style={{ backgroundColor: isDark ? 'rgba(34,197,94,0.15)' : 'rgba(34,197,94,0.1)' }}>
+              <Play size={12} /> Run setup
+            </button>
+          )}
+          <span className={`text-xs ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{(activeTab === 'plot' ? isRunning : isSetupRunning) ? '' : '\u2318\u23CE'}</span>
+
+          {/* Always-visible "Run Setup" shortcut: runs the board's shared setup
+              from either tab, so users never have to go hunting for it. */}
+          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
+          <button
+            onClick={handleSetupRun}
+            disabled={isSetupRunning || !hasSetupCode}
+            title={
+              !hasSetupCode
+                ? 'Python Setup is empty — switch to the "Python Setup" tab to add shared imports and data loading'
+                : 'Run the board\u2019s shared Python setup'
+            }
+            className={`flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
+              !hasSetupCode
+                ? (isDark ? 'text-white/25 border-white/10 cursor-not-allowed' : 'text-gray-400 border-gray-200 cursor-not-allowed')
+                : isSetupRunning
+                ? (isDark ? 'text-blue-300 border-blue-500/40 bg-blue-500/10' : 'text-blue-600 border-blue-300 bg-blue-50')
+                : kernelStatus === 'error'
+                ? (isDark ? 'text-red-300 border-red-500/40 bg-red-500/10 hover:bg-red-500/20' : 'text-red-700 border-red-300 bg-red-50 hover:bg-red-100')
+                : kernelStatus === 'ok'
+                ? (isDark ? 'text-green-300 border-green-500/40 bg-green-500/10 hover:bg-green-500/20' : 'text-green-700 border-green-300 bg-green-50 hover:bg-green-100')
+                : (isDark ? 'text-white/70 border-white/15 hover:bg-white/5' : 'text-gray-700 border-gray-300 hover:bg-gray-50')
+            }`}
+          >
+            {isSetupRunning ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Braces size={12} />
+            )}
+            Run Setup
+            {hasSetupCode && !isSetupRunning && (
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  kernelStatus === 'ok' ? 'bg-green-500'
+                  : kernelStatus === 'error' ? 'bg-red-500'
+                  : 'bg-gray-400'
+                }`}
+              />
+            )}
+          </button>
+
+          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
+
+          <span className={`text-xs truncate max-w-[140px] ${isDark ? 'text-white/30' : 'text-gray-400'}`} title={activePythonEnv || 'default'}>
+            {(activePythonEnv || 'default').split('/').pop()}
+          </span>
+
+          <div className="flex-1" />
+
+          {hasPlotly && !cropMode && (
+            <button onClick={enterCropMode} className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded ${cropRect ? 'text-blue-400' : (isDark ? 'text-white/40 hover:text-white/60' : 'text-gray-500 hover:text-gray-700')}`}>
+              <Crop size={12} /> {cropRect ? 'Edit Crop' : 'Crop'}
+            </button>
+          )}
+          {cropMode && (
+            <div className="flex items-center gap-1.5">
+              {/* Aspect ratio selector */}
+              {([
+                { label: 'Free', ratio: null },
+                { label: '1:1', ratio: 1 },
+                { label: '4:3', ratio: 4/3 },
+                { label: '3:4', ratio: 3/4 },
+                { label: '16:9', ratio: 16/9 },
+                { label: '9:16', ratio: 9/16 },
+              ] as const).map(({ label, ratio }) => (
+                <button key={label} onClick={() => setCropAspectRatio(ratio)}
+                  className={`px-1.5 py-0.5 text-xs rounded ${
+                    cropAspectRatio === ratio
+                      ? (isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100')
+                      : (isDark ? 'text-white/30 hover:text-white/50' : 'text-gray-400 hover:text-gray-600')
+                  }`}>
+                  {label}
+                </button>
+              ))}
+
+              <div className={`w-px h-4 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
+
+              <button onClick={exitCropMode} className={`flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded ${isDark ? 'text-blue-300 bg-blue-500/20' : 'text-blue-600 bg-blue-100'}`}>
+                <Check size={12} /> Crop
+              </button>
+              {cropRect && (
+                <button onClick={() => { setCropRect(null); exitCropMode(); }} className={`px-1.5 py-0.5 text-xs rounded ${isDark ? 'text-white/25 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
+
+          {hasOutput && (
+            <button onClick={handleSaveAndClose} disabled={isSaving}
+              className={`flex items-center gap-1 px-3 py-1 text-xs font-medium rounded text-white ${isSaving ? 'bg-blue-400 cursor-wait' : 'bg-blue-600 hover:bg-blue-700'}`}>
+              {isSaving ? <><Loader2 size={12} className="animate-spin" /> Saving...</> : <><Save size={12} /> Save</>}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

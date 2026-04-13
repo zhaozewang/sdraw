@@ -73,7 +73,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
         onResizeAbsolute={onResizeAbsolute}
         onResizeEnd={onResizeEnd}
         getRect={getRect}
-        aspectRatio={element.width / element.height}
+        lockAspect={true}
         rotation={rotation}
         onRotate={r => updateElement(elementId, { rotation: r })}
         onRotateEnd={() => pushHistory('Rotate')}

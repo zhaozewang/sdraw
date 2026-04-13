@@ -67,7 +67,6 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
   const hasAutoEdited = useRef(false);
   const selectAllOnEdit = useRef(false);
   const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
-  const zoom = useUIStore(s => s.zoom);
 
   // Auto-enter edit mode for newly created text boxes
   useEffect(() => {
@@ -96,6 +95,11 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
   }, [elementId, element?.text, updateElement, pushHistory]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key === 's') {
+      // Let the global save shortcut handle it.
+      return;
+    }
     if (e.key === 'Escape') {
       setEditing(false);
       textareaRef.current?.blur();
@@ -107,10 +111,21 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
     e.stopPropagation();
   }, []);
 
+  // Grow the textarea to exactly match its content height so it occupies
+  // the same visual box as the rendered div, letting the parent's
+  // justifyContent position it per verticalAlign.
+  const autosizeTextarea = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, []);
+
   // Focus textarea when entering edit mode
   useEffect(() => {
     if (editing && textareaRef.current) {
       textareaRef.current.focus();
+      autosizeTextarea();
       if (selectAllOnEdit.current) {
         selectAllOnEdit.current = false;
         textareaRef.current.select();
@@ -120,7 +135,7 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
         textareaRef.current.setSelectionRange(len, len);
       }
     }
-  }, [editing]);
+  }, [editing, autosizeTextarea]);
 
   const onResizeAbsolute = useCallback((x: number, y: number, w: number, h: number) => {
     updateElement(elementId, { x, y, width: w, height: h });
@@ -149,9 +164,6 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
 
   const rotation = element.rotation || 0;
 
-  // Counter-scale text by 1/zoom so it stays at constant screen-pixel size
-  const invZoom = 1 / Math.max(zoom, 0.1);
-
   const textStyles: React.CSSProperties = {
     fontSize: style!.fontSize ?? 14,
     fontWeight: style!.fontWeight ?? 400,
@@ -174,7 +186,7 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
         onResizeAbsolute={onResizeAbsolute}
         onResizeEnd={onResizeEnd}
         getRect={getRect}
-        aspectRatio={element.metadata?.lockAspectRatio ? element.width / element.height : undefined}
+        lockAspect={!!element.metadata?.lockAspectRatio}
         rotation={rotation}
         onRotate={r => updateElement(elementId, { rotation: r })}
         onRotateEnd={() => pushHistory('Rotate')}
@@ -185,19 +197,18 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
           backgroundColor: style!.background || 'transparent',
           opacity: style!.opacity ?? 1,
           border: (selected || isSelectedInStore)
-            ? `${Math.max(1, 1.5 * invZoom)}px dashed #3b82f6`
+            ? '1px dashed #3b82f6'
             : '1px solid transparent',
           overflow: 'hidden',
         }}
         onDoubleClick={handleDoubleClick}
       >
-        {/* Counter-scale content so text stays at constant screen size */}
+        {/* Text renders in canvas coordinate space — React Flow's viewport
+            transform handles zoom, so fontSize stays fixed in canvas units. */}
         <div style={{
-          transform: `scale(${invZoom})`,
-          transformOrigin: 'top left',
-          width: `${100 * zoom}%`,
-          height: `${100 * zoom}%`,
-          padding: (style!.padding ?? 4) * zoom,
+          width: '100%',
+          height: '100%',
+          padding: style!.padding ?? 4,
           display: 'flex',
           flexDirection: 'column',
           justifyContent: style!.verticalAlign === 'center' ? 'center'
@@ -210,12 +221,15 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
               defaultValue={text || ''}
               onBlur={handleBlur}
               onKeyDown={handleKeyDown}
-              className="w-full outline-none resize-none border-none bg-transparent p-0 m-0"
+              onInput={autosizeTextarea}
+              rows={1}
+              className="w-full outline-none resize-none border-none bg-transparent p-0 m-0 block"
               style={{
                 ...textStyles,
                 cursor: 'text',
                 userSelect: 'text',
-                minHeight: '100%',
+                height: 'auto',
+                overflow: 'hidden',
               }}
             />
           ) : (

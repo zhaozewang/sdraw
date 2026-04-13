@@ -40,10 +40,14 @@ export const api = {
 
   // Board file operations
   saveBoardToFile: (board: Board, path: string) =>
-    request<{ path: string; board: Board }>('/boards/save', {
-      method: 'POST',
-      body: JSON.stringify({ board, path }),
-    }),
+    request<{ path: string; board: Board; size?: number; oversized?: boolean; soft_limit?: number }>(
+      '/boards/save',
+      {
+        method: 'POST',
+        body: JSON.stringify({ board, path }),
+      },
+      30000, // larger timeout for big boards with embedded images
+    ),
 
   openBoardFromFile: (path: string) =>
     request<{ path: string; board: Board }>('/boards/open', {
@@ -96,7 +100,15 @@ export const api = {
   },
 
   embedImage: (path: string) =>
-    request<{ exists: boolean; data: string | null; mime: string | null; mtime: number | null }>(
+    request<{
+      exists: boolean;
+      data: string | null;
+      mime: string | null;
+      mtime: number | null;
+      oversized?: boolean;
+      size?: number;
+      max_size?: number;
+    }>(
       '/image/embed',
       { method: 'POST', body: JSON.stringify({ path }) },
       30000, // larger timeout for big images

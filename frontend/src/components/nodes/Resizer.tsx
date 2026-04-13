@@ -17,8 +17,11 @@ interface ResizerProps {
   onResizeEnd: () => void;
   /** Return current element rect */
   getRect: () => { x: number; y: number; width: number; height: number };
-  /** Lock aspect ratio — width/height. If set, only corner handles are shown. */
-  aspectRatio?: number;
+  /** Lock aspect ratio at resize time. The ratio is computed from the
+   * element's current width/height at pointer-down, so it's always in sync
+   * with the element — no stale numeric prop to go out of date. When true,
+   * only corner handles are shown. */
+  lockAspect?: boolean;
   /** Only show corner handles (NE, NW, SE, SW) */
   cornersOnly?: boolean;
   /** Called during rotation drag with new angle in degrees */
@@ -121,7 +124,7 @@ const ALL_HANDLES: HandlePosition[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w
 
 function ResizerComponent({
   isVisible, nodeId, minWidth = 20, minHeight = 20,
-  onResizeAbsolute, onResizeMove, onResizeEnd, getRect, aspectRatio, cornersOnly,
+  onResizeAbsolute, onResizeMove, onResizeEnd, getRect, lockAspect, cornersOnly,
   onRotate, onRotateEnd, rotation = 0,
 }: ResizerProps) {
   const zoom = useUIStore(s => s.zoom);
@@ -143,6 +146,8 @@ function ResizerComponent({
   onRotateRef.current = onRotate;
   const onRotateEndRef = useRef(onRotateEnd);
   onRotateEndRef.current = onRotateEnd;
+  const lockAspectRef = useRef(lockAspect);
+  lockAspectRef.current = lockAspect;
 
   const handleRotateDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation();
@@ -206,6 +211,12 @@ function ResizerComponent({
     const startX = e.clientX;
     const startY = e.clientY;
     const origRect = getRectRef.current();
+    // Ratio is derived from the live rect at pointer-down — never stored
+    // as a separate prop, so it cannot go stale after the element is
+    // resized via another path (Run All, Inspector numeric input, etc.).
+    const ratio = (lockAspectRef.current && origRect.height > 0)
+      ? origRect.width / origRect.height
+      : undefined;
 
     // Suppress Canvas board→node sync so it doesn't fight our updates
     useUIStore.getState().setSuppressPositionSync(true);
@@ -215,7 +226,7 @@ function ResizerComponent({
     const onMove = (ev: PointerEvent) => {
       const totalDx = (ev.clientX - startX) / scale;
       const totalDy = (ev.clientY - startY) / scale;
-      lastRect = computeRect(pos, origRect, totalDx, totalDy, minWidth, minHeight, aspectRatio);
+      lastRect = computeRect(pos, origRect, totalDx, totalDy, minWidth, minHeight, ratio);
 
       // Compute alignment guides during resize
       const board = useBoardStore.getState().board;
@@ -281,7 +292,7 @@ function ResizerComponent({
         className="absolute inset-0 pointer-events-none"
         style={{ border: `${borderWidth}px solid #3b82f6` }}
       />
-      {((cornersOnly || aspectRatio) ? CORNER_HANDLES : ALL_HANDLES).map(pos => {
+      {((cornersOnly || lockAspect) ? CORNER_HANDLES : ALL_HANDLES).map(pos => {
         const [fx, fy] = handleFracs[pos];
         return (
           <div

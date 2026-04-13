@@ -30,6 +30,153 @@ interface HistoryEntry {
   description: string;
 }
 
+/**
+ * Short, stable 32-bit FNV-1a hash. Good enough for divergence detection —
+ * collisions are vanishingly unlikely for the set of plot code snippets we
+ * compare here, and this avoids pulling in a crypto dependency.
+ */
+function fnv1a(str: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+/**
+ * Digest of the "agent-editable" portion of a board: the setup code plus
+ * every plot element's code (identified by element id). Canvas layout
+ * (position, size, crop, style) is deliberately excluded so that user-side
+ * manual edits don't count as divergence — only code changes do.
+ */
+function codeDigest(board: Board): string {
+  const parts: string[] = [];
+  parts.push(`setup\n${board.setup?.code ?? ''}`);
+  const plots = board.elements
+    .filter(el => el.type === 'plot')
+    .map(el => ({ id: el.id, code: String(el.metadata?.code ?? '') }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  for (const p of plots) parts.push(`plot:${p.id}\n${p.code}`);
+  return fnv1a(parts.join('\n---\n'));
+}
+
+/**
+ * Merge strategy: take the agent's code (from disk) for every plot that
+ * exists on both sides, and preserve the user's canvas layout (position,
+ * size, crop, style, cached output). Elements that exist only on one side
+ * are kept as-is — agent-added plots land on the canvas, user-added
+ * elements survive the merge.
+ *
+ * The key invariant: `metadata.code` is agent territory; everything else on
+ * the element is user territory. We don't try to merge the code text
+ * itself — last writer wins for the code field, with the user's
+ * "accept / merge / keep mine" decision making the final call.
+ */
+function mergeAgentCodeIntoLayout(
+  localElements: BoardElement[],
+  diskElements: BoardElement[],
+): BoardElement[] {
+  const diskById = new Map(diskElements.map(el => [el.id, el]));
+  const localIds = new Set(localElements.map(el => el.id));
+  const merged: BoardElement[] = localElements.map(local => {
+    const disk = diskById.get(local.id);
+    if (!disk) return local;
+    if (local.type === 'plot' && disk.type === 'plot') {
+      const localCode = String(local.metadata?.code ?? '');
+      const diskCode = String(disk.metadata?.code ?? '');
+      if (localCode === diskCode) return local;
+      return {
+        ...local,
+        metadata: { ...local.metadata, code: disk.metadata?.code },
+      };
+    }
+    return local;
+  });
+  for (const disk of diskElements) {
+    if (!localIds.has(disk.id)) merged.push(disk);
+  }
+  return merged;
+}
+
+/**
+ * Read width/height from a base64-encoded PNG by parsing the IHDR chunk.
+ * Synchronous and DOM-free so it can run inside a store update.
+ */
+function readPngDimensions(b64: string | null | undefined): { width: number; height: number } | null {
+  if (!b64) return null;
+  try {
+    const header = atob(b64.slice(0, 48));
+    if (header.charCodeAt(0) !== 0x89 || header.charCodeAt(1) !== 0x50) return null;
+    const w =
+      (header.charCodeAt(16) << 24) | (header.charCodeAt(17) << 16) |
+      (header.charCodeAt(18) << 8) | header.charCodeAt(19);
+    const h =
+      (header.charCodeAt(20) << 24) | (header.charCodeAt(21) << 16) |
+      (header.charCodeAt(22) << 8) | header.charCodeAt(23);
+    if (w <= 0 || h <= 0) return null;
+    return { width: w, height: h };
+  } catch {
+    return null;
+  }
+}
+
+/** Load a base64 PNG into an HTMLImageElement. */
+function loadImageB64(b64: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = `data:image/png;base64,${b64}`;
+  });
+}
+
+/**
+ * Canvas-crop a base64 PNG to a fractional rectangle. Returns the cropped
+ * image as a base64 string (no data URL prefix). On any failure, returns the
+ * original image unchanged so the caller still has a valid lastOutput.
+ */
+async function cropImageB64(
+  fullB64: string,
+  crop: { x: number; y: number; w: number; h: number },
+): Promise<string> {
+  try {
+    const img = await loadImageB64(fullB64);
+    const sx = Math.max(0, Math.round(crop.x * img.naturalWidth));
+    const sy = Math.max(0, Math.round(crop.y * img.naturalHeight));
+    const sw = Math.max(1, Math.min(img.naturalWidth - sx, Math.round(crop.w * img.naturalWidth)));
+    const sh = Math.max(1, Math.min(img.naturalHeight - sy, Math.round(crop.h * img.naturalHeight)));
+    const cvs = document.createElement('canvas');
+    cvs.width = sw; cvs.height = sh;
+    cvs.getContext('2d')!.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    return cvs.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+  } catch {
+    return fullB64;
+  }
+}
+
+/**
+ * Given an element and a newly-rendered figure image, return the height that
+ * preserves the element's current width while matching the effective display
+ * aspect ratio. The effective aspect accounts for any stored plotCrop (crop
+ * fractions are relative to the full figure). Returns the original height if
+ * the PNG can't be decoded.
+ */
+function heightForFigure(
+  el: BoardElement,
+  imageB64: string | null | undefined,
+  plotCrop: { w?: number; h?: number } | null | undefined,
+): number {
+  const dims = readPngDimensions(imageB64);
+  if (!dims) return el.height;
+  const cropW = plotCrop && plotCrop.w && plotCrop.w > 0.02 ? plotCrop.w : 1;
+  const cropH = plotCrop && plotCrop.h && plotCrop.h > 0.02 ? plotCrop.h : 1;
+  const effW = dims.width * cropW;
+  const effH = dims.height * cropH;
+  if (effW <= 0) return el.height;
+  return Math.max(1, Math.round(el.width * (effH / effW)));
+}
+
 /** Kernel lifecycle / health status for the currently-open board. */
 export type KernelStatus = 'idle' | 'running' | 'ok' | 'error' | 'unknown';
 
@@ -53,11 +200,32 @@ export type RunAllStatus =
   | { state: 'done'; successes: number; failures: number }
   | { state: 'error'; message: string };
 
+/** External-change conflict surfaced to the user when the disk version of the
+ * open board has diverged from what we loaded. The user picks one of three
+ * resolutions via `resolveExternalConflict`. */
+export interface ExternalConflict {
+  diskBoard: Board;
+  diskDigest: string;
+  /** Resolved when the user picks an option. Lets saveBoard() await the
+   * user's decision and either complete or abort cleanly. */
+  resolve: (choice: 'mine' | 'theirs' | 'merge' | 'cancel') => void;
+}
+
 interface BoardState {
   // Current board
   board: Board | null;
   boardFilePath: string | null;  // where the current board is saved on disk
   isDirty: boolean;
+
+  /** Digest of the agent-editable portion of the board as we last read it
+   * from disk (on load or after a successful save). Used to detect whether
+   * an external process rewrote the file behind our back. */
+  loadedCodeDigest: string | null;
+
+  /** Non-null while a save detected divergence and is waiting on the user
+   * to pick a resolution. Rendered by ExternalChangeModal. */
+  externalConflict: ExternalConflict | null;
+  resolveExternalConflict: (choice: 'mine' | 'theirs' | 'merge' | 'cancel') => void;
 
   // Per-board kernel status (lives in-memory, never persisted)
   kernelStatus: KernelStatus;
@@ -73,7 +241,7 @@ interface BoardState {
     figures: PlotFigure[],
     stdout: string | null,
     error: string | null,
-  ) => string[];
+  ) => Promise<string[]>;
 
   // Run-all-plots support
   runAllStatus: RunAllStatus;
@@ -170,6 +338,53 @@ function stripBlobsForHistory(elements: BoardElement[]): BoardElement[] {
   });
 }
 
+/**
+ * Restore a history snapshot without losing the live blobs that `stripBlobsForHistory`
+ * removed. Plot outputs and embedded image bytes are the result of kernel runs or
+ * embed passes, not of layout operations — undoing "move element" should not wipe
+ * them from the canvas. For each element in the restored snapshot whose blobs are
+ * missing, we copy the current live blobs in by element id. Elements that no longer
+ * exist live (e.g. undoing a delete brings back an element that was never re-run)
+ * keep their null blobs and the user can re-run the plot.
+ */
+function reattachBlobsAfterHistory(
+  restored: BoardElement[],
+  live: BoardElement[],
+): BoardElement[] {
+  const liveById = new Map(live.map(el => [el.id, el]));
+  return restored.map(el => {
+    const liveEl = liveById.get(el.id);
+    if (!liveEl) return el;
+    if (el.type === 'plot' && liveEl.type === 'plot') {
+      const liveMeta = liveEl.metadata ?? {};
+      if (liveMeta.lastOutput || liveMeta.plotlyJson || liveMeta.lastStdout) {
+        return {
+          ...el,
+          metadata: {
+            ...el.metadata,
+            lastOutput: el.metadata?.lastOutput ?? liveMeta.lastOutput ?? null,
+            plotlyJson: el.metadata?.plotlyJson ?? liveMeta.plotlyJson ?? null,
+            lastStdout: el.metadata?.lastStdout ?? liveMeta.lastStdout ?? null,
+          },
+        };
+      }
+    }
+    if (el.type === 'image' && liveEl.type === 'image') {
+      if (!el.source?.embeddedData && liveEl.source?.embeddedData) {
+        return {
+          ...el,
+          source: {
+            ...el.source!,
+            embeddedData: liveEl.source.embeddedData,
+            embeddedMime: el.source?.embeddedMime ?? liveEl.source.embeddedMime,
+          },
+        };
+      }
+    }
+    return el;
+  });
+}
+
 // Abort controller for cancelling in-flight exports on board switch
 let autoExportAbort: AbortController | null = null;
 
@@ -177,6 +392,13 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   board: null,
   boardFilePath: null,
   isDirty: false,
+  loadedCodeDigest: null,
+  externalConflict: null,
+  resolveExternalConflict: (choice) => {
+    const conflict = get().externalConflict;
+    if (!conflict) return;
+    conflict.resolve(choice);
+  },
   kernelStatus: 'idle' as KernelStatus,
   history: [],
   historyIndex: -1,
@@ -218,7 +440,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
   runAllStatus: { state: 'idle' } as RunAllStatus,
 
-  distributePlotFigures: (sourceElementId, figures, stdout, error) => {
+  distributePlotFigures: async (sourceElementId, figures, stdout, error) => {
     const { board } = get();
     if (!board) return [];
     const source = board.elements.find(el => el.id === sourceElementId);
@@ -271,7 +493,9 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     // Update every referencing element with its figure's output, or flag
     // it as missing when the code now produces fewer figures than refs.
-    const updatedElements = board.elements.map(el => {
+    // Async so we can canvas-crop the image for panels that have a
+    // stored plotCrop — matches what the PlotEditor save path does.
+    const updatedElements = await Promise.all(board.elements.map(async el => {
       const figIdx = refIdToFigureIndex.get(el.id);
       if (figIdx === undefined) return el;
       const fig = figures[figIdx];
@@ -286,8 +510,14 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       if (isSource && nextMeta.figureIndex === undefined) {
         nextMeta.figureIndex = 0;
       }
+      let effectiveImage: string | null = null;
       if (fig) {
-        nextMeta.lastOutput = fig.image;
+        const plotCrop = nextMeta.plotCrop;
+        const hasCrop = plotCrop && plotCrop.w > 0.02 && plotCrop.h > 0.02;
+        effectiveImage = fig.image && hasCrop
+          ? await cropImageB64(fig.image, plotCrop)
+          : fig.image;
+        nextMeta.lastOutput = effectiveImage;
         nextMeta.plotlyJson = fig.plotly_json;
         nextMeta.figureMissing = false;
       } else {
@@ -299,16 +529,25 @@ export const useBoardStore = create<BoardState>((set, get) => ({
             `Figure ${figIdx} missing: code now produces only ${figures.length} figure${figures.length === 1 ? '' : 's'}.`;
         }
       }
-      return { ...el, metadata: nextMeta };
-    });
+      // Sync element height to the cropped image's aspect ratio. Using
+      // the already-cropped image means we pass a null crop rect to
+      // heightForFigure — the PNG dimensions are the final display dims.
+      const nextHeight = effectiveImage
+        ? heightForFigure(el, effectiveImage, null)
+        : el.height;
+      return { ...el, height: nextHeight, metadata: nextMeta };
+    }));
 
     // Bake the new siblings' per-figure output into their metadata so the
-    // canvas immediately renders the correct figure for each.
+    // canvas immediately renders the correct figure for each. New siblings
+    // start uncropped, so height is derived directly from the image.
     const newSiblingsWithFigure = newSiblings.map(sib => {
       const figIdx = sib.metadata.figureIndex;
       const fig = figures[figIdx];
+      const nextHeight = fig?.image ? heightForFigure(sib, fig.image, null) : sib.height;
       return {
         ...sib,
+        height: nextHeight,
         metadata: {
           ...sib.metadata,
           lastOutput: fig?.image ?? null,
@@ -423,12 +662,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
             : r.image_base64 || r.plotly_json
             ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
             : [];
-        get().distributePlotFigures(el.id, figures, r.stdout, r.success ? null : r.error);
+        await get().distributePlotFigures(el.id, figures, r.stdout, r.success ? null : r.error);
         if (r.success) successes++;
         else failures++;
       } catch (err: any) {
         failures++;
-        get().distributePlotFigures(
+        await get().distributePlotFigures(
           el.id,
           [],
           null,
@@ -459,6 +698,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       board: result.board,
       boardFilePath: result.path,
       isDirty: false,
+      loadedCodeDigest: codeDigest(result.board),
       history: [{ elements: [], description: 'New board' }],
       historyIndex: 0,
     });
@@ -477,21 +717,42 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       board.schema_version = CURRENT_SCHEMA_VERSION;
     }
 
-    // Check link status for image elements (non-blocking)
+    // Check link status for image elements. If the source file is newer
+    // than the embedded copy, re-embed immediately so the canvas shows the
+    // live bytes (and mark the board dirty so autosave writes them back).
+    let needsResave = false;
     const checkedElements = await Promise.all(
       board.elements.map(async (el: any) => {
         if (el.type !== 'image' || !el.source?.path) return el;
         try {
           const check = await api.checkImage(el.source.path);
-          let linkStatus: string;
           if (!check.exists) {
-            linkStatus = 'unlinked';
-          } else if (el.source.lastModified && check.mtime && check.mtime > el.source.lastModified) {
-            linkStatus = 'updated';
-          } else {
-            linkStatus = 'linked';
+            return { ...el, source: { ...el.source, linkStatus: 'unlinked' } };
           }
-          return { ...el, source: { ...el.source, linkStatus } };
+          const isUpdated =
+            el.source.lastModified && check.mtime && check.mtime > el.source.lastModified;
+          if (isUpdated) {
+            try {
+              const embed = await api.embedImage(el.source.path);
+              if (embed.exists && embed.data) {
+                needsResave = true;
+                return {
+                  ...el,
+                  source: {
+                    ...el.source,
+                    embeddedData: embed.data,
+                    embeddedMime: embed.mime || el.source.embeddedMime || 'image/png',
+                    lastModified: embed.mtime || check.mtime,
+                    linkStatus: 'linked' as const,
+                  },
+                };
+              }
+            } catch {
+              // Fall through to marking as 'updated' without refreshing bytes.
+            }
+            return { ...el, source: { ...el.source, linkStatus: 'updated' } };
+          }
+          return { ...el, source: { ...el.source, linkStatus: 'linked' } };
         } catch {
           return el;
         }
@@ -501,15 +762,86 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     set({
       board: { ...board, elements: checkedElements },
       boardFilePath: result.path,
-      isDirty: false,
+      // If any linked image was re-embedded on open, the store now holds
+      // fresher bytes than the .sdraw file — mark dirty so autosave writes
+      // them back.
+      isDirty: needsResave,
+      loadedCodeDigest: codeDigest({ ...board, elements: checkedElements }),
+      externalConflict: null,
       history: [{ elements: structuredClone(checkedElements), description: 'Load' }],
       historyIndex: 0,
     });
   },
 
   saveBoard: async () => {
-    const { board, boardFilePath } = get();
-    if (!board || !boardFilePath) return;
+    const initial = get();
+    if (!initial.board || !initial.boardFilePath) return;
+    // A conflict resolution is already waiting on the user — don't queue
+    // another write until they pick.
+    if (initial.externalConflict) return;
+    const boardFilePath = initial.boardFilePath;
+
+    // --- External-change detection ---
+    // Re-read the file as it currently sits on disk and compare the code
+    // digest to the baseline we captured on load/last-save. If an external
+    // process (e.g. an AI agent) rewrote the Python code, open a conflict
+    // modal and wait for the user to pick a resolution.
+    if (initial.loadedCodeDigest !== null) {
+      let diskBoard: Board | null = null;
+      try {
+        const r = await api.openBoardFromFile(boardFilePath);
+        diskBoard = r.board as Board;
+      } catch {
+        // File missing / unreadable — fall through to normal save, which
+        // will either recreate the file or surface a clear error.
+      }
+      if (diskBoard) {
+        const diskDigest = codeDigest(diskBoard);
+        if (diskDigest !== initial.loadedCodeDigest) {
+          const db = diskBoard;
+          const choice = await new Promise<'mine' | 'theirs' | 'merge' | 'cancel'>(resolve => {
+            set({ externalConflict: { diskBoard: db, diskDigest, resolve } });
+          });
+          set({ externalConflict: null });
+
+          if (choice === 'cancel') return;
+
+          if (choice === 'theirs') {
+            // Discard in-memory state and adopt the disk version wholesale.
+            // No write needed — we're now in sync with disk.
+            set({
+              board: db,
+              isDirty: false,
+              loadedCodeDigest: diskDigest,
+              history: [{ elements: structuredClone(db.elements), description: 'Accept external' }],
+              historyIndex: 0,
+            });
+            return;
+          }
+
+          if (choice === 'merge') {
+            // Take disk's code for each matching plot, keep the user's
+            // canvas layout, then fall through to the normal save path so
+            // the merged state gets written.
+            const cur = get().board!;
+            const mergedElements = mergeAgentCodeIntoLayout(cur.elements, db.elements);
+            const mergedBoard: Board = {
+              ...cur,
+              setup: {
+                ...(cur.setup ?? DEFAULT_BOARD_SETUP),
+                code: db.setup?.code ?? cur.setup?.code ?? '',
+              },
+              elements: mergedElements,
+            };
+            set({ board: mergedBoard });
+          }
+          // 'mine' → fall through, overwriting disk with the in-memory board.
+        }
+      }
+    }
+
+    const board = get().board;
+    if (!board) return;
 
     // Capture thumbnail from the canvas
     let thumbnail: string | undefined;
@@ -521,11 +853,27 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     // Embed images: for each image element with a source path, fetch the
     // file data and store as base64 so the board is self-contained.
+    // Files that exceed the backend per-image cap come back with
+    // `oversized: true` and no data — we keep the linked path and accept a
+    // reduced render guarantee for that one element rather than bloat the
+    // .sdraw file. Collect oversized paths so we can warn the user.
+    const oversizedImages: { path: string; size?: number }[] = [];
     const embeddedElements = await Promise.all(
       board.elements.map(async (el) => {
         if (el.type !== 'image' || !el.source?.path) return el;
         try {
           const result = await api.embedImage(el.source.path);
+          if (result.exists && result.oversized) {
+            oversizedImages.push({ path: el.source.path, size: result.size });
+            return {
+              ...el,
+              source: {
+                ...el.source,
+                lastModified: result.mtime || el.source.lastModified,
+                linkStatus: 'linked' as const,
+              },
+            };
+          }
           if (result.exists && result.data) {
             return {
               ...el,
@@ -555,10 +903,31 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       updated_at: new Date().toISOString(),
       thumbnail,
     };
-    await api.saveBoardToFile(updated, boardFilePath);
-    set({ board: updated, isDirty: false });
+    const saveResult = await api.saveBoardToFile(updated, boardFilePath);
+    set({ board: updated, isDirty: false, loadedCodeDigest: codeDigest(updated) });
     // Clean up checkpoint after a successful save
     try { await api.deleteCheckpoint(boardFilePath); } catch {}
+
+    // Surface size warnings. The hard cap is already enforced backend-side;
+    // these are informational so users know why an image isn't embedded or
+    // why the file is getting heavy.
+    if (oversizedImages.length > 0) {
+      const names = oversizedImages
+        .map(i => i.path.split('/').pop() || i.path)
+        .slice(0, 3)
+        .join(', ');
+      const more = oversizedImages.length > 3 ? ` (+${oversizedImages.length - 3} more)` : '';
+      console.warn(
+        `[sdraw] ${oversizedImages.length} image(s) too large to embed: ${names}${more}. ` +
+          `Linked path preserved but will not render on devices without the source file.`,
+      );
+    }
+    if (saveResult.oversized && saveResult.size) {
+      const mb = (saveResult.size / (1024 * 1024)).toFixed(0);
+      console.warn(
+        `[sdraw] .sdraw file is large (${mb} MB). Consider splitting the board or removing unused images.`,
+      );
+    }
   },
 
   saveCheckpoint: async () => {
@@ -585,15 +954,13 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       autoExportAbort = null;
     }
 
-    // Capture thumbnail before closing so the welcome page shows a preview
+    // Final save goes through the full saveBoard path so the file picks up
+    // freshly-run plot outputs, re-embedded linked images, and the thumbnail
+    // before we tear down.
     const { board, boardFilePath, isDirty } = get();
     if (board && boardFilePath && isDirty) {
       try {
-        const thumbnail = await captureThumbnail(board);
-        if (thumbnail) {
-          const updated = { ...board, updated_at: new Date().toISOString(), thumbnail };
-          await api.saveBoardToFile(updated, boardFilePath);
-        }
+        await get().saveBoard();
       } catch {
         // Best-effort
       }
@@ -1043,8 +1410,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!board || historyIndex <= 0) return;
     const newIndex = historyIndex - 1;
     const entry = history[newIndex];
+    const restored = reattachBlobsAfterHistory(
+      structuredClone(entry.elements),
+      board.elements,
+    );
     set({
-      board: { ...board, elements: structuredClone(entry.elements) },
+      board: { ...board, elements: restored },
       historyIndex: newIndex,
       isDirty: true,
     });
@@ -1055,8 +1426,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!board || historyIndex >= history.length - 1) return;
     const newIndex = historyIndex + 1;
     const entry = history[newIndex];
+    const restored = reattachBlobsAfterHistory(
+      structuredClone(entry.elements),
+      board.elements,
+    );
     set({
-      board: { ...board, elements: structuredClone(entry.elements) },
+      board: { ...board, elements: restored },
       historyIndex: newIndex,
       isDirty: true,
     });

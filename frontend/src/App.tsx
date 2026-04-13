@@ -8,6 +8,7 @@ import { StatusBar } from '@/components/StatusBar/StatusBar';
 import { Settings } from '@/components/Settings/Settings';
 import { PlotEditor } from '@/components/PlotEditor/PlotEditor';
 import { SetupEditor } from '@/components/SetupEditor/SetupEditor';
+import { ExternalChangeModal } from '@/components/ExternalChangeModal';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -1268,6 +1269,7 @@ function Editor() {
       <Settings />
       <PlotEditor />
       <SetupEditor />
+      <ExternalChangeModal />
     </div>
   );
 }

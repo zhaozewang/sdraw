@@ -16,9 +16,12 @@ logger = logging.getLogger(__name__)
 
 CACHE_ROOT = Path.home() / ".sdraw" / "cache"
 
-# Fields cached (stripped from .sdraw, stored in cache)
+# Fields cached (stripped from .sdraw, stored in cache).
+# Thumbnail used to live here; it now persists in the .sdraw file itself so a
+# fresh device shows the preview without re-opening the board. Only plotlyJson
+# (the interactive Plotly spec) stays cache-only — that's the stated design.
 _CACHE_METADATA_KEYS = {"plotlyJson"}
-_CACHE_BOARD_KEYS = {"thumbnail"}
+_CACHE_BOARD_KEYS: set[str] = set()
 
 CURRENT_SCHEMA_VERSION = 2
 
@@ -138,6 +141,12 @@ def merge_cache_into_board(board: dict) -> dict:
     for key in _CACHE_BOARD_KEYS:
         if key in cache:
             merged[key] = cache[key]
+
+    # Legacy fallback: older boards cached the thumbnail separately. If the
+    # .sdraw doesn't carry one yet, hydrate from cache so the next save
+    # migrates it into the file itself.
+    if "thumbnail" not in merged and cache.get("thumbnail"):
+        merged["thumbnail"] = cache["thumbnail"]
 
     # Element-level cache
     elements_cache = cache.get("elements", {})

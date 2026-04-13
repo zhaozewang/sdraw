@@ -74,24 +74,35 @@ class SaveBoardToFileRequest(BaseModel):
 async def save_board_to_file(body: SaveBoardToFileRequest):
     """Save a board to .sdraw file + centralized cache.
 
-    .sdraw file (git-friendly): code, cropped PNGs, embedded images,
-    crop rects, camera state, layout.
+    .sdraw file (git-friendly, self-contained): code, cropped PNGs, embedded
+    images, crop rects, camera state, layout, thumbnail.
 
-    Cache (~/.sdraw/cache/<board-id>/): plotlyJson, thumbnail —
-    regenerable data that doesn't need to be in git.
+    Cache (~/.sdraw/cache/<board-id>/): plotlyJson — the interactive Plotly
+    spec stays local-only by design so .sdraw files round-trip cleanly
+    between devices without carrying huge JSON blobs.
+
+    Returns a `size` field (bytes written) and `oversized: True` when the
+    file crosses SDRAW_SOFT_SIZE_LIMIT so the frontend can warn the user.
     """
     from services.board_cache import save_cache, strip_cached_fields
+
+    # Soft cap used to warn the user that their .sdraw is getting heavy.
+    # Not an error — saving still succeeds. Matches the frontend render
+    # guarantee: we always write whatever bytes we're given.
+    SDRAW_SOFT_SIZE_LIMIT = 250 * 1024 * 1024  # 250 MB
 
     try:
         p = Path(body.path).resolve()
         p.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write cache (plotlyJson, thumbnail)
+        # Write cache (plotlyJson only — thumbnail now lives in .sdraw)
         save_cache(body.board)
 
         # Write clean .sdraw file (without cached fields)
         clean_board = strip_cached_fields(body.board)
-        p.write_text(json.dumps(clean_board, indent=2))
+        payload = json.dumps(clean_board, indent=2)
+        p.write_text(payload)
+        size = len(payload.encode("utf-8"))
 
         # Clean up legacy .blobs companion file if it exists
         legacy_blobs = p.parent / (p.name + ".blobs")
@@ -101,7 +112,13 @@ async def save_board_to_file(body: SaveBoardToFileRequest):
             except OSError:
                 pass
 
-        return {"path": str(p), "board": body.board}
+        return {
+            "path": str(p),
+            "board": body.board,
+            "size": size,
+            "oversized": size > SDRAW_SOFT_SIZE_LIMIT,
+            "soft_limit": SDRAW_SOFT_SIZE_LIMIT,
+        }
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

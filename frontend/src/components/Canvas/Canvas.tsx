@@ -917,6 +917,10 @@ export function Canvas() {
     setZoom(viewport.zoom);
   }, [setZoom]);
 
+  const onMove = useCallback((_event: any, viewport: { zoom: number }) => {
+    setZoom(viewport.zoom);
+  }, [setZoom]);
+
   if (!board) {
     return (
       <div className="flex-1 flex items-center justify-center bg-canvas-bg text-gray-400 dark:text-on-surface-muted">
@@ -943,6 +947,7 @@ export function Canvas() {
         onSelectionStart={onSelectionStart}
         onSelectionEnd={onSelectionEnd}
         onPaneClick={onPaneClick}
+        onMove={onMove}
         onMoveEnd={onMoveEnd}
         selectionMode={SelectionMode.Partial}
         selectNodesOnDrag={false}

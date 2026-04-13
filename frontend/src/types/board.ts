@@ -121,6 +121,7 @@ export interface Board {
   created_at: string;
   updated_at: string;
   app_version: string;
+  thumbnail?: string;
 }
 
 export interface BoardSummary {
