@@ -253,8 +253,12 @@ function elementToSvg(el: BoardElement, markerDefs: string[], markerIds: Set<str
     case 'plot': {
       const lastOutput = (meta.lastOutput as string);
       if (!lastOutput) return '';
-      // xMidYMid meet = object-fit:contain (matches PlotNode.tsx)
-      return `<image x="${el.x}" y="${el.y}" width="${el.width}" height="${el.height}" href="data:image/png;base64,${lastOutput}" preserveAspectRatio="xMidYMid meet" opacity="${opacity}"/>`;
+      // The live PlotNode uses `object-fit: fill` — stretch the cached
+      // image to exactly the element's box. `preserveAspectRatio="none"`
+      // is the SVG equivalent. The previous `xMidYMid meet` was the
+      // object-contain equivalent, which silently disagreed with the
+      // canvas and left a blank margin around smaller cached images.
+      return `<image x="${el.x}" y="${el.y}" width="${el.width}" height="${el.height}" href="data:image/png;base64,${lastOutput}" preserveAspectRatio="none" opacity="${opacity}"/>`;
     }
 
     default:
@@ -267,7 +271,7 @@ function elementToSvg(el: BoardElement, markerDefs: string[], markerIds: Set<str
 // -----------------------------------------------------------------------
 
 async function boardToSvg(board: Board, opts: CaptureOptions): Promise<string> {
-  const elements = board.elements.filter(e => e.visible !== false);
+  const elements = board.elements.filter(e => e.visible !== false && !e.hidden);
   if (elements.length === 0) return '';
 
   // Sort by z_index

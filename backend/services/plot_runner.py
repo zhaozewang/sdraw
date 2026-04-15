@@ -45,6 +45,18 @@ def main():
     except ImportError:
         pass
 
+    # Neutralize plotly show() — otherwise `fig.show()` tries to open a
+    # browser / local HTTP server in this headless subprocess.
+    try:
+        import plotly.graph_objects as _go
+        import plotly.io as _pio
+        def _plotly_noop_show(*args, **kwargs):
+            return None
+        _go.Figure.show = _plotly_noop_show  # type: ignore[assignment]
+        _pio.show = _plotly_noop_show  # type: ignore[assignment]
+    except ImportError:
+        pass
+
     # Capture stdout from user code
     captured_stdout = io.StringIO()
     old_stdout = sys.stdout

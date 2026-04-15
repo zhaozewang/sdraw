@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { useBoardStore } from '@/store/boardStore';
+import { useBoardStore, plotRenderHash } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import { Play, Square, Loader2, X, Crop, Check, Save, Braces } from 'lucide-react';
@@ -93,6 +93,25 @@ function CropEditor({ cropRect, onChange, containerRef, aspectRatio }: {
     return { fx: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), fy: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) };
   }, [containerRef]);
 
+  /** Final safety net: whatever any handler computed, clamp the rect so
+   *  x,y ∈ [0, 1-0.01] and x+w, y+h ∈ [0.01, 1]. Without this, the
+   *  aspect-lock math in `onH` / `onBg` can push `h` past 1.0 when the
+   *  user drags a corner near an edge, and the bogus fraction then gets
+   *  persisted as `plotCrop` — the main source of "1:1 crop isn't
+   *  actually 1:1" bugs in saved .sdraw files. */
+  const clampRect = useCallback((rect: CropRect): CropRect => {
+    let { x, y, w, h } = rect;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > 1) w = 1 - x;
+    if (y + h > 1) h = 1 - y;
+    w = Math.max(0.01, Math.min(1, w));
+    h = Math.max(0.01, Math.min(1, h));
+    x = Math.max(0, Math.min(1 - w, x));
+    y = Math.max(0, Math.min(1 - h, y));
+    return { x, y, w, h };
+  }, []);
+
   // Convert pixel aspect ratio to fraction-space ratio
   // fraction w/h ratio = (pixelRatio) * (containerH / containerW)
   const getFracRatio = useCallback(() => {
@@ -132,9 +151,9 @@ function CropEditor({ cropRect, onChange, containerRef, aspectRatio }: {
       w = ar.w; h = ar.h;
       const x = mx >= sx ? sx : sx - w;
       const y = my >= sy ? sy : sy - h;
-      onChange({ x: Math.max(0, x), y: Math.max(0, y), w, h });
+      onChange(clampRect({ x, y, w, h }));
     }, () => { const c = cr.current; if (c && (c.w < 0.01 || c.h < 0.01)) onChange(null); });
-  }, [toF, onChange, drag, enforceAR]);
+  }, [toF, onChange, drag, enforceAR, clampRect]);
 
   // Resize from handle
   const onH = useCallback((d: Dir, e: React.MouseEvent) => {
@@ -150,21 +169,37 @@ function CropEditor({ cropRect, onChange, containerRef, aspectRatio }: {
       if (d.includes('s')) { h = Math.max(0.02, Math.min(1 - s.y, s.h + dy)); }
       if (d === 'n' || d === 's') { x = s.x; w = s.w; }
       if (d === 'e' || d === 'w') { y = s.y; h = s.h; }
-      // Enforce aspect ratio on corner drags
+      // Enforce aspect ratio on corner drags. When the aspect-forced
+      // dimension would push the rect past an image edge, shrink BOTH
+      // dimensions (keeping the ratio) so the crop stays inside [0,1].
       if (fr && (d === 'nw' || d === 'ne' || d === 'sw' || d === 'se')) {
         h = w / fr;
-        if (d === 'nw' || d === 'ne') y = bb - h;
+        if (d === 'nw' || d === 'ne') {
+          y = bb - h;
+          if (y < 0) { h = bb; w = h * fr; y = 0; }
+        } else {
+          if (y + h > 1) { h = 1 - y; w = h * fr; }
+        }
+        if (x + w > 1) { w = 1 - x; h = w / fr; }
+        if (x < 0) { w = rb; h = w / fr; x = 0; if (d === 'nw') y = bb - h; }
       }
-      onChange({ x, y, w, h });
+      onChange(clampRect({ x, y, w, h }));
     });
-  }, [toF, onChange, drag, getFracRatio]);
+  }, [toF, onChange, drag, getFracRatio, clampRect]);
 
   // Move
   const onMv = useCallback((e: React.MouseEvent) => {
     e.stopPropagation(); e.preventDefault(); if (!cr.current) return;
     const s = { ...cr.current }; const { fx: sx, fy: sy } = toF(e);
-    drag((ev) => { const { fx, fy } = toF(ev); onChange({ x: Math.max(0, Math.min(1 - s.w, s.x + fx - sx)), y: Math.max(0, Math.min(1 - s.h, s.y + fy - sy)), w: s.w, h: s.h }); });
-  }, [toF, onChange, drag]);
+    drag((ev) => {
+      const { fx, fy } = toF(ev);
+      onChange(clampRect({
+        x: Math.max(0, Math.min(1 - s.w, s.x + fx - sx)),
+        y: Math.max(0, Math.min(1 - s.h, s.y + fy - sy)),
+        w: s.w, h: s.h,
+      }));
+    });
+  }, [toF, onChange, drag, clampRect]);
 
   // Only show corner handles when aspect ratio is locked (edge handles don't make sense)
   const handles: { d: Dir; x: number; y: number }[] = cropRect ? (
@@ -235,40 +270,69 @@ function CropImageView({ snapshot, cropRect, onChange, isDark, aspectRatio }: {
   const cropAreaRef = useRef<HTMLDivElement>(null);
   const [imgLayout, setImgLayout] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
-  // Compute the rendered image position within the container (object-contain math)
+  // Compute the rendered image position within the container. Measures the
+  // `<img>` element's own DOM rect (not the wrapper's) so padding / insets
+  // around the image are honored correctly — the crop overlay then lines
+  // up with where the image actually renders, not where the wrapper sits.
   const updateLayout = useCallback(() => {
     const wrapper = wrapperRef.current;
     const img = imgRef.current;
     if (!wrapper || !img || !img.naturalWidth) return;
     const wr = wrapper.getBoundingClientRect();
+    const ir = img.getBoundingClientRect();
+    const boxW = ir.width;
+    const boxH = ir.height;
+    if (boxW <= 0 || boxH <= 0) return;
     const imgAspect = img.naturalWidth / img.naturalHeight;
-    const containerAspect = wr.width / wr.height;
+    const containerAspect = boxW / boxH;
     let rw: number, rh: number;
     if (imgAspect > containerAspect) {
-      rw = wr.width; rh = wr.width / imgAspect;
+      rw = boxW; rh = boxW / imgAspect;
     } else {
-      rh = wr.height; rw = wr.height * imgAspect;
+      rh = boxH; rw = boxH * imgAspect;
     }
     setImgLayout({
-      left: (wr.width - rw) / 2, top: (wr.height - rh) / 2,
-      width: rw, height: rh,
+      left: (ir.left - wr.left) + (boxW - rw) / 2,
+      top: (ir.top - wr.top) + (boxH - rh) / 2,
+      width: rw,
+      height: rh,
     });
   }, []);
 
   useEffect(() => {
     updateLayout();
     window.addEventListener('resize', updateLayout);
-    return () => window.removeEventListener('resize', updateLayout);
+    // Observe the wrapper for size changes too — splitter drags, bottom
+    // toolbar appearing in crop mode, dialog resizes, etc. all resize the
+    // wrapper without firing a window resize event. Without this, imgLayout
+    // goes stale and the CropEditor overlay drifts out of sync with the
+    // rendered image, which looked like "the bottom of the image is being
+    // covered by the crop toolbar".
+    const wrapper = wrapperRef.current;
+    let ro: ResizeObserver | null = null;
+    if (wrapper && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => updateLayout());
+      ro.observe(wrapper);
+    }
+    return () => {
+      window.removeEventListener('resize', updateLayout);
+      ro?.disconnect();
+    };
   }, [updateLayout, snapshot]);
 
   return (
+    // The `<img>` uses an explicit bottom inset (not wrapper padding,
+    // because absolute children with inset:0 ignore the wrapper's
+    // padding) so there's a strip of breathing room below the rendered
+    // image where the south/southwest/southeast crop handles can extend
+    // without visually clipping against the bottom toolbar.
     <div ref={wrapperRef} className="flex-1 min-h-0 relative overflow-hidden" style={{ backgroundColor: isDark ? '#111' : '#e5e5e5' }}>
       <img
         ref={imgRef}
         src={`data:image/png;base64,${snapshot}`}
         alt="Crop preview"
-        className="absolute inset-0 w-full h-full"
-        style={{ objectFit: 'contain' }}
+        className="absolute"
+        style={{ objectFit: 'contain', top: 0, left: 0, right: 0, bottom: 16 }}
         draggable={false}
         onLoad={updateLayout}
       />
@@ -290,19 +354,16 @@ function CropImageView({ snapshot, cropRect, onChange, isDark, aspectRatio }: {
 export function PlotEditor() {
   const elementId = useUIStore(s => s.plotEditorElementId);
   const element = useBoardStore(s => elementId ? s.board?.elements.find(el => el.id === elementId) : undefined);
-  // If the user clicked a sibling (a figure-N view of another element's
-  // code), resolve the code-owning source element. For legacy single-figure
-  // elements with no sourceElementId this is just the element itself.
-  const sourceElement = useBoardStore(s => {
-    if (!element) return element;
-    const srcId = element.metadata?.sourceElementId;
-    if (!srcId) return element;
-    return s.board?.elements.find(e => e.id === srcId) ?? element;
-  });
-  const sourceElementId = sourceElement?.id ?? elementId;
+  const plotCodeId: string | undefined = element?.metadata?.plotCodeId;
+  // Code comes from the board-level registry, keyed by plotCodeId. Every
+  // figure element sharing this id is a view of the same code.
+  const registryCode = useBoardStore(s =>
+    plotCodeId ? s.board?.plotCodes?.[plotCodeId]?.code ?? '' : ''
+  );
   const activeFigureIndex: number = element?.metadata?.figureIndex ?? 0;
   const distributePlotFigures = useBoardStore(s => s.distributePlotFigures);
   const updateElement = useBoardStore(s => s.updateElement);
+  const setPlotCode = useBoardStore(s => s.setPlotCode);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const theme = useUIStore(s => s.theme);
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -367,20 +428,14 @@ export function PlotEditor() {
   const codeRef = useRef('');
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Code-only persist (debounced) — only saves code changes, never touches
-  // width/height/lastOutput. The Save button handles everything else.
-  // Writes always go to the SOURCE element (the code owner), even if the
-  // user opened the editor from a sibling reference.
+  // Code-only persist (debounced) — writes code edits to the board-level
+  // plot code registry entry. Every figure element that references this
+  // plotCodeId immediately sees the new code. The Save button handles the
+  // cropped image + metadata; this path only touches the code text.
   const persistCode = useCallback(() => {
-    const targetId = sourceElementId;
-    if (!targetId) return;
-    const el = useBoardStore.getState().board?.elements.find(e => e.id === targetId);
-    if (!el) return;
-    const code = codeRef.current;
-    if (code !== el.metadata?.code) {
-      updateElement(targetId, { metadata: { ...el.metadata, code } });
-    }
-  }, [sourceElementId, updateElement]);
+    if (!plotCodeId) return;
+    setPlotCode(plotCodeId, codeRef.current);
+  }, [plotCodeId, setPlotCode]);
   const schedulePersist = useCallback(() => {
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
     persistTimerRef.current = setTimeout(() => persistCode(), 2000);
@@ -389,9 +444,9 @@ export function PlotEditor() {
   useEffect(() => {
     if (elementId && element && initRef.current !== elementId) {
       initRef.current = elementId;
-      // Code comes from the SOURCE element (owner of metadata.code).
-      // For legacy single-figure elements this is the clicked element itself.
-      const code = sourceElement?.metadata?.code || '';
+      // Code comes from the board-level registry, shared across every
+      // figure element with the same plotCodeId.
+      const code = registryCode || '';
       setLocalCode(code); codeRef.current = code;
       // Preview / stdout / error / crop come from the CLICKED element,
       // which may be a per-figure sibling with its own cached output + crop.
@@ -400,11 +455,15 @@ export function PlotEditor() {
       setLocalError(element.metadata?.lastError || null);
       setCropRect(element.metadata?.plotCrop || null);
       setPlotlyJson(element.metadata?.plotlyJson || null);
+      // Clear any snapshot captured from the previous editor session —
+      // otherwise Save would pick up the old element's image as the
+      // "full image" and write it onto this element.
+      setCropSnapshot(null);
       setCropMode(false); setIsRunning(false); setHasRun(false); setExecutionId(null);
       setActiveTab('plot');
       setSetupStdout(null); setSetupError(null);
     }
-  }, [elementId, element, sourceElement]);
+  }, [elementId, element, registryCode]);
 
   // Keyboard shortcuts for tab switching inside the editor.
   // Use a capture-phase listener so it beats CodeMirror's own key handling.
@@ -476,8 +535,11 @@ export function PlotEditor() {
   const handleCloseRef = useRef<() => void>(() => {});
 
   const handleRun = useCallback(async () => {
-    if (isRunning || !elementId || !sourceElementId) return;
+    if (isRunning || !elementId || !plotCodeId) return;
     const execId = generateId();
+    // The previous run's cropSnapshot is stale the moment we re-run —
+    // drop it so Save always re-captures from the fresh plotly output.
+    setCropSnapshot(null);
     setIsRunning(true); setExecutionId(execId); setLocalError(null); setLocalStdout(null);
     try {
       const boardState = useBoardStore.getState().board;
@@ -497,12 +559,16 @@ export function PlotEditor() {
           : r.image_base64 || r.plotly_json
           ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
           : [];
-      // Distribute across all referencing elements (source + siblings),
-      // auto-spawning new siblings when figures.length grows. This also
-      // updates this editor's element metadata so the next effect can pick
-      // up its figure, but we also set local state immediately for snappy UX.
+      // Before distributing, make sure the latest in-memory code is
+      // persisted to the registry — distributePlotFigures reads the
+      // registry to compute the per-plot render hash that controls the
+      // freeze policy.
+      if (plotCodeId) setPlotCode(plotCodeId, codeRef.current);
+      // Distribute across every element that references this plotCodeId
+      // by figureIndex. Auto-spawns new siblings only for indices past the
+      // current highest — deleted figures stay deleted.
       await distributePlotFigures(
-        sourceElementId,
+        elementId,
         figures,
         r.stdout,
         r.success ? null : r.error,
@@ -525,7 +591,7 @@ export function PlotEditor() {
       setLocalStdout(r.stdout);
     } catch (err: any) { if (!String(err).includes('abort')) setLocalError(String(err)); }
     finally { setIsRunning(false); setHasRun(true); setExecutionId(null); }
-  }, [elementId, sourceElementId, activeFigureIndex, isRunning, distributePlotFigures]);
+  }, [elementId, plotCodeId, activeFigureIndex, isRunning, distributePlotFigures, setPlotCode]);
 
   const handleAbort = useCallback(async () => { if (executionId) { try { await api.abortPlot(executionId); } catch {} } }, [executionId]);
 
@@ -593,7 +659,13 @@ export function PlotEditor() {
     try {
       const currentCrop = cropRectRef.current;
       const currentJson = getCurrentPlotlyJson();
-      const snapshot = cropSnapshotRef.current;
+      // The snapshot is only authoritative when the user has an active
+      // crop rect — it was captured to be the "frozen image" underneath
+      // the crop handles. For a no-crop save we always re-capture from
+      // live plotly so we can't possibly pick up a stale snapshot from an
+      // earlier session or run.
+      const hasRealCrop = !!(currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02);
+      const snapshot = hasRealCrop ? cropSnapshotRef.current : null;
 
       // 1. Get the full image.
       //    Snapshot exists → use it (crop fractions are relative to it).
@@ -628,12 +700,28 @@ export function PlotEditor() {
       if (el) {
         const newHeight = out.naturalWidth > 0
           ? Math.round(el.width * (out.naturalHeight / out.naturalWidth)) : el.height;
+        // Write the latest code to the registry first. Everything below
+        // reads from the registry so the digest we stamp matches what
+        // distribute will read on the next run.
+        if (plotCodeId) setPlotCode(plotCodeId, codeRef.current);
+        // Stamp the code hash only when there's a real user crop — that's
+        // what the freeze path in distributePlotFigures keys off. Read the
+        // code from the registry after the persist above.
+        const isCropped = !!(currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02);
+        const board = useBoardStore.getState().board;
+        const registryCodeNow = plotCodeId
+          ? String(board?.plotCodes?.[plotCodeId]?.code ?? codeRef.current)
+          : codeRef.current;
+        const renderedCodeHash = isCropped
+          ? plotRenderHash(board?.setup?.code ?? '', registryCodeNow)
+          : undefined;
         updateElement(elementId, {
           width: el.width, height: newHeight,
           metadata: {
-            ...el.metadata, code: codeRef.current, lastOutput: outputB64,
+            ...el.metadata, lastOutput: outputB64,
             lastStdout: localStdoutRef.current, lastError: localErrorRef.current,
             plotCrop: currentCrop, plotlyJson: currentJson,
+            renderedCodeHash,
           },
         });
         pushHistory('Save plot');
@@ -648,7 +736,7 @@ export function PlotEditor() {
       isSavingRef.current = false;
       setIsSaving(false);
     }
-  }, [elementId, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard, loadImage, captureFromPlotly]);
+  }, [elementId, plotCodeId, setPlotCode, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard, loadImage, captureFromPlotly]);
 
   // Enter crop mode: capture snapshot, then switch to crop UI
   const enterCropMode = useCallback(async () => {
@@ -705,12 +793,26 @@ export function PlotEditor() {
   const hasConsole = !!localStdout || !!localError;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col" onClick={handleClose}>
-      {/* Dark translucent backdrop */}
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+    <div
+      className="fixed inset-0 z-50 flex flex-col"
+      // Close on mousedown (not click) so a crop drag that starts inside
+      // the dialog and releases outside does NOT trigger a synthetic
+      // click on this common ancestor. Clicking directly on the backdrop
+      // still closes immediately — the target check makes sure we only
+      // close when the press actually lands on this outer element.
+      onMouseDown={e => { if (e.target === e.currentTarget) handleClose(); }}
+    >
+      {/* Dark translucent backdrop — the press target for close-outside. */}
+      <div
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onMouseDown={e => {
+          if (e.target === e.currentTarget) { e.stopPropagation(); handleClose(); }
+        }}
+      />
 
       <div className={`relative m-4 flex-1 flex flex-col rounded-xl shadow-2xl overflow-hidden ${isDark ? 'border border-white/10' : 'border border-gray-200'}`}
         style={{ backgroundColor: isDark ? '#1e1e2e' : '#ffffff' }}
+        onMouseDown={e => e.stopPropagation()}
         onClick={e => e.stopPropagation()}>
 
         {/* Floating close — pinned to the true upper-right corner of the
@@ -836,16 +938,15 @@ export function PlotEditor() {
                 figure so the user sees its own crop and preview. */}
             {(() => {
               const allElements = board?.elements ?? [];
-              const refs = allElements
-                .filter(el =>
-                  el.id === sourceElementId ||
-                  el.metadata?.sourceElementId === sourceElementId
-                )
-                .sort(
-                  (a, b) =>
-                    (a.metadata?.figureIndex ?? 0) -
-                    (b.metadata?.figureIndex ?? 0)
-                );
+              const refs = plotCodeId
+                ? allElements
+                    .filter(el => el.type === 'plot' && el.metadata?.plotCodeId === plotCodeId)
+                    .sort(
+                      (a, b) =>
+                        (a.metadata?.figureIndex ?? 0) -
+                        (b.metadata?.figureIndex ?? 0)
+                    )
+                : [];
               if (refs.length <= 1) return null;
               return (
                 <div

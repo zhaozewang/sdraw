@@ -1,8 +1,8 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
-import { Code2, Lock } from 'lucide-react';
+import { Code2, Lock, AlertTriangle, X } from 'lucide-react';
 import { Resizer } from './Resizer';
 
 interface PlotNodeData {
@@ -17,6 +17,7 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
   const pushHistory = useBoardStore(s => s.pushHistory);
   const zoom = useUIStore(s => s.zoom);
   const invZoom = 1 / Math.max(zoom, 0.1);
+  const [errorExpanded, setErrorExpanded] = useState(false);
 
   const handleDoubleClick = useCallback(() => {
     if (element && !element.locked) {
@@ -46,7 +47,24 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
   const rotation = element.rotation || 0;
 
   return (
-    <div style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
+    <div
+      className="relative"
+      style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}
+    >
+      {/* <python> tag — anchored above the panel, always visible, zoom invariant */}
+      <div
+        className="absolute left-0 pointer-events-none font-mono text-white bg-black/70 rounded-t whitespace-nowrap z-10"
+        style={{
+          bottom: '100%',
+          transformOrigin: 'bottom left',
+          transform: `scale(${invZoom})`,
+          fontSize: 10,
+          padding: '1px 6px',
+          lineHeight: 1.4,
+        }}
+      >
+        &lt;python&gt;
+      </div>
       <Resizer
         isVisible={selected && !element.locked}
         nodeId={id}
@@ -63,9 +81,12 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
       <div
         className="w-full h-full relative overflow-hidden"
         style={{
-          borderColor: style.borderColor || '#d0d0d0',
-          borderWidth: style.borderWidth ?? 0,
-          borderStyle: (style.borderWidth ?? 0) > 0 ? 'solid' : 'none',
+          // Red ring if the last run failed, regardless of whether a cached
+          // image is still visible — so you can spot failed cells from a
+          // zoomed-out view without having to open each one.
+          borderColor: lastError ? '#ef4444' : (style.borderColor || '#d0d0d0'),
+          borderWidth: lastError ? 2 : (style.borderWidth ?? 0),
+          borderStyle: lastError || (style.borderWidth ?? 0) > 0 ? 'solid' : 'none',
           borderRadius: style.borderRadius ?? 0,
           backgroundColor: style.background || 'transparent',
           boxShadow: style.shadow ? '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)' : 'none',
@@ -81,7 +102,7 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
             style={{ objectFit: 'fill' as const }}
             draggable={false}
           />
-        ) : lastStdout ? (
+        ) : lastStdout && !lastError ? (
           <div className="w-full h-full overflow-hidden p-2">
             <pre className="text-xs text-on-surface-primary whitespace-pre-wrap break-words"
               style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}
@@ -91,7 +112,7 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
           <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-400 dark:text-on-surface-muted select-none">
             <Code2 size={24} />
             <span className="text-xs">
-              {lastError ? 'Error — double-click to fix' : 'Double-click to edit'}
+              {lastError ? 'Error — see log below' : 'Double-click to edit'}
             </span>
           </div>
         )}
@@ -105,13 +126,44 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
           )}
         </div>
 
-        {/* Label on hover — zoom invariant */}
-        {selected && (
-          <div className="absolute left-0 right-0 bg-black/60 text-white truncate"
-            style={{ bottom: 0, fontSize: 10 * invZoom, padding: `${2 * invZoom}px ${4 * invZoom}px` }}>
-            Python Plot
+        {/* Error log overlay — shows under the image whenever lastError is
+            set, so a failed Run All is never silent when a cached image is
+            still visible. Collapsed shows the last error line; clicking
+            expands to the full scrollable traceback. */}
+        {lastError && (
+          <div
+            className="absolute left-0 right-0 bottom-0 bg-red-600/90 text-white font-mono shadow-[0_-1px_4px_rgba(0,0,0,0.25)]"
+            style={{
+              fontSize: 11,
+              maxHeight: errorExpanded ? '70%' : 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+            onDoubleClick={e => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="flex items-center gap-1.5 px-2 py-1 text-left hover:bg-red-700/50"
+              onClick={e => { e.stopPropagation(); setErrorExpanded(v => !v); }}
+              title={errorExpanded ? 'Collapse error' : 'Expand error'}
+            >
+              <AlertTriangle size={12} className="shrink-0" />
+              <span className="truncate flex-1">
+                {lastError.trim().split('\n').slice(-1)[0] || 'Error'}
+              </span>
+              {errorExpanded && <X size={12} className="shrink-0" />}
+            </button>
+            {errorExpanded && (
+              <pre
+                className="flex-1 overflow-auto px-2 pb-2 whitespace-pre-wrap break-words"
+                style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}
+              >
+                {lastError}
+              </pre>
+            )}
           </div>
         )}
+
       </div>
     </div>
   );

@@ -554,6 +554,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
   const removeElements = useBoardStore(s => s.removeElements);
   const duplicateElements = useBoardStore(s => s.duplicateElements);
   const toggleLock = useBoardStore(s => s.toggleLock);
+  const toggleHidden = useBoardStore(s => s.toggleHidden);
   const bringToFront = useBoardStore(s => s.bringToFront);
   const sendToBack = useBoardStore(s => s.sendToBack);
   const ungroupElements = useBoardStore(s => s.ungroupElements);
@@ -603,6 +604,13 @@ function ElementInspector({ element }: { element: BoardElement }) {
             title={element.locked ? 'Unlock' : 'Lock'}
           >
             {element.locked ? <Lock size={14} /> : <Unlock size={14} />}
+          </button>
+          <button
+            onClick={() => toggleHidden([element.id])}
+            className={`p-1 rounded ${element.hidden ? 'text-accent hover:text-accent/80' : 'text-gray-400 dark:text-on-surface-muted hover:text-gray-700 dark:hover:text-on-surface-primary'}`}
+            title={element.hidden ? 'Unhide (include in export & Run All)' : 'Hide (exclude from export & Run All, 50% opacity on canvas)'}
+          >
+            {element.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
           </button>
           <span className="text-2xs text-gray-400 dark:text-on-surface-muted ml-auto font-mono">{element.id.slice(0, 8)}</span>
         </div>
@@ -1016,6 +1024,7 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
   const groupElements = useBoardStore(s => s.groupElements);
   const ungroupElements = useBoardStore(s => s.ungroupElements);
   const toggleLock = useBoardStore(s => s.toggleLock);
+  const toggleHidden = useBoardStore(s => s.toggleHidden);
   const bringToFront = useBoardStore(s => s.bringToFront);
   const sendToBack = useBoardStore(s => s.sendToBack);
   const updateElements = useBoardStore(s => s.updateElements);
@@ -1028,6 +1037,7 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
   );
 
   const allLocked = ids.every(id => board?.elements.find(e => e.id === id)?.locked);
+  const allHidden = ids.every(id => board?.elements.find(e => e.id === id)?.hidden === true);
 
   // Helper to update a style property on all selected elements
   const updateAllStyle = (styleChanges: Partial<ElementStyle>) => {
@@ -1133,15 +1143,76 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
             <button onClick={() => sendToBack(ids)} className={btnClass + ' shrink-0'} title="Send to back">Btm</button>
           </div>
 
-          {/* Lock / Unlock */}
-          <div className="grid grid-cols-1 gap-1 mt-1">
+          {/* Lock / Unlock + Hide / Unhide */}
+          <div className="grid grid-cols-2 gap-1 mt-1">
             <button
               onClick={() => toggleLock(ids)}
               className={btnClass}
             >
               {allLocked ? 'Unlock' : 'Lock'}
             </button>
+            <button
+              onClick={() => toggleHidden(ids)}
+              className={btnClass}
+              title={allHidden ? 'Unhide (include in export & Run All)' : 'Hide (exclude from export & Run All)'}
+            >
+              {allHidden ? 'Unhide' : 'Hide'}
+            </button>
           </div>
+        </div>
+      </Section>
+
+      {/* Shared position & size — displays a value only if all selected
+          elements share it; setting a value broadcasts it to every element
+          in the selection. */}
+      <Section title="Position & Size">
+        <div className="grid grid-cols-2 gap-1.5">
+          <CompactField label="X">
+            <NumberInput
+              value={getShared(elements, e => e.x)}
+              onChange={v => { pushHistory('Move'); updateAll({ x: v }); }}
+            />
+          </CompactField>
+          <CompactField label="Y">
+            <NumberInput
+              value={getShared(elements, e => e.y)}
+              onChange={v => { pushHistory('Move'); updateAll({ y: v }); }}
+            />
+          </CompactField>
+          <CompactField label="W">
+            <NumberInput
+              value={getShared(elements, e => e.width)}
+              onChange={v => {
+                pushHistory('Resize');
+                updateElements(elements.map(el => {
+                  const locked = ((el.type === 'image' || el.type === 'plot') && el.metadata?.lockAspectRatio !== false) || !!el.metadata?.lockAspectRatio;
+                  if (locked && el.width > 0) {
+                    const ratio = el.height / el.width;
+                    return { id: el.id, changes: { width: v, height: Math.round(v * ratio) } };
+                  }
+                  return { id: el.id, changes: { width: v } };
+                }));
+              }}
+              min={1}
+            />
+          </CompactField>
+          <CompactField label="H">
+            <NumberInput
+              value={getShared(elements, e => e.height)}
+              onChange={v => {
+                pushHistory('Resize');
+                updateElements(elements.map(el => {
+                  const locked = ((el.type === 'image' || el.type === 'plot') && el.metadata?.lockAspectRatio !== false) || !!el.metadata?.lockAspectRatio;
+                  if (locked && el.height > 0) {
+                    const ratio = el.width / el.height;
+                    return { id: el.id, changes: { height: v, width: Math.round(v * ratio) } };
+                  }
+                  return { id: el.id, changes: { height: v } };
+                }));
+              }}
+              min={1}
+            />
+          </CompactField>
         </div>
       </Section>
 
@@ -1219,24 +1290,85 @@ function MultiSelectInspector({ ids }: { ids: string[] }) {
           </>
         )}
 
-        {/* Text — for text elements */}
-        {hasText && !hasRects && !hasArrows && (
-          <>
-            <Field label="Font Size">
-              <NumberInput
-                value={getShared(elements.filter(e => e.type === 'text'), e => e.style.fontSize ?? 14) ?? 14}
-                onChange={v => updateAllStyle({ fontSize: v })}
-                min={6} max={200}
-              />
-            </Field>
-            <Field label="Color">
-              <ColorInput
-                value={getShared(elements.filter(e => e.type === 'text'), e => e.style.color || '#111111') ?? ''}
-                onChange={v => updateAllStyle({ color: v })}
-              />
-            </Field>
-          </>
-        )}
+        {/* Text — shown whenever at least one text element is in the
+            selection. Shared values use only the text elements, and edits
+            broadcast only to text elements so other types (rects, arrows,
+            etc.) in the same selection are left alone. */}
+        {hasText && (() => {
+          const textElements = elements.filter(e => e.type === 'text');
+          const updateTextStyle = (styleChanges: Partial<ElementStyle>) => {
+            pushHistory('Text style');
+            updateElements(textElements.map(el => ({
+              id: el.id,
+              changes: { style: { ...el.style, ...styleChanges } },
+            })));
+          };
+          const fontWeight = getShared(textElements, e => e.style.fontWeight ?? 400);
+          const textAlign = getShared(textElements, e => e.style.textAlign || 'left');
+          const vAlign = getShared(textElements, e => e.style.verticalAlign || 'top');
+          return (
+            <>
+              <Field label="Font Size">
+                <NumberInput
+                  value={getShared(textElements, e => e.style.fontSize ?? 14)}
+                  onChange={v => updateTextStyle({ fontSize: v })}
+                  min={6} max={200}
+                />
+              </Field>
+              <Field label="Weight">
+                <SelectInput
+                  value={fontWeight !== undefined ? String(fontWeight) : ''}
+                  onChange={v => updateTextStyle({ fontWeight: Number(v) })}
+                  options={[
+                    ...(fontWeight === undefined ? [{ value: '', label: 'Mixed' }] : []),
+                    { value: '300', label: 'Light' },
+                    { value: '400', label: 'Normal' },
+                    { value: '500', label: 'Medium' },
+                    { value: '600', label: 'Semibold' },
+                    { value: '700', label: 'Bold' },
+                    { value: '900', label: 'Black' },
+                  ]}
+                />
+              </Field>
+              <Field label="Color">
+                <ColorInput
+                  value={getShared(textElements, e => e.style.color || '#111111') ?? ''}
+                  onChange={v => updateTextStyle({ color: v })}
+                />
+              </Field>
+              <Field label="Align">
+                <SelectInput
+                  value={textAlign ?? ''}
+                  onChange={v => updateTextStyle({ textAlign: v as any })}
+                  options={[
+                    ...(textAlign === undefined ? [{ value: '', label: 'Mixed' }] : []),
+                    { value: 'left', label: 'Left' },
+                    { value: 'center', label: 'Center' },
+                    { value: 'right', label: 'Right' },
+                  ]}
+                />
+              </Field>
+              <Field label="V-Align">
+                <SelectInput
+                  value={vAlign ?? ''}
+                  onChange={v => updateTextStyle({ verticalAlign: v as any })}
+                  options={[
+                    ...(vAlign === undefined ? [{ value: '', label: 'Mixed' }] : []),
+                    { value: 'top', label: 'Top' },
+                    { value: 'center', label: 'Center' },
+                    { value: 'bottom', label: 'Bottom' },
+                  ]}
+                />
+              </Field>
+              <Field label="Bg">
+                <ColorInput
+                  value={getShared(textElements, e => e.style.background || 'transparent') ?? ''}
+                  onChange={v => updateTextStyle({ background: v })}
+                />
+              </Field>
+            </>
+          );
+        })()}
       </Section>
     </>
   );

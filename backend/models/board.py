@@ -89,6 +89,11 @@ class BoardElement(BaseModel):
     z_index: int = 0
     locked: bool = False
     visible: bool = True
+    # "Soft hide": element is still rendered on the canvas (at reduced opacity)
+    # so the user can see it as a reference, but it is excluded from exports,
+    # fit view, Run All, and select-all. Distinct from `visible=false` which
+    # removes the element from the canvas entirely.
+    hidden: bool = False
     rotation: float = 0.0
     style: ElementStyle = Field(default_factory=ElementStyle)
     source: Optional[ImageSource] = None
@@ -123,13 +128,18 @@ class BoardSetup(BaseModel):
     timeout: int = 120  # seconds
 
 
+class PlotCodeEntry(BaseModel):
+    code: str = ""
+
+
 class Board(BaseModel):
-    schema_version: int = 2
+    schema_version: int = 3
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str = "Untitled Board"
     canvas: CanvasSettings = Field(default_factory=CanvasSettings)
     elements: list[BoardElement] = Field(default_factory=list)
     setup: BoardSetup = Field(default_factory=BoardSetup)
+    plotCodes: dict[str, PlotCodeEntry] = Field(default_factory=dict)
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
     app_version: str = "0.1.0"

@@ -59,6 +59,7 @@ function FolderBrowser() {
   const [newFolderName, setNewFolderName] = useState('');
   const addElement = useBoardStore(s => s.addElement);
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
+  const setInsertPayload = useUIStore(s => s.setInsertPayload);
 
   const navigate = useCallback(async (path: string) => {
     setLoading(true);
@@ -101,15 +102,17 @@ function FolderBrowser() {
     const scale = Math.min(1, MAX_W / w, MAX_H / h);
     w = Math.round(w * scale);
     h = Math.round(h * scale);
+    setInsertPayload(null);
     const el = addElement('image', {
       source: { mode: 'exact', path: entry.path, followLatest: false, autoRefresh: true },
       width: w,
       height: h,
     });
     setSelectedIds([el.id]);
-  }, [addElement, setSelectedIds]);
+  }, [addElement, setSelectedIds, setInsertPayload]);
 
   const insertAll = useCallback(() => {
+    setInsertPayload(null);
     const ids: string[] = [];
     const cols = Math.ceil(Math.sqrt(imageFiles.length));
     const gap = 20;
@@ -140,7 +143,7 @@ function FolderBrowser() {
       rowMaxH = Math.max(rowMaxH, h);
     });
     setSelectedIds(ids);
-  }, [imageFiles, addElement, setSelectedIds]);
+  }, [imageFiles, addElement, setSelectedIds, setInsertPayload]);
 
   const handleCreateFolder = useCallback(async () => {
     const name = newFolderName.trim();
@@ -394,8 +397,10 @@ export function InsertPanel() {
     );
   }
 
-  /** Insert at viewport center (for text/labels that don't need drag-to-draw) */
+  /** Insert at viewport center (for text/labels that don't need drag-to-draw).
+   * Also clears any armed drag-to-draw tool so switching tools is one-at-a-time. */
   const insertAtCenter = (type: string, overrides: any = {}) => {
+    setInsertPayload(null);
     const viewport = document.querySelector('.react-flow__viewport') as HTMLElement | null;
     const container = viewport?.parentElement;
     if (viewport && container) {
@@ -418,7 +423,7 @@ export function InsertPanel() {
   };
 
   /** Enter drag-to-draw mode for shapes */
-  const startDraw = (type: 'rectangle' | 'arrow' | 'pen', overrides: any = {}) => {
+  const startDraw = (type: 'rectangle' | 'arrow' | 'pen' | 'plot', overrides: any = {}) => {
     setInsertPayload({ type, overrides });
   };
 
@@ -466,7 +471,7 @@ export function InsertPanel() {
         </InsertGroup>
 
         <div className="py-0.5">
-          <InsertButton icon={Code2} label="Python Plot" onClick={() => insertAtCenter('plot', {})} />
+          <InsertButton icon={Code2} label="Python Plot" onClick={() => startDraw('plot', {})} />
         </div>
 
         {/* Figure label quick-insert */}

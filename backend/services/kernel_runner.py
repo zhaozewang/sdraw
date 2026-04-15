@@ -278,6 +278,24 @@ def main() -> int:
     except ImportError:
         pass
 
+    # Neutralize plotly's .show() entry points. In a headless subprocess
+    # plotly.io.show will try to spin up a local HTTP server and launch a
+    # browser, which either blocks or errors — neither is useful here
+    # because figure capture is done by namespace inspection in
+    # _capture_plotly_all. Users who copied `fig.show()` over from a
+    # notebook just get a quiet no-op.
+    try:
+        import plotly.graph_objects as _go
+        import plotly.io as _pio
+
+        def _plotly_noop_show(*args, **kwargs):
+            return None
+
+        _go.Figure.show = _plotly_noop_show  # type: ignore[assignment]
+        _pio.show = _plotly_noop_show  # type: ignore[assignment]
+    except ImportError:
+        pass
+
     global _setup_ns
     _setup_ns = _fresh_setup_ns()
 

@@ -59,6 +59,10 @@ export interface BoardElement {
   z_index: number;
   locked: boolean;
   visible: boolean;
+  /** "Soft hide": still rendered on the canvas at 50% opacity as a reference,
+   *  but excluded from exports, Run All, fit view, and select-all. Distinct
+   *  from `visible=false` which removes the element from the canvas entirely. */
+  hidden?: boolean;
   rotation: number;
   style: ElementStyle;
   source?: ImageSource;
@@ -107,7 +111,16 @@ export interface BoardSetup {
 
 export const DEFAULT_BOARD_SETUP: BoardSetup = { code: '', timeout: 120 };
 
-export const CURRENT_SCHEMA_VERSION = 2;
+/**
+ * A plot code entry in the board-level registry. One entry may be referenced
+ * by many figure elements (one per figureIndex) — each element is a view of
+ * one figure produced by this code. See `board.plotCodes`.
+ */
+export interface PlotCodeEntry {
+  code: string;
+}
+
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export interface Board {
   schema_version: number;
@@ -116,6 +129,14 @@ export interface Board {
   canvas: CanvasSettings;
   elements: BoardElement[];
   setup: BoardSetup;
+  /**
+   * Registry of plot code entries keyed by plotCodeId. Figure elements
+   * reference an entry via `metadata.plotCodeId`. Entries are garbage-collected
+   * when no element references them. Introduced in schema v3 to decouple code
+   * from figure elements so per-figure deletion and multi-figure runs behave
+   * cleanly.
+   */
+  plotCodes: Record<string, PlotCodeEntry>;
   autoExport?: AutoExportSettings;
   pythonEnvPath?: string | null;
   created_at: string;

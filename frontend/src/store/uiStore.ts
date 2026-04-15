@@ -1,11 +1,11 @@
 import { create } from 'zustand';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type InsertMode = null | 'image' | 'text' | 'rectangle' | 'arrow' | 'pen';
+export type InsertMode = null | 'image' | 'text' | 'rectangle' | 'arrow' | 'pen' | 'plot';
 
 /** Pending insert payload: element type + any style/metadata overrides for the shape */
 export interface InsertPayload {
-  type: 'text' | 'rectangle' | 'arrow' | 'pen';
+  type: 'text' | 'rectangle' | 'arrow' | 'pen' | 'plot';
   overrides?: Record<string, any>;
 }
 export type PanelTab = 'insert' | 'layers';

@@ -1,5 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { BoardElement, ElementStyle, ElementType } from '@/types/board';
+
+export const DEFAULT_PLOT_CODE = '';
 import {
   DEFAULT_IMAGE_STYLE,
   DEFAULT_TEXT_STYLE,
@@ -53,29 +55,12 @@ export function createElement(
   }
 
   if (type === 'plot') {
+    // Code is no longer stored per-element — it lives in `board.plotCodes`
+    // and the element points at an entry via `metadata.plotCodeId`. The
+    // plotCodeId is assigned by `addElement` at insert time so a fresh
+    // registry entry is created for every new plot.
     defaults.metadata = {
-      code: [
-        'import matplotlib.pyplot as plt',
-        'import numpy as np',
-        '',
-        '# Generate sample data',
-        'x = np.linspace(0, 10, 200)',
-        'y1 = np.sin(x)',
-        'y2 = np.cos(x)',
-        '',
-        '# Create the figure',
-        'fig, ax = plt.subplots(figsize=(8, 5))',
-        'ax.plot(x, y1, label="sin(x)", color="#4f46e5", linewidth=2)',
-        'ax.plot(x, y2, label="cos(x)", color="#e11d48", linewidth=2, linestyle="--")',
-        '',
-        '# Style the plot',
-        'ax.set_xlabel("x")',
-        'ax.set_ylabel("y")',
-        'ax.set_title("Sine and Cosine Waves")',
-        'ax.legend()',
-        'ax.grid(True, alpha=0.3)',
-        'fig.tight_layout()',
-      ].join('\n'),
+      figureIndex: 0,
       lastOutput: null,
       lastError: null,
       lockAspectRatio: true,

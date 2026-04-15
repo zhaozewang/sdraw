@@ -23,7 +23,7 @@ CACHE_ROOT = Path.home() / ".sdraw" / "cache"
 _CACHE_METADATA_KEYS = {"plotlyJson"}
 _CACHE_BOARD_KEYS: set[str] = set()
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def migrate_board_schema(board: dict) -> dict:
@@ -39,6 +39,60 @@ def migrate_board_schema(board: dict) -> dict:
         if "setup" not in board or not isinstance(board.get("setup"), dict):
             board["setup"] = {"code": "", "timeout": 120}
         board["schema_version"] = 2
+
+    # v2 → v3: introduce board-level plot code registry. Move every plot
+    # element's inline metadata.code to a new registry entry and rewrite
+    # sibling-pointer metadata.sourceElementId references to share the same
+    # plotCodeId. The frontend also runs this migration (defensively), so
+    # nothing breaks if we somehow skip the backend step.
+    if version < 3:
+        import uuid
+
+        if "plotCodes" not in board or not isinstance(board.get("plotCodes"), dict):
+            board["plotCodes"] = {}
+        plot_codes: dict = board["plotCodes"]
+        elements = board.get("elements") or []
+
+        # Pass 1: legacy sources (had inline code) become registry entries.
+        el_to_pcid: dict[str, str] = {}
+        for el in elements:
+            if el.get("type") != "plot":
+                continue
+            meta = el.get("metadata") or {}
+            if isinstance(meta.get("plotCodeId"), str):
+                el_to_pcid[el.get("id", "")] = meta["plotCodeId"]
+                continue
+            if isinstance(meta.get("code"), str):
+                new_id = str(uuid.uuid4())
+                plot_codes[new_id] = {"code": meta["code"]}
+                meta["plotCodeId"] = new_id
+                el_to_pcid[el.get("id", "")] = new_id
+                meta.pop("code", None)
+                el["metadata"] = meta
+
+        # Pass 2: siblings inherit their old source's plotCodeId.
+        for el in elements:
+            if el.get("type") != "plot":
+                continue
+            meta = el.get("metadata") or {}
+            if isinstance(meta.get("plotCodeId"), str):
+                meta.pop("sourceElementId", None)
+                el["metadata"] = meta
+                continue
+            src_id = meta.get("sourceElementId")
+            if isinstance(src_id, str) and src_id in el_to_pcid:
+                meta["plotCodeId"] = el_to_pcid[src_id]
+                meta.pop("sourceElementId", None)
+                el["metadata"] = meta
+                continue
+            # Orphan plot with no code and no source → give it a fresh entry.
+            new_id = str(uuid.uuid4())
+            plot_codes[new_id] = {"code": ""}
+            meta["plotCodeId"] = new_id
+            meta.pop("sourceElementId", None)
+            el["metadata"] = meta
+
+        board["schema_version"] = 3
 
     # Future migrations chain here.
     return board

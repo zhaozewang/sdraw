@@ -75,7 +75,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // Write a minimal empty board JSON
       const board = {
-        schema_version: 2,
+        schema_version: 3,
         id: crypto.randomUUID(),
         name: path.basename(uri.fsPath, '.sdraw'),
         canvas: {
@@ -91,6 +91,7 @@ export function activate(context: vscode.ExtensionContext): void {
         },
         elements: [],
         setup: { code: '', timeout: 120 },
+        plotCodes: {},
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         app_version: '0.1.0',

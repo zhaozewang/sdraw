@@ -18,26 +18,22 @@ export function ExternalChangeModal() {
 
   const diffItems = useMemo(() => {
     if (!conflict || !board) return [] as string[];
-    const localPlots = new Map(
-      board.elements
-        .filter(el => el.type === 'plot')
-        .map(el => [el.id, String(el.metadata?.code ?? '')]),
+    const localCodes = new Map(
+      Object.entries(board.plotCodes ?? {}).map(([id, entry]) => [id, String(entry?.code ?? '')]),
     );
-    const diskPlots = new Map(
-      conflict.diskBoard.elements
-        .filter(el => el.type === 'plot')
-        .map(el => [el.id, String(el.metadata?.code ?? '')]),
+    const diskCodes = new Map(
+      Object.entries(conflict.diskBoard.plotCodes ?? {}).map(([id, entry]) => [id, String(entry?.code ?? '')]),
     );
     let changed = 0;
     let added = 0;
     let removed = 0;
-    for (const [id, diskCode] of diskPlots) {
-      const localCode = localPlots.get(id);
+    for (const [id, diskCode] of diskCodes) {
+      const localCode = localCodes.get(id);
       if (localCode === undefined) added++;
       else if (localCode !== diskCode) changed++;
     }
-    for (const id of localPlots.keys()) {
-      if (!diskPlots.has(id)) removed++;
+    for (const id of localCodes.keys()) {
+      if (!diskCodes.has(id)) removed++;
     }
     const setupChanged =
       (board.setup?.code ?? '') !== (conflict.diskBoard.setup?.code ?? '');

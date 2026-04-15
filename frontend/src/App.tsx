@@ -609,7 +609,11 @@ function WelcomeScreen() {
         board: result.board as any,
         boardFilePath: recoveryTarget,
         isDirty: true, // Mark dirty so user can save
-        history: [{ elements: structuredClone((result.board as any).elements || []), description: 'Recovered' }],
+        history: [{
+          elements: structuredClone((result.board as any).elements || []),
+          plotCodes: structuredClone((result.board as any).plotCodes || {}),
+          description: 'Recovered',
+        }],
         historyIndex: 0,
       });
       const board = useBoardStore.getState().board;

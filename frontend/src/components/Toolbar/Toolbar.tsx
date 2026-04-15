@@ -193,6 +193,7 @@ export function Toolbar() {
   }, []);
 
   const handleInsertText = useCallback(() => {
+    useUIStore.getState().setInsertPayload(null);
     const el = useBoardStore.getState().addElement('text', {
       text: 'Text',
       width: 100,
@@ -203,35 +204,19 @@ export function Toolbar() {
   }, []);
 
   const handleInsertRect = useCallback(() => {
+    useUIStore.getState().setInsertPayload(null);
     const el = useBoardStore.getState().addElement('rectangle', { width: 200, height: 150 });
     useUIStore.getState().setSelectedIds([el.id]);
   }, []);
 
   const handleInsertArrow = useCallback(() => {
+    useUIStore.getState().setInsertPayload(null);
     const el = useBoardStore.getState().addElement('arrow', { width: 200, height: 4 });
     useUIStore.getState().setSelectedIds([el.id]);
   }, []);
 
   const handleInsertPlot = useCallback(() => {
-    let overrides: Record<string, any> = {};
-    // Place at viewport center
-    const viewport = document.querySelector('.react-flow__viewport') as HTMLElement | null;
-    const container = viewport?.parentElement;
-    if (viewport && container) {
-      const transform = viewport.style.transform;
-      const match = transform.match(/translate\((.+?)px,\s*(.+?)px\)\s*scale\((.+?)\)/);
-      if (match) {
-        const tx = parseFloat(match[1]);
-        const ty = parseFloat(match[2]);
-        const scale = parseFloat(match[3]);
-        const rect = container.getBoundingClientRect();
-        const w = 480, h = 520;
-        overrides.x = Math.round((rect.width / 2 - tx) / scale - w / 2);
-        overrides.y = Math.round((rect.height / 2 - ty) / scale - h / 2);
-      }
-    }
-    const el = useBoardStore.getState().addElement('plot', overrides);
-    useUIStore.getState().setSelectedIds([el.id]);
+    useUIStore.getState().setInsertPayload({ type: 'plot', overrides: {} });
   }, []);
 
   const handleGroup = useCallback(() => {
@@ -488,13 +473,22 @@ export function Toolbar() {
       {runAllConfirmOpen && (
         <RunAllConfirmDialog
           plotCount={
-            board.elements.filter(
-              el =>
-                el.type === 'plot' &&
-                (el.metadata?.sourceElementId === undefined ||
-                  el.metadata?.sourceElementId === null) &&
-                ((el.metadata?.code ?? '') as string).trim().length > 0,
-            ).length
+            (() => {
+              // Count unique plot code entries on this board that have
+              // non-empty code AND at least one referencing element.
+              const referenced = new Set<string>();
+              for (const el of board.elements) {
+                if (el.type !== 'plot') continue;
+                const pcid = el.metadata?.plotCodeId;
+                if (typeof pcid === 'string') referenced.add(pcid);
+              }
+              let count = 0;
+              for (const id of referenced) {
+                const code = String(board.plotCodes?.[id]?.code ?? '');
+                if (code.trim().length > 0) count++;
+              }
+              return count;
+            })()
           }
           onConfirm={() => {
             setRunAllConfirmOpen(false);

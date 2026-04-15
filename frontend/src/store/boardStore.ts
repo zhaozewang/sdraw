@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import type { Board, BoardElement, CanvasSettings, ElementType, AutoExportSettings } from '@/types/board';
+import type { Board, BoardElement, CanvasSettings, ElementType, AutoExportSettings, PlotCodeEntry } from '@/types/board';
 import { DEFAULT_CANVAS, DEFAULT_BOARD_SETUP, CURRENT_SCHEMA_VERSION } from '@/types/board';
-import { createElement } from '@/utils/helpers';
+import { createElement, DEFAULT_PLOT_CODE } from '@/utils/helpers';
 import { api } from '@/api/client';
 import { toRelativeAnchor, fromRelativeAnchor } from '@/utils/snapToShape';
 /**
@@ -27,6 +27,7 @@ async function captureThumbnail(board: Board): Promise<string | undefined> {
 
 interface HistoryEntry {
   elements: BoardElement[];
+  plotCodes: Record<string, PlotCodeEntry>;
   description: string;
 }
 
@@ -50,53 +51,150 @@ function fnv1a(str: string): string {
  * (position, size, crop, style) is deliberately excluded so that user-side
  * manual edits don't count as divergence — only code changes do.
  */
+/**
+ * Per-plot render hash: setup code + this plot's code. A cropped plot's
+ * frozen image is only trusted for a Run All when this hash matches the
+ * value stamped onto the plot at the moment its crop was saved. When the
+ * code (setup or plot) changes, the stored crop is considered stale and
+ * Run All falls through to the normal refresh path.
+ */
+export function plotRenderHash(setupCode: string, plotCode: string): string {
+  return fnv1a(`setup\n${setupCode ?? ''}\n---\nplot\n${plotCode ?? ''}`);
+}
+
 function codeDigest(board: Board): string {
   const parts: string[] = [];
   parts.push(`setup\n${board.setup?.code ?? ''}`);
-  const plots = board.elements
-    .filter(el => el.type === 'plot')
-    .map(el => ({ id: el.id, code: String(el.metadata?.code ?? '') }))
+  const entries = Object.entries(board.plotCodes ?? {})
+    .map(([id, entry]) => ({ id, code: String(entry?.code ?? '') }))
     .sort((a, b) => a.id.localeCompare(b.id));
-  for (const p of plots) parts.push(`plot:${p.id}\n${p.code}`);
+  for (const e of entries) parts.push(`plot:${e.id}\n${e.code}`);
   return fnv1a(parts.join('\n---\n'));
 }
 
 /**
- * Merge strategy: take the agent's code (from disk) for every plot that
- * exists on both sides, and preserve the user's canvas layout (position,
- * size, crop, style, cached output). Elements that exist only on one side
- * are kept as-is — agent-added plots land on the canvas, user-added
+ * Migrate an on-disk board to the plot-code-registry schema (v3). For every
+ * plot element with `metadata.code`, create a `plotCodes` registry entry and
+ * set `metadata.plotCodeId` on the element. For every plot element with
+ * `metadata.sourceElementId`, point at the same registry entry the former
+ * source now references. Idempotent: running twice is a no-op. Also ensures
+ * `board.plotCodes` is always a defined object and bumps `schema_version`.
+ *
+ * This runs on load and newBoard. The next normal save persists it.
+ */
+function migrateToPlotCodeRegistry(board: any): Board {
+  if (!board || typeof board !== 'object') return board;
+  if (!board.plotCodes || typeof board.plotCodes !== 'object') {
+    board.plotCodes = {};
+  }
+  const elements: any[] = Array.isArray(board.elements) ? board.elements : [];
+
+  // Pass 1: every plot element that still carries metadata.code becomes a
+  // new registry entry and drops the inline code. This also captures the
+  // legacy "source" elements; siblings have no code of their own.
+  const elIdToPlotCodeId = new Map<string, string>();
+  for (const el of elements) {
+    if (el?.type !== 'plot' || !el.metadata) continue;
+    if (typeof el.metadata.plotCodeId === 'string') {
+      // Already migrated.
+      elIdToPlotCodeId.set(el.id, el.metadata.plotCodeId);
+      continue;
+    }
+    if (typeof el.metadata.code === 'string') {
+      const newId = uuidv4();
+      board.plotCodes[newId] = { code: el.metadata.code };
+      el.metadata.plotCodeId = newId;
+      elIdToPlotCodeId.set(el.id, newId);
+      delete el.metadata.code;
+    }
+  }
+
+  // Pass 2: legacy siblings (had `sourceElementId` pointing at the source)
+  // inherit the same plotCodeId the source now references.
+  for (const el of elements) {
+    if (el?.type !== 'plot' || !el.metadata) continue;
+    if (typeof el.metadata.plotCodeId === 'string') continue;
+    const srcId: string | undefined = el.metadata.sourceElementId;
+    if (srcId) {
+      const pcid = elIdToPlotCodeId.get(srcId);
+      if (pcid) {
+        el.metadata.plotCodeId = pcid;
+        delete el.metadata.sourceElementId;
+        continue;
+      }
+    }
+    // Orphan: a plot element with neither code nor source. Give it its own
+    // fresh empty registry entry so it can be edited and run.
+    const newId = uuidv4();
+    board.plotCodes[newId] = { code: '' };
+    el.metadata.plotCodeId = newId;
+  }
+
+  // Clean up any leftover sourceElementId hints now that they're redundant.
+  for (const el of elements) {
+    if (el?.type === 'plot' && el.metadata && 'sourceElementId' in el.metadata) {
+      delete el.metadata.sourceElementId;
+    }
+  }
+
+  board.schema_version = CURRENT_SCHEMA_VERSION;
+  return board as Board;
+}
+
+/**
+ * Return a new plotCodes registry with entries that no element references
+ * removed. Called after deletions so the registry stays tight. Pure — does
+ * not mutate.
+ */
+function gcPlotCodes(
+  plotCodes: Record<string, PlotCodeEntry>,
+  elements: BoardElement[],
+): Record<string, PlotCodeEntry> {
+  const referenced = new Set<string>();
+  for (const el of elements) {
+    if (el.type === 'plot') {
+      const pcid = el.metadata?.plotCodeId;
+      if (typeof pcid === 'string') referenced.add(pcid);
+    }
+  }
+  let changed = false;
+  const next: Record<string, PlotCodeEntry> = {};
+  for (const [id, entry] of Object.entries(plotCodes)) {
+    if (referenced.has(id)) next[id] = entry;
+    else changed = true;
+  }
+  return changed ? next : plotCodes;
+}
+
+/**
+ * Merge strategy: take the agent's setup+plotCodes registry (from disk) and
+ * preserve the user's canvas layout (elements). Elements that exist only on
+ * one side are kept as-is — agent-added plots land on the canvas, user-added
  * elements survive the merge.
  *
- * The key invariant: `metadata.code` is agent territory; everything else on
- * the element is user territory. We don't try to merge the code text
- * itself — last writer wins for the code field, with the user's
- * "accept / merge / keep mine" decision making the final call.
+ * The invariant is now: `board.plotCodes` is agent territory; elements and
+ * their non-code metadata are user territory.
  */
 function mergeAgentCodeIntoLayout(
-  localElements: BoardElement[],
-  diskElements: BoardElement[],
-): BoardElement[] {
-  const diskById = new Map(diskElements.map(el => [el.id, el]));
-  const localIds = new Set(localElements.map(el => el.id));
-  const merged: BoardElement[] = localElements.map(local => {
-    const disk = diskById.get(local.id);
-    if (!disk) return local;
-    if (local.type === 'plot' && disk.type === 'plot') {
-      const localCode = String(local.metadata?.code ?? '');
-      const diskCode = String(disk.metadata?.code ?? '');
-      if (localCode === diskCode) return local;
-      return {
-        ...local,
-        metadata: { ...local.metadata, code: disk.metadata?.code },
-      };
-    }
-    return local;
-  });
-  for (const disk of diskElements) {
-    if (!localIds.has(disk.id)) merged.push(disk);
+  local: Board,
+  disk: Board,
+): { plotCodes: Record<string, PlotCodeEntry>; elements: BoardElement[] } {
+  // Registry merge: disk wins for codes that exist on both sides. Entries
+  // present only on one side are kept. (Elements still reference ids; the
+  // migrator on the disk side ensured ids are stable.)
+  const plotCodes: Record<string, PlotCodeEntry> = { ...(local.plotCodes ?? {}) };
+  for (const [id, entry] of Object.entries(disk.plotCodes ?? {})) {
+    plotCodes[id] = entry;
   }
-  return merged;
+  // Elements: keep local layout, add disk-only elements so agent-added
+  // plots survive the merge.
+  const diskById = new Map(disk.elements.map(el => [el.id, el]));
+  const localIds = new Set(local.elements.map(el => el.id));
+  const merged: BoardElement[] = [...local.elements];
+  for (const [id, el] of diskById) {
+    if (!localIds.has(id)) merged.push(el);
+  }
+  return { plotCodes, elements: merged };
 }
 
 /**
@@ -213,15 +311,23 @@ interface BoardState {
   restartKernel: () => Promise<void>;
 
   // Multi-figure plot support
-  /** Distribute N figures across N referencing elements (source + siblings),
-   * auto-spawning new sibling elements when N exceeds the current reference
-   * count. Returns the updated ordered list of reference element IDs. */
+  /** Distribute N figures across every element that references the given
+   * plotCodeId, by `metadata.figureIndex`. Auto-spawns new sibling elements
+   * only for figure indices greater than the highest existing index (so a
+   * deleted figure does not resurrect on re-run). Returns the updated
+   * ordered list of reference element IDs. */
   distributePlotFigures: (
-    sourceElementId: string,
+    anchorElementId: string,
     figures: PlotFigure[],
     stdout: string | null,
     error: string | null,
   ) => Promise<string[]>;
+
+  // Plot code registry
+  /** Write `code` to the given plot code registry entry. Creates the entry
+   * if it doesn't exist (shouldn't happen in practice — elements always
+   * create their entry at insert time). Pushes history. */
+  setPlotCode: (plotCodeId: string, code: string) => void;
 
   // Run-all-plots support
   runAllStatus: RunAllStatus;
@@ -260,6 +366,11 @@ interface BoardState {
   updateElements: (updates: Array<{ id: string; changes: Partial<BoardElement> }>) => void;
   removeElements: (ids: string[]) => void;
   duplicateElements: (ids: string[]) => BoardElement[];
+  pasteElements: (
+    sourceElements: BoardElement[],
+    offset?: { x: number; y: number },
+    sourcePlotCodes?: Record<string, PlotCodeEntry>,
+  ) => BoardElement[];
 
   // Actions - Z-order
   bringToFront: (ids: string[]) => void;
@@ -273,6 +384,7 @@ interface BoardState {
 
   // Actions - Lock
   toggleLock: (ids: string[]) => void;
+  toggleHidden: (ids: string[]) => void;
 
   // Actions - Alignment
   alignElements: (ids: string[], alignment: 'left' | 'right' | 'top' | 'bottom' | 'centerH' | 'centerV') => void;
@@ -420,90 +532,96 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
   runAllStatus: { state: 'idle' } as RunAllStatus,
 
-  distributePlotFigures: async (sourceElementId, figures, stdout, error) => {
+  distributePlotFigures: async (anchorElementId, figures, stdout, error) => {
     const { board } = get();
     if (!board) return [];
-    const source = board.elements.find(el => el.id === sourceElementId);
-    if (!source) return [];
+    const anchor = board.elements.find(el => el.id === anchorElementId);
+    if (!anchor) return [];
+    const plotCodeId: string | undefined = anchor.metadata?.plotCodeId;
+    if (!plotCodeId) return [];
 
-    // Collect current references: the source itself plus any siblings
-    // whose metadata.sourceElementId points at this source. Sort by
-    // figureIndex so the order matches the figures list.
-    const rawSiblings = board.elements.filter(
-      el => el.metadata?.sourceElementId === sourceElementId,
-    );
+    // Every element referencing this plotCodeId is a figure view. Sort by
+    // figureIndex so new siblings (if any) append after the highest.
     type Ref = { id: string; figureIndex: number };
-    const existingRefs: Ref[] = [
-      { id: source.id, figureIndex: source.metadata?.figureIndex ?? 0 },
-      ...rawSiblings.map(s => ({
-        id: s.id,
-        figureIndex: s.metadata?.figureIndex ?? 0,
-      })),
-    ].sort((a, b) => a.figureIndex - b.figureIndex);
+    const existingRefs: Ref[] = board.elements
+      .filter(el => el.type === 'plot' && el.metadata?.plotCodeId === plotCodeId)
+      .map(el => ({ id: el.id, figureIndex: el.metadata?.figureIndex ?? 0 }))
+      .sort((a, b) => a.figureIndex - b.figureIndex);
+    const existingIndexSet = new Set(existingRefs.map(r => r.figureIndex));
+    const maxExistingIndex = existingRefs.length > 0
+      ? Math.max(...existingRefs.map(r => r.figureIndex))
+      : -1;
 
-    // Spawn new siblings if the code now produces more figures than
-    // we have references for. Lay them out to the right in a row.
+    // Spawn new elements only for figure indices strictly greater than the
+    // highest existing index. This keeps deleted figures deleted — if the
+    // user trashed figure 1, re-running the code that still produces three
+    // figures will update figures 0 and 2 in place and not resurrect fig 1.
     const newSiblings: BoardElement[] = [];
-    for (let i = existingRefs.length; i < figures.length; i++) {
-      const offset = i - existingRefs.length + 1;
+    const layoutAnchor = existingRefs.length > 0
+      ? board.elements.find(el => el.id === existingRefs[existingRefs.length - 1].id) ?? anchor
+      : anchor;
+    let spawnOffset = 1;
+    for (let i = 0; i < figures.length; i++) {
+      if (existingIndexSet.has(i)) continue;
+      if (i <= maxExistingIndex) continue; // deleted hole — don't refill
       const newEl: BoardElement = {
-        ...structuredClone(source),
+        ...structuredClone(anchor),
         id: uuidv4(),
-        x: source.x + offset * (source.width + 20),
-        y: source.y,
+        x: layoutAnchor.x + spawnOffset * (layoutAnchor.width + 20),
+        y: layoutAnchor.y,
         metadata: {
-          ...(source.metadata ?? {}),
-          sourceElementId: sourceElementId,
+          ...(anchor.metadata ?? {}),
+          plotCodeId,
           figureIndex: i,
-          // Inherit nothing transient from the source:
-          code: undefined,
           lastOutput: null,
           lastStdout: null,
           lastError: null,
           plotlyJson: null,
           plotCrop: null,
+          renderedCodeHash: undefined,
           figureMissing: false,
         },
       };
       newSiblings.push(newEl);
       existingRefs.push({ id: newEl.id, figureIndex: i });
+      spawnOffset++;
     }
 
     const refIdToFigureIndex = new Map(existingRefs.map(r => [r.id, r.figureIndex]));
 
+    // The freeze is only valid when the code that produced the cropped
+    // image matches the code being run now. Compare per-plot hash stamped
+    // at the last editor Save against the current setup + registry code.
+    const plotCode = String(board.plotCodes?.[plotCodeId]?.code ?? '');
+    const currentRenderHash = plotRenderHash(board.setup?.code ?? '', plotCode);
+
     // Update every referencing element with its figure's output, or flag
     // it as missing when the code now produces fewer figures than refs.
     //
-    // Policy for cropped plots: Run All treats them as FROZEN. Dimensions,
-    // stored image, and plotly JSON are all preserved. The crop captures
-    // the user's exact intent (plotly camera/zoom, chosen region, chosen
-    // aspect) and the backend kaleido render on a fresh Run All may not
-    // reproduce that intent byte-for-byte (plotly camera can drift by a
-    // fraction on re-render, kaleido vs interactive canvas can produce
-    // slightly different viewports, etc.). To re-render a cropped plot
-    // the user opens the editor and hits Save, which is the one place
-    // that captures a fresh image at exactly the state they want.
-    //
-    // Uncropped plots get full refresh: new image, new dimensions, etc.
+    // Policy for cropped plots: Run All FREEZES them only when their
+    // stamped renderedCodeHash matches the current code. The freeze exists
+    // because plotly camera drifts by a fraction on re-render and kaleido
+    // vs the interactive canvas aren't byte-identical — issues that only
+    // matter when the code is unchanged. If the code was edited (or the
+    // plot was never stamped), the stored image is stale and we fall
+    // through to the normal refresh path so the user's code change wins.
     const updatedElements = board.elements.map(el => {
       const figIdx = refIdToFigureIndex.get(el.id);
       if (figIdx === undefined) return el;
       const fig = figures[figIdx];
-      const isSource = el.id === sourceElementId;
       const plotCrop = el.metadata?.plotCrop;
       const hasStoredCrop = plotCrop && plotCrop.w > 0.02 && plotCrop.h > 0.02;
+      const storedHash = el.metadata?.renderedCodeHash;
+      const freeze = hasStoredCrop && storedHash === currentRenderHash;
 
-      // Cropped plot → update only stdout/error/figureIndex, leave the
-      // image/dims/plotly_json strictly alone.
-      if (hasStoredCrop) {
+      // Frozen cropped plot → update only stdout/error/figureIndex, leave
+      // the image/dims/plotly_json strictly alone.
+      if (freeze) {
         const nextMeta: Record<string, any> = {
           ...el.metadata,
           lastStdout: stdout,
           lastError: error,
         };
-        if (isSource && nextMeta.figureIndex === undefined) {
-          nextMeta.figureIndex = 0;
-        }
         // If the code no longer produces this figure index, flag it
         // as missing so the user sees a clear error, but still don't
         // touch dimensions.
@@ -517,14 +635,17 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         return { ...el, metadata: nextMeta };
       }
 
-      // Uncropped plot → full refresh path.
+      // Uncropped (or stale-crop) plot → full refresh path. When the code
+      // changed, we drop the old crop so the fresh figure isn't cropped to
+      // regions that no longer make sense, and we clear the render hash.
       const nextMeta: Record<string, any> = {
         ...el.metadata,
         lastStdout: stdout,
         lastError: error,
       };
-      if (isSource && nextMeta.figureIndex === undefined) {
-        nextMeta.figureIndex = 0;
+      if (hasStoredCrop) {
+        nextMeta.plotCrop = null;
+        nextMeta.renderedCodeHash = undefined;
       }
       const nextHeight = fig?.image
         ? syncHeightForFigure(el.width, el.height, fig.image, null)
@@ -585,18 +706,34 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const { board, boardFilePath } = get();
     if (!board) return;
 
-    // Collect only SOURCE plot elements (skip siblings that share code).
-    const sources = board.elements
-      .filter(
-        el =>
-          el.type === 'plot' &&
-          (el.metadata?.sourceElementId === undefined ||
-            el.metadata?.sourceElementId === null) &&
-          (el.metadata?.code ?? '').trim().length > 0,
-      )
-      .sort((a, b) => a.z_index - b.z_index);
+    // One run per distinct plot code entry. Pick one anchor element per
+    // plotCodeId (the lowest figureIndex, z-order as tiebreaker) — the
+    // distribute call will fan the figures out across every other element
+    // that shares the same plotCodeId. Skip entries whose code is empty.
+    type RunTarget = { plotCodeId: string; anchor: BoardElement; code: string };
+    const byCode = new Map<string, RunTarget>();
+    for (const el of board.elements) {
+      if (el.type !== 'plot') continue;
+      if (el.hidden) continue;
+      const pcid = el.metadata?.plotCodeId;
+      if (typeof pcid !== 'string') continue;
+      const code = String(board.plotCodes?.[pcid]?.code ?? '');
+      if (code.trim().length === 0) continue;
+      const existing = byCode.get(pcid);
+      const figIdx = el.metadata?.figureIndex ?? 0;
+      if (!existing) {
+        byCode.set(pcid, { plotCodeId: pcid, anchor: el, code });
+      } else {
+        const existIdx = existing.anchor.metadata?.figureIndex ?? 0;
+        if (figIdx < existIdx || (figIdx === existIdx && el.z_index < existing.anchor.z_index)) {
+          byCode.set(pcid, { plotCodeId: pcid, anchor: el, code });
+        }
+      }
+    }
+    const targets: RunTarget[] = [...byCode.values()]
+      .sort((a, b) => a.anchor.z_index - b.anchor.z_index);
 
-    if (sources.length === 0) {
+    if (targets.length === 0) {
       set({ runAllStatus: { state: 'done', successes: 0, failures: 0 } });
       return;
     }
@@ -614,7 +751,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         runAllStatus: {
           state: 'running',
           current: 0,
-          total: sources.length + 1,
+          total: targets.length + 1,
           label: 'Python Setup',
         },
         kernelStatus: 'running',
@@ -646,20 +783,20 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     let successes = 0;
     let failures = 0;
-    for (let i = 0; i < sources.length; i++) {
-      const el = sources[i];
-      const label = el.metadata?.name || `Plot ${i + 1}`;
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i];
+      const label = target.anchor.metadata?.name || `Plot ${i + 1}`;
       set({
         runAllStatus: {
           state: 'running',
           current: i + 1 + (setupCode.trim().length > 0 ? 1 : 0),
-          total: sources.length + (setupCode.trim().length > 0 ? 1 : 0),
+          total: targets.length + (setupCode.trim().length > 0 ? 1 : 0),
           label,
         },
       });
       try {
         const r = await api.executePlot(
-          el.metadata?.code ?? '',
+          target.code,
           30,
           150,
           env,
@@ -673,13 +810,13 @@ export const useBoardStore = create<BoardState>((set, get) => ({
             : r.image_base64 || r.plotly_json
             ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
             : [];
-        await get().distributePlotFigures(el.id, figures, r.stdout, r.success ? null : r.error);
+        await get().distributePlotFigures(target.anchor.id, figures, r.stdout, r.success ? null : r.error);
         if (r.success) successes++;
         else failures++;
       } catch (err: any) {
         failures++;
         await get().distributePlotFigures(
-          el.id,
+          target.anchor.id,
           [],
           null,
           `Run All failed for ${label}: ${err?.message ?? String(err)}`,
@@ -700,17 +837,19 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       canvas: { ...DEFAULT_CANVAS, ...canvasOverrides },
       elements: [],
       setup: { ...DEFAULT_BOARD_SETUP },
+      plotCodes: {},
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       app_version: '0.1.0',
     };
     const result = await api.saveBoardToFile(board, filePath);
+    const loaded = migrateToPlotCodeRegistry(result.board);
     set({
-      board: result.board,
+      board: loaded,
       boardFilePath: result.path,
       isDirty: false,
-      loadedCodeDigest: codeDigest(result.board),
-      history: [{ elements: [], description: 'New board' }],
+      loadedCodeDigest: codeDigest(loaded),
+      history: [{ elements: [], plotCodes: {}, description: 'New board' }],
       historyIndex: 0,
     });
   },
@@ -719,7 +858,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (autoExportAbort) autoExportAbort.abort();
     autoExportAbort = new AbortController();
     const result = await api.openBoardFromFile(filePath);
-    const board = result.board;
+    const board = migrateToPlotCodeRegistry(result.board);
 
     // Safety net: backend should already have migrated, but guarantee the
     // field exists so downstream consumers don't need null-checks everywhere.
@@ -770,16 +909,21 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       })
     );
 
+    const loadedBoard = { ...board, elements: checkedElements };
     set({
-      board: { ...board, elements: checkedElements },
+      board: loadedBoard,
       boardFilePath: result.path,
       // If any linked image was re-embedded on open, the store now holds
       // fresher bytes than the .sdraw file — mark dirty so autosave writes
       // them back.
       isDirty: needsResave,
-      loadedCodeDigest: codeDigest({ ...board, elements: checkedElements }),
+      loadedCodeDigest: codeDigest(loadedBoard),
       externalConflict: null,
-      history: [{ elements: structuredClone(checkedElements), description: 'Load' }],
+      history: [{
+        elements: structuredClone(checkedElements),
+        plotCodes: structuredClone(loadedBoard.plotCodes ?? {}),
+        description: 'Load',
+      }],
       historyIndex: 0,
     });
   },
@@ -807,9 +951,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         // will either recreate the file or surface a clear error.
       }
       if (diskBoard) {
-        const diskDigest = codeDigest(diskBoard);
+        // Migrate the disk snapshot into registry form before comparing so
+        // the digest function can run against a clean v3 shape.
+        const dbMigrated = migrateToPlotCodeRegistry(diskBoard);
+        const diskDigest = codeDigest(dbMigrated);
         if (diskDigest !== initial.loadedCodeDigest) {
-          const db = diskBoard;
+          const db = dbMigrated;
           const choice = await new Promise<'mine' | 'theirs' | 'merge' | 'cancel'>(resolve => {
             set({ externalConflict: { diskBoard: db, diskDigest, resolve } });
           });
@@ -824,25 +971,30 @@ export const useBoardStore = create<BoardState>((set, get) => ({
               board: db,
               isDirty: false,
               loadedCodeDigest: diskDigest,
-              history: [{ elements: structuredClone(db.elements), description: 'Accept external' }],
+              history: [{
+                elements: structuredClone(db.elements),
+                plotCodes: structuredClone(db.plotCodes ?? {}),
+                description: 'Accept external',
+              }],
               historyIndex: 0,
             });
             return;
           }
 
           if (choice === 'merge') {
-            // Take disk's code for each matching plot, keep the user's
+            // Take disk's plotCodes registry + setup, keep the user's
             // canvas layout, then fall through to the normal save path so
             // the merged state gets written.
             const cur = get().board!;
-            const mergedElements = mergeAgentCodeIntoLayout(cur.elements, db.elements);
+            const merged = mergeAgentCodeIntoLayout(cur, db);
             const mergedBoard: Board = {
               ...cur,
               setup: {
                 ...(cur.setup ?? DEFAULT_BOARD_SETUP),
                 code: db.setup?.code ?? cur.setup?.code ?? '',
               },
-              elements: mergedElements,
+              elements: merged.elements,
+              plotCodes: merged.plotCodes,
             };
             set({ board: mergedBoard });
           }
@@ -1116,10 +1268,34 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!board) throw new Error('No board loaded');
     const maxZ = board.elements.reduce((max, el) => Math.max(max, el.z_index), 0);
     const element = createElement(type, { ...overrides, z_index: maxZ + 1 });
+    let nextPlotCodes = board.plotCodes ?? {};
+    if (type === 'plot' && !element.metadata?.plotCodeId) {
+      // Every new plot element gets its own fresh registry entry seeded
+      // with the default starter code. The element references it by id.
+      const newId = uuidv4();
+      nextPlotCodes = { ...nextPlotCodes, [newId]: { code: DEFAULT_PLOT_CODE } };
+      element.metadata = {
+        ...(element.metadata ?? {}),
+        plotCodeId: newId,
+        figureIndex: element.metadata?.figureIndex ?? 0,
+      };
+    }
     const newElements = [...board.elements, element];
-    set({ board: { ...board, elements: newElements }, isDirty: true });
+    set({ board: { ...board, elements: newElements, plotCodes: nextPlotCodes }, isDirty: true });
     get().pushHistory(`Add ${type}`);
     return element;
+  },
+
+  setPlotCode: (plotCodeId: string, code: string) => {
+    const { board } = get();
+    if (!board) return;
+    const current = board.plotCodes?.[plotCodeId]?.code ?? '';
+    if (current === code) return;
+    const nextPlotCodes = {
+      ...(board.plotCodes ?? {}),
+      [plotCodeId]: { code },
+    };
+    set({ board: { ...board, plotCodes: nextPlotCodes }, isDirty: true });
   },
 
   updateElement: (id: string, updates: Partial<BoardElement>) => {
@@ -1128,28 +1304,50 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     const target = board.elements.find(el => el.id === id);
 
-    // If moving a group, move all children by the same delta
-    let childUpdates: Map<string, { x: number; y: number }> | null = null;
-    if (target?.type === 'group' && target.children && (updates.x !== undefined || updates.y !== undefined)) {
-      const dx = (updates.x ?? target.x) - target.x;
-      const dy = (updates.y ?? target.y) - target.y;
-      if (dx !== 0 || dy !== 0) {
+    // When a group's geometry changes, propagate to its children:
+    //   - Moving (x/y): translate every child by the same delta.
+    //   - Resizing (width/height): scale every child's position and size
+    //     proportionally. Text children only reposition (font/box stays
+    //     put); arrow/pen `points` scale with the same factors since they
+    //     are stored in element-local space.
+    // This runs for all `updateElement` callers, so Inspector numeric
+    // edits and the Resizer drag handle behave identically.
+    let childUpdates: Map<string, Partial<BoardElement>> | null = null;
+    if (target?.type === 'group' && target.children && target.children.length > 0) {
+      const newX = updates.x ?? target.x;
+      const newY = updates.y ?? target.y;
+      const newW = updates.width ?? target.width;
+      const newH = updates.height ?? target.height;
+      const scaleX = (updates.width !== undefined && target.width > 0) ? newW / target.width : 1;
+      const scaleY = (updates.height !== undefined && target.height > 0) ? newH / target.height : 1;
+      const scaling = scaleX !== 1 || scaleY !== 1;
+      const moving = newX !== target.x || newY !== target.y;
+
+      if (scaling || moving) {
         childUpdates = new Map();
         for (const childId of target.children) {
           const child = board.elements.find(el => el.id === childId);
-          if (child) {
-            childUpdates.set(childId, { x: child.x + dx, y: child.y + dy });
+          if (!child) continue;
+          const ch: Partial<BoardElement> = {
+            x: newX + (child.x - target.x) * scaleX,
+            y: newY + (child.y - target.y) * scaleY,
+          };
+          if (scaling && child.type !== 'text') {
+            ch.width = child.width * scaleX;
+            ch.height = child.height * scaleY;
+            if (child.points && child.points.length > 0) {
+              ch.points = child.points.map(p => ({ x: p.x * scaleX, y: p.y * scaleY }));
+            }
           }
+          childUpdates.set(childId, ch);
         }
       }
     }
 
     const newElements = board.elements.map(el => {
       if (el.id === id) return { ...el, ...updates };
-      if (childUpdates?.has(el.id)) {
-        const pos = childUpdates.get(el.id)!;
-        return { ...el, x: pos.x, y: pos.y };
-      }
+      const chChanges = childUpdates?.get(el.id);
+      if (chChanges) return { ...el, ...chChanges };
       return el;
     });
     set({ board: { ...board, elements: newElements }, isDirty: true });
@@ -1158,7 +1356,52 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   updateElements: (updates: Array<{ id: string; changes: Partial<BoardElement> }>) => {
     const { board } = get();
     if (!board) return;
-    const updateMap = new Map(updates.map(u => [u.id, u.changes]));
+
+    // Merge caller-supplied updates first. These always win — if the user
+    // selected a group *and* one of its children, the direct update on the
+    // child takes precedence over any group-propagated delta.
+    const updateMap = new Map<string, Partial<BoardElement>>();
+    for (const u of updates) {
+      updateMap.set(u.id, { ...(updateMap.get(u.id) || {}), ...u.changes });
+    }
+
+    // Expand every group in the batch with scaled/translated child changes,
+    // matching the behavior of `updateElement` for single writes. This makes
+    // arrow-key nudge, multi-select Position/Size broadcasts, and any other
+    // bulk caller move grouped children along with their container.
+    for (const u of updates) {
+      const target = board.elements.find(el => el.id === u.id);
+      if (!target || target.type !== 'group' || !target.children || target.children.length === 0) continue;
+
+      const newX = u.changes.x ?? target.x;
+      const newY = u.changes.y ?? target.y;
+      const newW = u.changes.width ?? target.width;
+      const newH = u.changes.height ?? target.height;
+      const scaleX = (u.changes.width !== undefined && target.width > 0) ? newW / target.width : 1;
+      const scaleY = (u.changes.height !== undefined && target.height > 0) ? newH / target.height : 1;
+      const scaling = scaleX !== 1 || scaleY !== 1;
+      const moving = newX !== target.x || newY !== target.y;
+      if (!scaling && !moving) continue;
+
+      for (const childId of target.children) {
+        if (updateMap.has(childId)) continue; // direct update wins
+        const child = board.elements.find(el => el.id === childId);
+        if (!child) continue;
+        const ch: Partial<BoardElement> = {
+          x: newX + (child.x - target.x) * scaleX,
+          y: newY + (child.y - target.y) * scaleY,
+        };
+        if (scaling && child.type !== 'text') {
+          ch.width = child.width * scaleX;
+          ch.height = child.height * scaleY;
+          if (child.points && child.points.length > 0) {
+            ch.points = child.points.map(p => ({ x: p.x * scaleX, y: p.y * scaleY }));
+          }
+        }
+        updateMap.set(childId, ch);
+      }
+    }
+
     const newElements = board.elements.map(el => {
       const changes = updateMap.get(el.id);
       return changes ? { ...el, ...changes } : el;
@@ -1171,7 +1414,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!board) return;
     const idSet = new Set(ids);
     const newElements = board.elements.filter(el => !idSet.has(el.id));
-    set({ board: { ...board, elements: newElements }, isDirty: true });
+    const nextPlotCodes = gcPlotCodes(board.plotCodes ?? {}, newElements);
+    set({
+      board: { ...board, elements: newElements, plotCodes: nextPlotCodes },
+      isDirty: true,
+    });
     get().pushHistory('Delete elements');
   },
 
@@ -1181,16 +1428,130 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const idSet = new Set(ids);
     const toDuplicate = board.elements.filter(el => idSet.has(el.id));
     const maxZ = board.elements.reduce((max, el) => Math.max(max, el.z_index), 0);
-    const duplicated = toDuplicate.map((el, i) => ({
-      ...structuredClone(el),
-      id: uuidv4(),
-      x: el.x + 20,
-      y: el.y + 20,
-      z_index: maxZ + 1 + i,
-    }));
-    set({ board: { ...board, elements: [...board.elements, ...duplicated] }, isDirty: true });
+
+    // A duplicated figure should reference a FRESH plot code entry so the
+    // copy is an independent cell — editing it doesn't touch the original.
+    // Multiple duped figures that shared the same plotCodeId in the source
+    // selection all land on the same new plotCodeId so the duplicate stays
+    // internally linked.
+    const plotCodeIdMap = new Map<string, string>();
+    const newPlotCodes: Record<string, PlotCodeEntry> = { ...(board.plotCodes ?? {}) };
+    for (const el of toDuplicate) {
+      if (el.type !== 'plot') continue;
+      const pcid = el.metadata?.plotCodeId;
+      if (typeof pcid !== 'string' || plotCodeIdMap.has(pcid)) continue;
+      const newId = uuidv4();
+      newPlotCodes[newId] = { code: board.plotCodes?.[pcid]?.code ?? '' };
+      plotCodeIdMap.set(pcid, newId);
+    }
+
+    const duplicated = toDuplicate.map((el, i) => {
+      const cloned: BoardElement = {
+        ...structuredClone(el),
+        id: uuidv4(),
+        x: el.x + 20,
+        y: el.y + 20,
+        z_index: maxZ + 1 + i,
+      };
+      if (cloned.type === 'plot' && cloned.metadata?.plotCodeId) {
+        const newPcid = plotCodeIdMap.get(cloned.metadata.plotCodeId);
+        if (newPcid) {
+          cloned.metadata = { ...cloned.metadata, plotCodeId: newPcid };
+        }
+      }
+      return cloned;
+    });
+    set({
+      board: {
+        ...board,
+        elements: [...board.elements, ...duplicated],
+        plotCodes: newPlotCodes,
+      },
+      isDirty: true,
+    });
     get().pushHistory('Duplicate');
     return duplicated;
+  },
+
+  pasteElements: (sourceElements: BoardElement[], offset = { x: 0, y: 0 }, sourcePlotCodes) => {
+    const { board } = get();
+    if (!board || sourceElements.length === 0) return [];
+
+    const idMap = new Map<string, string>();
+    for (const el of sourceElements) idMap.set(el.id, uuidv4());
+
+    // Build a plot-code-id remap: every distinct old plotCodeId in the
+    // payload becomes a new registry entry in this board. Multiple pasted
+    // figures that shared a plotCodeId land on the same new entry so the
+    // pasted set stays internally linked.
+    const plotCodeIdMap = new Map<string, string>();
+    const newPlotCodes: Record<string, PlotCodeEntry> = { ...(board.plotCodes ?? {}) };
+    const pcLookup = sourcePlotCodes ?? {};
+    for (const el of sourceElements) {
+      if (el.type !== 'plot') continue;
+      const pcid = el.metadata?.plotCodeId;
+      if (typeof pcid !== 'string' || plotCodeIdMap.has(pcid)) continue;
+      const newId = uuidv4();
+      newPlotCodes[newId] = { code: pcLookup[pcid]?.code ?? '' };
+      plotCodeIdMap.set(pcid, newId);
+    }
+
+    const maxZ = board.elements.reduce((max, el) => Math.max(max, el.z_index), 0);
+
+    const pasted = sourceElements.map((src, i) => {
+      const cloned: BoardElement = structuredClone(src);
+      cloned.id = idMap.get(src.id)!;
+      cloned.x = src.x + offset.x;
+      cloned.y = src.y + offset.y;
+      cloned.z_index = maxZ + 1 + i;
+
+      if (cloned.children) {
+        cloned.children = cloned.children
+          .map(cid => idMap.get(cid))
+          .filter((cid): cid is string => !!cid);
+      }
+
+      const meta = cloned.metadata || {};
+      if (meta.groupId) {
+        const newGid = idMap.get(meta.groupId);
+        if (newGid) {
+          cloned.metadata = { ...meta, groupId: newGid };
+        } else {
+          const { groupId: _g, relX: _rx, relY: _ry, ...rest } = meta;
+          cloned.metadata = rest;
+        }
+      }
+      if (cloned.type === 'plot' && cloned.metadata?.plotCodeId) {
+        const newPcid = plotCodeIdMap.get(cloned.metadata.plotCodeId);
+        if (newPcid) {
+          cloned.metadata = { ...cloned.metadata, plotCodeId: newPcid };
+        }
+      }
+      if (cloned.type === 'arrow') {
+        const m = { ...(cloned.metadata || {}) };
+        for (const key of ['startConnection', 'endConnection'] as const) {
+          if (m[key]) {
+            const remapped = idMap.get(m[key]);
+            if (remapped) m[key] = remapped;
+            else delete m[key];
+          }
+        }
+        cloned.metadata = m;
+      }
+
+      return cloned;
+    });
+
+    set({
+      board: {
+        ...board,
+        elements: [...board.elements, ...pasted],
+        plotCodes: newPlotCodes,
+      },
+      isDirty: true,
+    });
+    get().pushHistory('Paste');
+    return pasted;
   },
 
   bringToFront: (ids: string[]) => {
@@ -1320,6 +1681,27 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     get().pushHistory('Toggle lock');
   },
 
+  toggleHidden: (ids: string[]) => {
+    const { board } = get();
+    if (!board) return;
+    // Expand groups so children follow their parent's hidden state.
+    const expandedIds = new Set(ids);
+    for (const id of ids) {
+      const el = board.elements.find(e => e.id === id);
+      if (el?.type === 'group' && el.children) {
+        el.children.forEach(cid => expandedIds.add(cid));
+      }
+    }
+    const allHidden = board.elements
+      .filter(el => expandedIds.has(el.id))
+      .every(el => el.hidden === true);
+    const newElements = board.elements.map(el =>
+      expandedIds.has(el.id) ? { ...el, hidden: !allHidden } : el
+    );
+    set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().pushHistory('Toggle hidden');
+  },
+
   alignElements: (ids: string[], alignment) => {
     const { board } = get();
     if (!board || ids.length < 2) return;
@@ -1411,7 +1793,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const { board, history, historyIndex } = get();
     if (!board) return;
     const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push({ elements: stripBlobsForHistory(structuredClone(board.elements)), description });
+    newHistory.push({
+      elements: stripBlobsForHistory(structuredClone(board.elements)),
+      plotCodes: structuredClone(board.plotCodes ?? {}),
+      description,
+    });
     if (newHistory.length > MAX_HISTORY) newHistory.shift();
     set({ history: newHistory, historyIndex: newHistory.length - 1 });
   },
@@ -1426,7 +1812,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       board.elements,
     );
     set({
-      board: { ...board, elements: restored },
+      board: {
+        ...board,
+        elements: restored,
+        plotCodes: structuredClone(entry.plotCodes ?? {}),
+      },
       historyIndex: newIndex,
       isDirty: true,
     });
@@ -1442,7 +1832,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       board.elements,
     );
     set({
-      board: { ...board, elements: restored },
+      board: {
+        ...board,
+        elements: restored,
+        plotCodes: structuredClone(entry.plotCodes ?? {}),
+      },
       historyIndex: newIndex,
       isDirty: true,
     });

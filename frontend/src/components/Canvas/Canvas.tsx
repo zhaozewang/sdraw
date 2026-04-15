@@ -27,20 +27,41 @@ import {
 } from '@/utils/alignmentGuides';
 import { findSnapTarget, toRelativeAnchor } from '@/utils/snapToShape';
 
-function elementToNode(element: BoardElement): Node {
-  // Arrow nodes and unfilled shapes need pointer-events:none on the wrapper
-  // so that clicks in empty space pass through. The SVG content inside
-  // handles its own click events to trigger selection.
+/** Compute whether an element needs pointer-events:none on its wrapper so
+ *  clicks in empty corners of unfilled polygonal shapes pass through to the
+ *  layers underneath. SVG content inside handles its own click events to
+ *  trigger selection. */
+function isPassThrough(element: BoardElement): boolean {
   const isArrow = element.type === 'arrow';
   const isPen = element.type === 'pen';
   const shape = element.metadata?.shape as string | undefined;
-  // Only unfilled polygon shapes need passthrough (clicks in empty bounding
-  // box corners should pass through). Filled shapes behave like normal rects.
   const isFilled = !!element.style.fill && element.style.fill !== 'transparent';
   const isNonRectShape = element.type === 'rectangle'
     && !!shape && shape !== 'rectangle' && !isFilled;
-  const passThrough = isArrow || isPen || isNonRectShape;
+  return isArrow || isPen || isNonRectShape;
+}
 
+/** Build the React Flow node `style` object for an element. Kept as a shared
+ *  helper because both the full-rebuild path (`elementToNode`) and the
+ *  in-place update path (position/z-index sync) need identical rules —
+ *  otherwise flags like `hidden` (opacity) and passthrough (pointerEvents)
+ *  get wiped the moment the element is moved or resized. */
+function computeNodeStyle(element: BoardElement): React.CSSProperties {
+  return {
+    width: element.width,
+    height: element.height,
+    ...(isPassThrough(element) ? { pointerEvents: 'none' as const } : {}),
+    // Soft-hide: ghost the element so it reads as a reference only, not as
+    // live content. Plots use a lower value than other elements because
+    // their dense imagery stays too readable at 0.5 — 0.25 makes the
+    // "this is excluded" state obvious at a glance. Still selectable so
+    // the user can click and Cmd+H to unhide.
+    ...(element.hidden ? { opacity: element.type === 'plot' ? 0.25 : 0.45 } : {}),
+  };
+}
+
+function elementToNode(element: BoardElement): Node {
+  const passThrough = isPassThrough(element);
   return {
     id: element.id,
     type: element.type === 'group' ? 'rectangle' : element.type,
@@ -48,11 +69,7 @@ function elementToNode(element: BoardElement): Node {
     data: { elementId: element.id },
     width: element.width,
     height: element.height,
-    style: {
-      width: element.width,
-      height: element.height,
-      ...(passThrough ? { pointerEvents: 'none' as const } : {}),
-    },
+    style: computeNodeStyle(element),
     zIndex: element.z_index,
     draggable: !element.locked && !passThrough,
     selectable: !passThrough,
@@ -292,19 +309,42 @@ export function Canvas() {
   const setZoomTo = useUIStore(s => s.setZoomTo);
   const setFitViewFn = useUIStore(s => s.setFitView);
 
+  /** Fit the viewport to every renderable, non-hidden element. Hidden
+   *  (ghosted) elements are excluded from the bounds so they don't drag
+   *  the zoom out just because the user parked a reference off-canvas. */
+  const fitVisibleBounds = useCallback((duration: number, padding = 0.1) => {
+    const b = useBoardStore.getState().board;
+    if (!b) return;
+    const els = b.elements.filter(el =>
+      el.visible !== false && !el.hidden && el.type !== 'group',
+    );
+    if (els.length === 0) {
+      reactFlow.fitView({ duration, padding });
+      return;
+    }
+    const minX = Math.min(...els.map(el => el.x));
+    const minY = Math.min(...els.map(el => el.y));
+    const maxX = Math.max(...els.map(el => el.x + el.width));
+    const maxY = Math.max(...els.map(el => el.y + el.height));
+    reactFlow.fitBounds(
+      { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+      { duration, padding },
+    );
+  }, [reactFlow]);
+
   // Register zoom/fitView callbacks for toolbar
   useEffectReact(() => {
     setZoomTo((z: number) => {
       reactFlow.zoomTo(z, { duration: 200 });
     });
     setFitViewFn(() => {
-      reactFlow.fitView({ duration: 200 });
+      fitVisibleBounds(200);
     });
     return () => {
       setZoomTo(null);
       setFitViewFn(null);
     };
-  }, [reactFlow, setZoomTo, setFitViewFn]);
+  }, [reactFlow, setZoomTo, setFitViewFn, fitVisibleBounds]);
 
   // Fit view to content when a board is first loaded
   const lastBoardIdRef = useRef<string | null>(null);
@@ -314,10 +354,10 @@ export function Canvas() {
       lastBoardIdRef.current = id;
       // Delay to let nodes render first
       setTimeout(() => {
-        reactFlow.fitView({ duration: 300, padding: 0.1 });
+        fitVisibleBounds(300, 0.1);
       }, 100);
     }
-  }, [board?.id, reactFlow]);
+  }, [board?.id, fitVisibleBounds]);
 
   const dragStartRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const alignedRef = useRef(false); // track if alignment snap was active
@@ -357,7 +397,7 @@ export function Canvas() {
     // Structural fingerprint: only fields that affect which nodes exist and their visual type.
     // Exclude source.embeddedData/linkStatus/lastModified to avoid spurious rebuilds on save.
     const structFingerprint = board.elements
-      .map(el => `${el.id}:${el.visible}:${el.locked}:${el.type}:${el.source?.path || ''}:${el.text || ''}:${el.metadata?.shape || ''}:${el.style?.fill || ''}:${el.style?.strokeColor || ''}`)
+      .map(el => `${el.id}:${el.visible}:${!!el.hidden}:${el.locked}:${el.type}:${el.source?.path || ''}:${el.text || ''}:${el.metadata?.shape || ''}:${el.style?.fill || ''}:${el.style?.strokeColor || ''}`)
       .join('|');
     // Position/size fingerprint
     const posFingerprint = board.elements
@@ -391,7 +431,12 @@ export function Canvas() {
               position: { x: el.x, y: el.y },
               width: el.width,
               height: el.height,
-              style: { width: el.width, height: el.height },
+              // Recompute the full style object so flags like `hidden`
+              // (opacity) and passthrough (pointerEvents) survive moves and
+              // resizes — a naive `{width, height}` replacement was dropping
+              // them and hidden elements came back at 100% opacity after a
+              // resize.
+              style: computeNodeStyle(el),
               zIndex: el.z_index,
             };
           });
@@ -705,6 +750,7 @@ export function Canvas() {
     const isRect = payload.type === 'rectangle';
     const isArrow = payload.type === 'arrow';
     const isPen = payload.type === 'pen';
+    const isPlot = payload.type === 'plot';
 
     // Snap start point for arrows
     let startX = coords.x, startY = coords.y;
@@ -790,11 +836,11 @@ export function Canvas() {
           ],
         });
       } else {
-        // Rectangles: bounding box with optional square constraint
+        // Rectangles: free-form bounding box. Hold Shift to constrain to a square.
         let w = Math.abs(cur.x - start.canvasX);
         let h = Math.abs(cur.y - start.canvasY);
 
-        if (isRect && !ev.shiftKey) {
+        if (isRect && ev.shiftKey) {
           const side = Math.max(w, h);
           w = side;
           h = side;
@@ -842,6 +888,11 @@ export function Canvas() {
             x: Math.round(start.canvasX), y: Math.round(start.canvasY),
             width: 200, height: 1,
             points: [{ x: 0, y: 0 }, { x: 200, y: 0 }],
+          });
+        } else if (isPlot) {
+          useBoardStore.getState().updateElement(elId, {
+            x: Math.round(start.canvasX), y: Math.round(start.canvasY),
+            width: 400, height: 320,
           });
         } else {
           useBoardStore.getState().updateElement(elId, {

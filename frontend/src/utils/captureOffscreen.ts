@@ -214,6 +214,16 @@ function buildPlotElement(el: BoardElement, ox: number, oy: number): HTMLElement
   const style = el.style || {};
   const meta = el.metadata || {};
   const wrapper = document.createElement('div');
+  // Background: the live PlotNode renders `style.background || 'transparent'`,
+  // but html2canvas treats `background: transparent` on an inner element as
+  // black when compositing against the offscreen container. Fall back to
+  // white when the element has no explicit background so transparent plots
+  // don't get a black frame in the export (the visible bug was that a plot
+  // with transparent bg rendered with a huge black rectangle around it,
+  // because the image only filled its natural size — see below).
+  const plotBg = (style.background && style.background !== 'transparent')
+    ? style.background
+    : '#ffffff';
   wrapper.style.cssText = `
     position: absolute;
     left: ${el.x - ox}px; top: ${el.y - oy}px;
@@ -223,23 +233,24 @@ function buildPlotElement(el: BoardElement, ox: number, oy: number): HTMLElement
     border-width: ${style.borderWidth ?? 0}px;
     border-style: ${(style.borderWidth ?? 0) > 0 ? 'solid' : 'none'};
     border-radius: ${style.borderRadius ?? 0}px;
-    background-color: ${style.background || 'transparent'};
+    background-color: ${plotBg};
     opacity: ${style.opacity ?? 1};
     z-index: ${el.z_index};
-    display: flex;
-    align-items: center;
-    justify-content: center;
   `;
 
   const lastOutput = meta.lastOutput as string | undefined;
   if (lastOutput) {
-    // html2canvas doesn't respect object-fit:contain, so we manually
-    // compute the contained size using a flex centering approach.
-    // The image's max-width/max-height constrain it to fit while
-    // preserving aspect ratio — equivalent to object-fit:contain.
+    // The live PlotNode uses `object-fit: fill` — the cached image is
+    // stretched to exactly match the element's width/height box. The
+    // export must match: `max-width:100%; max-height:100%` was a
+    // simulated object-contain that only CAPPED the image, so a cached
+    // image smaller than the element rendered at its natural size and
+    // left a visible margin around it (which then showed the plot
+    // wrapper's background — black for transparent, white otherwise —
+    // making identically-sized panels look completely different).
     const img = document.createElement('img');
     img.src = `data:image/png;base64,${lastOutput}`;
-    img.style.cssText = 'max-width: 100%; max-height: 100%; display: block;';
+    img.style.cssText = 'width: 100%; height: 100%; object-fit: fill; display: block;';
     img.draggable = false;
     wrapper.appendChild(img);
   }
@@ -625,7 +636,7 @@ export async function captureOffscreen(
   board: Board,
   opts: OffscreenCaptureOptions,
 ): Promise<HTMLCanvasElement> {
-  const elements = board.elements.filter(e => e.visible !== false);
+  const elements = board.elements.filter(e => e.visible !== false && !e.hidden);
   if (elements.length === 0) throw new Error('No visible elements to export');
 
   const sorted = [...elements].sort((a, b) => (a.z_index || 0) - (b.z_index || 0));

@@ -57,6 +57,7 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const selected = rfSelected || isSelectedInStore;
 
   const onResizeAbsolute = useCallback((x: number, y: number, w: number, h: number) => {
+    // For groups, `updateElement` propagates the scale to every child.
     updateElement(elementId, { x, y, width: w, height: h });
   }, [elementId, updateElement]);
 

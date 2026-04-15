@@ -50,22 +50,76 @@ export function useKeyboardShortcuts() {
       return;
     }
 
-    // Copy (store IDs for now, actual clipboard integration is complex)
+    // Copy — serialize selected elements to system clipboard so paste works across boards
     if (mod && e.key === 'c') {
-      if (selectedIds.length > 0) {
-        (window as any).__sdraw_clipboard = selectedIds;
+      const b = store.board;
+      if (!b || selectedIds.length === 0) return;
+
+      // Expand selection: if a group is selected, also include its children
+      const idSet = new Set(selectedIds);
+      for (const id of selectedIds) {
+        const el = b.elements.find(x => x.id === id);
+        if (el?.type === 'group' && el.children) {
+          for (const cid of el.children) idSet.add(cid);
+        }
       }
+      const elements = b.elements.filter(el => idSet.has(el.id));
+      if (elements.length === 0) return;
+
+      // Include the plot code entries referenced by the pasted plots so a
+      // cross-board paste carries its Python source along — without this,
+      // the pasted figure elements land in the target board with dangling
+      // plotCodeId references and the code is empty.
+      const plotCodes: Record<string, { code: string }> = {};
+      for (const el of elements) {
+        if (el.type !== 'plot') continue;
+        const pcid = el.metadata?.plotCodeId;
+        if (typeof pcid !== 'string') continue;
+        const entry = b.plotCodes?.[pcid];
+        if (entry) plotCodes[pcid] = { code: entry.code };
+      }
+
+      const payload = {
+        __sdraw: 'clipboard',
+        version: 2,
+        sourceBoardId: b.id,
+        elements: structuredClone(elements),
+        plotCodes,
+      };
+      (window as any).__sdraw_clipboard = payload;
+      try { navigator.clipboard.writeText(JSON.stringify(payload)); } catch {}
       return;
     }
 
-    // Paste
+    // Paste — read from system clipboard, fall back to in-memory; remap IDs
     if (mod && e.key === 'v') {
-      const clipboard = (window as any).__sdraw_clipboard as string[] | undefined;
-      if (clipboard && clipboard.length > 0) {
-        e.preventDefault();
-        const duplicated = store.duplicateElements(clipboard);
-        useUIStore.getState().setSelectedIds(duplicated.map(el => el.id));
-      }
+      e.preventDefault();
+      (async () => {
+        let payload: any = (window as any).__sdraw_clipboard;
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text) {
+            try {
+              const parsed = JSON.parse(text);
+              if (parsed?.__sdraw === 'clipboard' && Array.isArray(parsed.elements)) {
+                payload = parsed;
+              }
+            } catch {}
+          }
+        } catch {}
+
+        if (!payload?.elements?.length) return;
+        const cur = useBoardStore.getState();
+        if (!cur.board) return;
+        const sameBoard = cur.board.id === payload.sourceBoardId;
+        const offset = sameBoard ? { x: 20, y: 20 } : { x: 0, y: 0 };
+        const pasted = cur.pasteElements(
+          payload.elements,
+          offset,
+          payload.plotCodes ?? undefined,
+        );
+        useUIStore.getState().setSelectedIds(pasted.map(el => el.id));
+      })();
       return;
     }
 
@@ -123,6 +177,15 @@ export function useKeyboardShortcuts() {
       return;
     }
 
+    // Toggle hidden (soft hide — ghosted, excluded from export/Run All/fit view)
+    if (mod && e.key === 'h') {
+      e.preventDefault();
+      if (selectedIds.length > 0) {
+        store.toggleHidden(selectedIds);
+      }
+      return;
+    }
+
     // Arrow key nudge
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
       if (selectedIds.length > 0) {
@@ -148,11 +211,13 @@ export function useKeyboardShortcuts() {
       return;
     }
 
-    // Select all
+    // Select all — skip hidden (ghosted) elements so they stay as reference-only.
     if (mod && e.key === 'a') {
       e.preventDefault();
       if (store.board) {
-        useUIStore.getState().setSelectedIds(store.board.elements.map(el => el.id));
+        useUIStore.getState().setSelectedIds(
+          store.board.elements.filter(el => !el.hidden).map(el => el.id)
+        );
       }
       return;
     }
