@@ -146,6 +146,27 @@ async def open_board_from_file(body: OpenBoardFromFileRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+class PlotlyJsonRequest(BaseModel):
+    board_id: str
+    element_id: str
+
+
+@router.post("/plotly-json")
+async def get_plotly_json(body: PlotlyJsonRequest):
+    """Return the cached Plotly spec for a single plot element.
+
+    plotlyJson is only needed by the PlotEditor modal. It lives in
+    ~/.sdraw/cache/<board-id>/cache.json. Splitting it out of the
+    /boards/open response keeps initial loads fast on slow links.
+    Returns {"plotly_json": null} when the cache entry is missing
+    instead of 404 — callers treat "no cached spec" as a normal state.
+    """
+    from services.board_cache import load_element_plotly_json
+
+    spec = load_element_plotly_json(body.board_id, body.element_id)
+    return {"plotly_json": spec}
+
+
 class SummaryRequest(BaseModel):
     path: str
 

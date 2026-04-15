@@ -55,6 +55,19 @@ export const api = {
       body: JSON.stringify({ path }),
     }),
 
+  // Plot specs for PlotEditor are multi-MB per plot and live in
+  // ~/.sdraw/cache/. We fetch them lazily when the editor modal opens
+  // instead of shipping them with every /boards/open response.
+  getPlotlyJson: (boardId: string, elementId: string) =>
+    request<{ plotly_json: string | null }>(
+      '/boards/plotly-json',
+      {
+        method: 'POST',
+        body: JSON.stringify({ board_id: boardId, element_id: elementId }),
+      },
+      15000,
+    ),
+
   boardSummary: (path: string) =>
     request<WorkspaceBoardSummary>('/boards/summary', {
       method: 'POST',

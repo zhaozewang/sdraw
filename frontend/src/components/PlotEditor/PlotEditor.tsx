@@ -454,6 +454,10 @@ export function PlotEditor() {
       setLocalStdout(element.metadata?.lastStdout || null);
       setLocalError(element.metadata?.lastError || null);
       setCropRect(element.metadata?.plotCrop || null);
+      // plotlyJson is lazy-loaded (see the effect below) — seed with
+      // whatever is already in-memory on the element. If the user just
+      // finished a run in this session it will be populated; otherwise
+      // the lazy fetch will hydrate it from the board cache.
       setPlotlyJson(element.metadata?.plotlyJson || null);
       // Clear any snapshot captured from the previous editor session —
       // otherwise Save would pick up the old element's image as the
@@ -464,6 +468,27 @@ export function PlotEditor() {
       setSetupStdout(null); setSetupError(null);
     }
   }, [elementId, element, registryCode]);
+
+  // Lazy-load plotlyJson for the open element. The /boards/open response
+  // no longer carries plotlyJson (it's several MB per plot and only the
+  // editor needs it), so fetch from ~/.sdraw/cache/ when the editor opens
+  // on an element whose spec isn't already in memory. Harmless when the
+  // element has no cached spec — the fetch returns null and the UI falls
+  // back to the PNG preview.
+  useEffect(() => {
+    if (!elementId || !element) return;
+    if (element.type !== 'plot') return;
+    const boardId = useBoardStore.getState().board?.id;
+    if (!boardId) return;
+    // Already have it (freshly run this session) — nothing to do.
+    if (element.metadata?.plotlyJson) return;
+    let cancelled = false;
+    api.getPlotlyJson(boardId, elementId).then(res => {
+      if (cancelled) return;
+      if (res.plotly_json) setPlotlyJson(res.plotly_json);
+    }).catch(() => { /* best-effort: fall back to PNG preview */ });
+    return () => { cancelled = true; };
+  }, [elementId, element]);
 
   // Keyboard shortcuts for tab switching inside the editor.
   // Use a capture-phase listener so it beats CodeMirror's own key handling.

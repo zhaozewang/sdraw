@@ -16,6 +16,7 @@ if getattr(sys, 'frozen', False):
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from routers import boards, export, files, plot
@@ -59,6 +60,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="sDraw", version="0.1.0", lifespan=lifespan)
+
+# Compress responses larger than ~1 KB. Base64-heavy JSON payloads
+# (embedded images, plot outputs) compress well, which matters on slow
+# links such as SSH port-forward tunnels. Transparent to clients.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # CORS - allow all for local app
 app.add_middleware(

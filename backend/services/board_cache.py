@@ -103,32 +103,47 @@ def _cache_dir(board_id: str) -> Path:
 
 
 def save_cache(board: dict) -> None:
-    """Extract cacheable data from a board and write to cache dir."""
+    """Extract cacheable data from a board and write to cache dir.
+
+    Merges with any existing cache so plotlyJson entries that the client
+    never hydrated (because they're now lazy-fetched by the PlotEditor)
+    are preserved instead of being dropped. Entries for elements that no
+    longer exist in the board are cleaned up.
+    """
     board_id = board.get("id")
     if not board_id:
         return
 
-    cache = {}
+    existing = load_cache(board_id)
+    cache: dict = {**existing}
 
     # Board-level cache
     for key in _CACHE_BOARD_KEYS:
         if board.get(key):
             cache[key] = board[key]
 
-    # Element-level cache (plotlyJson per element)
-    elements_cache = {}
+    # Start from existing per-element entries so lazy plotlyJson survives
+    # a save round-trip that didn't carry it.
+    elements_cache: dict = {**(existing.get("elements") or {})}
+
+    # Drop entries for elements that no longer exist on this board.
+    current_ids = {el.get("id") for el in board.get("elements", []) if el.get("id")}
+    elements_cache = {eid: val for eid, val in elements_cache.items() if eid in current_ids}
+
+    # Overlay any freshly-provided values from the incoming board.
     for el in board.get("elements", []):
         el_id = el.get("id")
+        if not el_id:
+            continue
         meta = el.get("metadata") or {}
-        el_cache = {}
         for key in _CACHE_METADATA_KEYS:
             if meta.get(key):
-                el_cache[key] = meta[key]
-        if el_cache:
-            elements_cache[el_id] = el_cache
+                elements_cache.setdefault(el_id, {})[key] = meta[key]
 
     if elements_cache:
         cache["elements"] = elements_cache
+    elif "elements" in cache:
+        del cache["elements"]
 
     if not cache:
         return
@@ -180,7 +195,14 @@ def strip_cached_fields(board: dict) -> dict:
 
 
 def merge_cache_into_board(board: dict) -> dict:
-    """Merge cached data back into a board loaded from .sdraw file."""
+    """Merge cached data back into a board loaded from .sdraw file.
+
+    Note: `plotlyJson` is NOT merged here. The cached Plotly specs can be
+    multiple megabytes per plot and are only needed by the PlotEditor
+    modal — not by the canvas thumbnails. The frontend lazily fetches
+    them via /boards/plotly-json when the editor is opened. This keeps
+    /boards/open responses small on slow links (e.g. SSH tunnels).
+    """
     board_id = board.get("id")
     if not board_id:
         return board
@@ -202,20 +224,22 @@ def merge_cache_into_board(board: dict) -> dict:
     if "thumbnail" not in merged and cache.get("thumbnail"):
         merged["thumbnail"] = cache["thumbnail"]
 
-    # Element-level cache
-    elements_cache = cache.get("elements", {})
-    if elements_cache:
-        merged_elements = []
-        for el in board.get("elements", []):
-            el_cache = elements_cache.get(el.get("id", ""), {})
-            if el_cache and "metadata" in el:
-                merged_el = {**el, "metadata": {**el["metadata"], **el_cache}}
-                merged_elements.append(merged_el)
-            else:
-                merged_elements.append(el)
-        merged["elements"] = merged_elements
-
+    # Intentionally NOT merging element-level plotlyJson — see docstring.
     return merged
+
+
+def load_element_plotly_json(board_id: str, element_id: str) -> str | None:
+    """Return the cached plotlyJson for one element, or None if missing.
+
+    Used by the lazy /boards/plotly-json endpoint so PlotEditor can fetch
+    on demand instead of shipping every plot's Plotly spec in every open.
+    """
+    cache = load_cache(board_id)
+    if not cache:
+        return None
+    el_cache = (cache.get("elements") or {}).get(element_id) or {}
+    val = el_cache.get("plotlyJson")
+    return val if isinstance(val, str) else None
 
 
 def delete_cache(board_id: str) -> None:
