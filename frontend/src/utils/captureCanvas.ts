@@ -312,10 +312,18 @@ async function boardToSvg(board: Board, opts: CaptureOptions): Promise<string> {
 
   let body = fragments.join('\n');
 
-  // Fetch images and convert to base64 data URIs
+  // Fetch images and convert to base64 data URIs. Prefer the board's
+  // embedded copy when present — avoids hitting /api/image for bytes we
+  // already have in memory (very noticeable over slow links).
   for (const el of imageElements) {
     const placeholder = `__IMAGE_${el.id}__`;
     if (!body.includes(placeholder)) continue;
+    const embedded = el.source?.embeddedData;
+    if (embedded) {
+      const mime = el.source?.embeddedMime || 'image/png';
+      body = body.replace(placeholder, `data:${mime};base64,${embedded}`);
+      continue;
+    }
     try {
       const res = await fetch(`/api/image?path=${encodeURIComponent(el.source!.path)}`);
       if (res.ok) {

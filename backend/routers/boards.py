@@ -11,6 +11,27 @@ from models.board import Board
 router = APIRouter(prefix="/api/boards", tags=["boards"])
 
 
+def _fnv1a(s: str) -> str:
+    """FNV-1a 32-bit hash — matches the frontend's fnv1a() exactly."""
+    h = 0x811C9DC5
+    for ch in s:
+        h ^= ord(ch)
+        h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) & 0xFFFFFFFF
+    return format(h, "08x")
+
+
+def _code_digest(board: dict) -> str:
+    """Same as the frontend codeDigest(): FNV-1a of setup code + sorted
+    plot codes. Returns a short hex string for equality comparison."""
+    parts = []
+    setup_code = (board.get("setup") or {}).get("code", "")
+    parts.append(f"setup\n{setup_code}")
+    plot_codes = board.get("plotCodes") or {}
+    for pcid, entry in sorted(plot_codes.items()):
+        parts.append(f"plot:{pcid}\n{entry.get('code', '')}")
+    return _fnv1a("\n---\n".join(parts))
+
+
 class CreateBoardRequest(BaseModel):
     name: str = "Untitled Board"
 
@@ -112,9 +133,12 @@ async def save_board_to_file(body: SaveBoardToFileRequest):
             except OSError:
                 pass
 
+        # Do NOT echo the board back — the frontend already has it and
+        # shipping a ~10 MB response on every autosave is what made save
+        # feel blocking over slow links. Callers that genuinely need the
+        # post-save board shape can migrate locally.
         return {
             "path": str(p),
-            "board": body.board,
             "size": size,
             "oversized": size > SDRAW_SOFT_SIZE_LIMIT,
             "soft_limit": SDRAW_SOFT_SIZE_LIMIT,
@@ -289,3 +313,29 @@ async def delete_checkpoint(body: CheckpointCheckRequest):
     if cp.exists():
         cp.unlink()
     return {"deleted": True}
+
+
+class DigestRequest(BaseModel):
+    path: str
+
+
+@router.post("/digest")
+async def board_code_digest(body: DigestRequest):
+    """Return the code digest for a board file on disk.
+
+    Uses the same FNV-1a algorithm as the frontend's ``codeDigest()`` so
+    the external-change detector can compare hashes without downloading
+    the entire board. Replaces the old pattern of calling ``/boards/open``
+    (which returned a multi-MB response) solely to run a hash comparison.
+    """
+    from services.board_cache import migrate_board_schema
+
+    p = Path(body.path).resolve()
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Board file not found")
+    try:
+        data = json.loads(p.read_text())
+        data = migrate_board_schema(data)
+        return {"digest": _code_digest(data)}
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

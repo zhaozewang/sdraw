@@ -202,7 +202,15 @@ function buildImageElement(el: BoardElement, ox: number, oy: number): HTMLElemen
   if (path) {
     const img = document.createElement('img');
     img.crossOrigin = 'anonymous';
-    img.src = `/api/image?path=${encodeURIComponent(path)}`;
+    // Prefer the embedded base64 copy when the board carries one —
+    // avoids a redundant /api/image round-trip during every auto-export
+    // (which can otherwise fire multi-MB fetches per linked image each
+    // time the fingerprint changes).
+    const embedded = el.source?.embeddedData;
+    const mime = el.source?.embeddedMime || 'image/png';
+    img.src = embedded
+      ? `data:${mime};base64,${embedded}`
+      : `/api/image?path=${encodeURIComponent(path)}`;
     img.style.cssText = 'width: 100%; height: 100%; object-fit: fill; display: block;';
     img.draggable = false;
     wrapper.appendChild(img);

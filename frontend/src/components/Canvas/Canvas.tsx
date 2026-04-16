@@ -346,18 +346,45 @@ export function Canvas() {
     };
   }, [reactFlow, setZoomTo, setFitViewFn, fitVisibleBounds]);
 
-  // Fit view to content when a board is first loaded
+  // On first load of a given board, restore the last saved viewport for
+  // that file if we have one. Otherwise fit-to-content as before. The
+  // delay lets React Flow measure nodes before we call setViewport /
+  // fitBounds — without it the math runs against stale sizes.
   const lastBoardIdRef = useRef<string | null>(null);
   useEffectReact(() => {
     const id = board?.id ?? null;
     if (id && id !== lastBoardIdRef.current) {
       lastBoardIdRef.current = id;
-      // Delay to let nodes render first
+      const path = useBoardStore.getState().boardFilePath;
+      let saved: { x: number; y: number; zoom: number } | null = null;
+      if (path) {
+        try {
+          const raw = localStorage.getItem(`sdraw_viewport:${path}`);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (
+              parsed &&
+              typeof parsed.x === 'number' &&
+              typeof parsed.y === 'number' &&
+              typeof parsed.zoom === 'number'
+            ) {
+              saved = parsed;
+            }
+          }
+        } catch {
+          // corrupt entry — fall back to fit-to-content
+        }
+      }
       setTimeout(() => {
-        fitVisibleBounds(300, 0.1);
+        if (saved) {
+          reactFlow.setViewport(saved, { duration: 0 });
+          setZoom(saved.zoom);
+        } else {
+          fitVisibleBounds(300, 0.1);
+        }
       }, 100);
     }
-  }, [board?.id, fitVisibleBounds]);
+  }, [board?.id, fitVisibleBounds, reactFlow, setZoom]);
 
   const dragStartRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const alignedRef = useRef(false); // track if alignment snap was active
@@ -970,11 +997,34 @@ export function Canvas() {
     document.addEventListener('pointerup', onUp);
   }, [clientToCanvas]);
 
-  const onMoveEnd = useCallback((_event: any, viewport: { zoom: number }) => {
-    setZoom(viewport.zoom);
-  }, [setZoom]);
+  // Debounced viewport persistence — writes {x, y, zoom} to localStorage
+  // keyed by the current board file path so the next refresh restores the
+  // same pan/zoom the user had. We deliberately keep this out of the
+  // board JSON (and out of the dirty/autosave path) because it's a
+  // per-device preference, not board content.
+  const saveViewportTimerRef = useRef<number | null>(null);
+  const persistViewport = useCallback((viewport: { x: number; y: number; zoom: number }) => {
+    if (saveViewportTimerRef.current) clearTimeout(saveViewportTimerRef.current);
+    saveViewportTimerRef.current = window.setTimeout(() => {
+      const path = useBoardStore.getState().boardFilePath;
+      if (!path) return;
+      try {
+        localStorage.setItem(
+          `sdraw_viewport:${path}`,
+          JSON.stringify({ x: viewport.x, y: viewport.y, zoom: viewport.zoom }),
+        );
+      } catch {
+        // quota exceeded or storage disabled — silently ignore
+      }
+    }, 500);
+  }, []);
 
-  const onMove = useCallback((_event: any, viewport: { zoom: number }) => {
+  const onMoveEnd = useCallback((_event: any, viewport: { x: number; y: number; zoom: number }) => {
+    setZoom(viewport.zoom);
+    persistViewport(viewport);
+  }, [setZoom, persistViewport]);
+
+  const onMove = useCallback((_event: any, viewport: { x: number; y: number; zoom: number }) => {
     setZoom(viewport.zoom);
   }, [setZoom]);
 

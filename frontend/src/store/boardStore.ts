@@ -843,12 +843,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       app_version: '0.1.0',
     };
     const result = await api.saveBoardToFile(board, filePath);
-    const loaded = migrateToPlotCodeRegistry(result.board);
     set({
-      board: loaded,
+      board: board,
       boardFilePath: result.path,
       isDirty: false,
-      loadedCodeDigest: codeDigest(loaded),
+      loadedCodeDigest: codeDigest(board),
       history: [{ elements: [], plotCodes: {}, description: 'New board' }],
       historyIndex: 0,
     });
@@ -937,26 +936,30 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const boardFilePath = initial.boardFilePath;
 
     // --- External-change detection ---
-    // Re-read the file as it currently sits on disk and compare the code
-    // digest to the baseline we captured on load/last-save. If an external
-    // process (e.g. an AI agent) rewrote the Python code, open a conflict
-    // modal and wait for the user to pick a resolution.
+    // Compare a lightweight code digest (just the hash, not the full board)
+    // against the baseline we captured on load/last-save. Only fetches the
+    // full board from disk when a conflict is actually detected — the
+    // common "no conflict" path is a single tiny POST instead of a
+    // multi-MB download.
     if (initial.loadedCodeDigest !== null) {
-      let diskBoard: Board | null = null;
+      let conflict = false;
       try {
-        const r = await api.openBoardFromFile(boardFilePath);
-        diskBoard = r.board as Board;
+        const { digest: diskDigest } = await api.boardCodeDigest(boardFilePath);
+        conflict = diskDigest !== initial.loadedCodeDigest;
       } catch {
-        // File missing / unreadable — fall through to normal save, which
-        // will either recreate the file or surface a clear error.
+        // File missing / unreadable — fall through to normal save.
       }
-      if (diskBoard) {
-        // Migrate the disk snapshot into registry form before comparing so
-        // the digest function can run against a clean v3 shape.
-        const dbMigrated = migrateToPlotCodeRegistry(diskBoard);
-        const diskDigest = codeDigest(dbMigrated);
-        if (diskDigest !== initial.loadedCodeDigest) {
-          const db = dbMigrated;
+      if (conflict) {
+        let diskBoard: Board | null = null;
+        try {
+          const r = await api.openBoardFromFile(boardFilePath);
+          diskBoard = r.board as Board;
+        } catch {
+          // Can't read disk copy — fall through to save.
+        }
+        if (diskBoard) {
+          const db = migrateToPlotCodeRegistry(diskBoard);
+          const diskDigest = codeDigest(db);
           const choice = await new Promise<'mine' | 'theirs' | 'merge' | 'cancel'>(resolve => {
             set({ externalConflict: { diskBoard: db, diskDigest, resolve } });
           });
@@ -965,8 +968,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           if (choice === 'cancel') return;
 
           if (choice === 'theirs') {
-            // Discard in-memory state and adopt the disk version wholesale.
-            // No write needed — we're now in sync with disk.
             set({
               board: db,
               isDirty: false,
@@ -982,9 +983,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           }
 
           if (choice === 'merge') {
-            // Take disk's plotCodes registry + setup, keep the user's
-            // canvas layout, then fall through to the normal save path so
-            // the merged state gets written.
             const cur = get().board!;
             const merged = mergeAgentCodeIntoLayout(cur, db);
             const mergedBoard: Board = {
@@ -998,13 +996,17 @@ export const useBoardStore = create<BoardState>((set, get) => ({
             };
             set({ board: mergedBoard });
           }
-          // 'mine' → fall through, overwriting disk with the in-memory board.
         }
       }
     }
 
     const board = get().board;
     if (!board) return;
+
+    const { useUIStore } = await import('@/store/uiStore');
+    const setProgress = useUIStore.getState().setProgressLabel;
+    setProgress('Saving...');
+    try {
 
     // Capture thumbnail from the canvas
     let thumbnail: string | undefined;
@@ -1014,17 +1016,28 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       // Thumbnail capture is best-effort
     }
 
-    // Embed images: for each image element with a source path, fetch the
-    // file data and store as base64 so the board is self-contained.
-    // Files that exceed the backend per-image cap come back with
-    // `oversized: true` and no data — we keep the linked path and accept a
-    // reduced render guarantee for that one element rather than bloat the
-    // .sdraw file. Collect oversized paths so we can warn the user.
+    // Embed images: for each image element with a source path, check
+    // whether the file has changed since we last embedded it. Only
+    // re-fetch + re-encode when the source is genuinely newer — this
+    // avoids ~30 MB of redundant embedImage round-trips on every save
+    // when no source files have changed (the typical case after running
+    // a plot cell).
     const oversizedImages: { path: string; size?: number }[] = [];
     const embeddedElements = await Promise.all(
       board.elements.map(async (el) => {
         if (el.type !== 'image' || !el.source?.path) return el;
         try {
+          // Fast path: source file hasn't changed since we last embedded.
+          if (el.source.embeddedData && el.source.lastModified) {
+            const check = await api.checkImage(el.source.path);
+            if (!check.exists) {
+              return { ...el, source: { ...el.source, linkStatus: 'unlinked' as const } };
+            }
+            if (check.mtime && check.mtime <= el.source.lastModified) {
+              return { ...el, source: { ...el.source, linkStatus: 'linked' as const } };
+            }
+          }
+          // Slow path: source is newer (or never embedded). Re-embed.
           const result = await api.embedImage(el.source.path);
           if (result.exists && result.oversized) {
             oversizedImages.push({ path: el.source.path, size: result.size });
@@ -1049,13 +1062,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
               },
             };
           }
-          // File doesn't exist — mark as unlinked but keep existing embedded data
           return {
             ...el,
             source: { ...el.source, linkStatus: 'unlinked' as const },
           };
         } catch {
-          return el; // embedding failed, keep element as-is
+          return el;
         }
       })
     );
@@ -1066,8 +1078,10 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       updated_at: new Date().toISOString(),
       thumbnail,
     };
+    setProgress('Uploading...');
     const saveResult = await api.saveBoardToFile(updated, boardFilePath);
     set({ board: updated, isDirty: false, loadedCodeDigest: codeDigest(updated) });
+    setProgress(null);
     // Clean up checkpoint after a successful save
     try { await api.deleteCheckpoint(boardFilePath); } catch {}
 
@@ -1090,6 +1104,10 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       console.warn(
         `[sdraw] .sdraw file is large (${mb} MB). Consider splitting the board or removing unused images.`,
       );
+    }
+
+    } finally {
+      setProgress(null);
     }
   },
 
@@ -1192,6 +1210,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
 
     useUIStore.getState().setExportStatus('exporting');
+    useUIStore.getState().setProgressLabel('Rendering export...');
 
     try {
       // Off-screen DOM rendering: build a hidden container with DOM elements
@@ -1221,16 +1240,21 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         return;
       }
 
+      useUIStore.getState().setProgressLabel('Uploading export...');
       const mimeType = ae.format === 'jpg' ? 'image/jpeg' : 'image/png';
       const dataUrl = canvas.toDataURL(mimeType, 0.95);
+      // Gzip the data URL before sending — PNG/JPEG data URLs are large
+      // and base64 compresses ~25% even on top of binary image data.
+      const payload = JSON.stringify({ path: ae.outputPath, data_url: dataUrl });
+      const blob = new Blob([payload]);
+      const compressed = await new Response(
+        blob.stream().pipeThrough(new CompressionStream('gzip')),
+      ).arrayBuffer();
       const res = await fetch('/api/export/save', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
         signal: signal,
-        body: JSON.stringify({
-          path: ae.outputPath,
-          data_url: dataUrl,
-        }),
+        body: compressed,
       });
 
       if (signal?.aborted || get().board?.id !== exportBoardId) {
@@ -1238,6 +1262,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         return;
       }
 
+      useUIStore.getState().setProgressLabel(null);
       if (!res.ok) {
         console.error('Auto-export save failed:', await res.text());
         useUIStore.getState().setExportStatus('error');
@@ -1254,6 +1279,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       console.error('Auto-export failed:', err);
       const { useUIStore: ui } = await import('@/store/uiStore');
       ui.getState().setExportStatus('error');
+      ui.getState().setProgressLabel(null);
     }
   },
 

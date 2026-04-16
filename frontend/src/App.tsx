@@ -1255,13 +1255,28 @@ class ErrorBoundary extends React.Component<
 // ---------------------------------------------------------------------------
 // Editor
 // ---------------------------------------------------------------------------
+function ProgressBar() {
+  const label = useUIStore(s => s.progressLabel);
+  if (!label) return null;
+  return (
+    <div className="absolute top-0 left-0 right-0 z-[9999] flex items-center gap-2 px-3 py-1 bg-blue-600 text-white text-xs shadow-md">
+      <div className="h-1 w-16 rounded-full bg-white/30 overflow-hidden">
+        <div className="h-full w-full bg-white rounded-full animate-[progress_1.5s_ease-in-out_infinite]" />
+      </div>
+      <span>{label}</span>
+      <style>{`@keyframes progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }`}</style>
+    </div>
+  );
+}
+
 function Editor() {
   useWebSocket();
   useKeyboardShortcuts();
   useAutoSave();
 
   return (
-    <div className="h-screen w-screen flex flex-col overflow-hidden bg-canvas-bg text-gray-800 dark:text-on-surface-primary">
+    <div className="h-screen w-screen flex flex-col overflow-hidden bg-canvas-bg text-gray-800 dark:text-on-surface-primary relative">
+      <ProgressBar />
       <Toolbar />
       <div className="flex flex-1 min-h-0">
         <InsertPanel />
@@ -1286,6 +1301,16 @@ function AppContent() {
   const boardFilePath = useBoardStore(s => s.boardFilePath);
   const openBoard = useBoardStore(s => s.openBoard);
   const [initializing, setInitializing] = useState(true);
+  // Captured once at mount so the render guard below stays stable across
+  // re-renders even if the URL sync effect briefly strips the `?board=`
+  // param while the initial openBoard is still in-flight.
+  const hadBoardInUrl = useRef(
+    !!new URLSearchParams(window.location.search).get('board'),
+  ).current;
+  // Only true if the initial openBoard attempt actually failed (network
+  // error, bad path, migrate threw, etc.). Until then, we never render
+  // the welcome screen — avoids the "home page flash then editor" bug.
+  const [openFailed, setOpenFailed] = useState(false);
 
   // VS Code webview bridge (no-op when not in VS Code)
   useVSCodeBridge();
@@ -1328,21 +1353,25 @@ function AppContent() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // On mount, check URL for board param
+  // On mount, check URL for board param. Keep the "Loading…" screen up
+  // until openBoard resolves or rejects — otherwise a slow load (big
+  // board over an SSH port-forward) drops the user onto the welcome
+  // screen and then snaps back to the editor, which looks broken.
+  // `openBoardFromFile`'s own request timeout is the upper bound.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const boardPath = params.get('board');
     if (boardPath && !board) {
-      // Timeout after 3s to avoid stuck loading
-      const timeout = setTimeout(() => setInitializing(false), 3000);
       openBoard(boardPath)
         .catch(() => {
-          // Clear bad URL param
+          // Clear bad URL param so the welcome screen doesn't loop on a
+          // stale path, and unlock the welcome render path.
+          setOpenFailed(true);
           const url = new URL(window.location.href);
           url.searchParams.delete('board');
           window.history.replaceState({}, '', url.toString());
         })
-        .finally(() => { clearTimeout(timeout); setInitializing(false); });
+        .finally(() => { setInitializing(false); });
     } else {
       setInitializing(false);
     }
@@ -1362,7 +1391,13 @@ function AppContent() {
     window.history.replaceState({}, '', url.toString());
   }, [boardFilePath, boardName]);
 
-  if (initializing) return (
+  // Show the loading screen while the initial openBoard is in-flight,
+  // AND also whenever the URL said we should have a board but we don't
+  // yet (and the attempt hasn't explicitly failed). This covers any
+  // race where `initializing` could briefly flip to false before the
+  // board state has been committed, which previously caused the welcome
+  // screen to flash for one frame before the editor took over.
+  if (initializing || (hadBoardInUrl && !board && !openFailed)) return (
     <div className="h-screen w-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 dark:from-[#1e1f22] dark:to-[#2b2d31]">
       <div className="text-sm text-gray-400 dark:text-on-surface-muted">Loading...</div>
     </div>

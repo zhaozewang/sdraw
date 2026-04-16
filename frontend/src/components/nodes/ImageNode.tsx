@@ -63,6 +63,12 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
 
   const rotation = element.rotation || 0;
 
+  // When we're serving from the board's embedded base64 copy there's
+  // nothing to wait for — the bytes are already in memory. Suppressing
+  // the loading state here is what prevents the `bg-white/50` spinner
+  // overlay from ghosting every image on the canvas after open.
+  const usingEmbedded = !!source?.embeddedData && imageVersion === 0;
+
   return (
     <div style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
       <Resizer
@@ -90,7 +96,22 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
           opacity: style.opacity ?? 1,
         }}
       >
-        {imgUrl && !imgError ? (
+        {/* Prefer the embedded base64 copy when we already have it AND
+            no explicit refresh has been requested (imageVersion == 0).
+            Fetching /api/image for a linked file we've already embedded
+            is pure waste — over an SSH tunnel it can blow the link's
+            budget on every page load. Once the user clicks Refresh or
+            a file-change event bumps the version, we fall through to
+            the live URL fetch below. */}
+        {usingEmbedded ? (
+          <img
+            src={`data:${source!.embeddedMime || 'image/png'};base64,${source!.embeddedData}`}
+            alt=""
+            className="w-full h-full"
+            style={{ objectFit: 'fill' as const }}
+            draggable={false}
+          />
+        ) : imgUrl && !imgError ? (
           <img
             src={imgUrl}
             alt=""
@@ -124,7 +145,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         )}
 
-        {loading && imgUrl && !imgError && (
+        {loading && !usingEmbedded && imgUrl && !imgError && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/50">
             <RefreshCw size={16} className="animate-spin text-gray-400" />
           </div>

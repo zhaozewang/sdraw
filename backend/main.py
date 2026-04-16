@@ -13,11 +13,59 @@ if getattr(sys, 'frozen', False):
     if _internal not in sys.path:
         sys.path.insert(0, _internal)
 
+import gzip as gzip_mod
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+class GzipRequestMiddleware:
+    """Decompress gzip-encoded request bodies so clients can compress
+    large JSON payloads (board saves, exports) before sending over slow
+    links. Transparent to the ASGI app and Pydantic models downstream."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        if headers.get(b"content-encoding") != b"gzip":
+            await self.app(scope, receive, send)
+            return
+
+        body_parts: list[bytes] = []
+        while True:
+            msg = await receive()
+            body_parts.append(msg.get("body", b""))
+            if not msg.get("more_body", False):
+                break
+
+        decompressed = gzip_mod.decompress(b"".join(body_parts))
+
+        new_headers = [
+            (k, v) for k, v in scope["headers"]
+            if k not in (b"content-encoding", b"content-length")
+        ]
+        new_headers.append((b"content-length", str(len(decompressed)).encode()))
+        scope = {**scope, "headers": new_headers}
+
+        sent = False
+
+        async def new_receive() -> dict:
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": decompressed, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, new_receive, send)
 
 from routers import boards, export, files, plot
 from services.watcher import FileWatcherService
@@ -61,9 +109,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="sDraw", version="0.1.0", lifespan=lifespan)
 
-# Compress responses larger than ~1 KB. Base64-heavy JSON payloads
-# (embedded images, plot outputs) compress well, which matters on slow
-# links such as SSH port-forward tunnels. Transparent to clients.
+# Decompress gzip-encoded request bodies so clients can compress
+# large payloads (board saves ~12 MB, exports) before sending.
+app.add_middleware(GzipRequestMiddleware)
+
+# Compress responses larger than ~1 KB.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # CORS - allow all for local app

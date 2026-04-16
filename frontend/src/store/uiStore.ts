@@ -76,6 +76,10 @@ interface UIState {
   exportStatus: 'idle' | 'exporting' | 'success' | 'error';
   setExportStatus: (status: 'idle' | 'exporting' | 'success' | 'error') => void;
 
+  // Save/export progress for the global progress bar
+  progressLabel: string | null;
+  setProgressLabel: (label: string | null) => void;
+
   // Zoom callbacks (set by Canvas, called by Toolbar)
   zoomTo: ((zoom: number) => void) | null;
   fitView: (() => void) | null;
@@ -179,6 +183,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   },
   exportStatus: 'idle',
   setExportStatus: (status) => set({ exportStatus: status }),
+
+  progressLabel: null,
+  setProgressLabel: (label) => set({ progressLabel: label }),
   zoomTo: null,
   fitView: null,
   setZoomTo: (fn) => set({ zoomTo: fn }),
