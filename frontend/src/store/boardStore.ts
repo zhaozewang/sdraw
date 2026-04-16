@@ -1243,18 +1243,14 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       useUIStore.getState().setProgressLabel('Uploading export...');
       const mimeType = ae.format === 'jpg' ? 'image/jpeg' : 'image/png';
       const dataUrl = canvas.toDataURL(mimeType, 0.95);
-      // Gzip the data URL before sending — PNG/JPEG data URLs are large
-      // and base64 compresses ~25% even on top of binary image data.
-      const payload = JSON.stringify({ path: ae.outputPath, data_url: dataUrl });
-      const blob = new Blob([payload]);
-      const compressed = await new Response(
-        blob.stream().pipeThrough(new CompressionStream('gzip')),
-      ).arrayBuffer();
       const res = await fetch('/api/export/save', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
+        headers: { 'Content-Type': 'application/json' },
         signal: signal,
-        body: compressed,
+        body: JSON.stringify({
+          path: ae.outputPath,
+          data_url: dataUrl,
+        }),
       });
 
       if (signal?.aborted || get().board?.id !== exportBoardId) {

@@ -1,0 +1,365 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - button "sDraw" [ref=e5] [cursor=pointer]:
+      - img "sDraw" [ref=e6]
+    - generic [ref=e7]:
+      - textbox "multi_compartment.sdraw" [ref=e8]: multi_compartment
+      - generic [ref=e9]: .sdraw
+    - button "Save (Cmd+S)" [disabled] [ref=e10]:
+      - img [ref=e11]
+    - button "Auto Export" [ref=e16] [cursor=pointer]:
+      - img [ref=e17]
+    - button "Undo (Cmd+Z)" [disabled] [ref=e24]:
+      - img [ref=e25]
+    - button "Redo (Cmd+Shift+Z)" [disabled] [ref=e28]:
+      - img [ref=e29]
+    - button "python" [ref=e33] [cursor=pointer]:
+      - img [ref=e34]
+      - generic [ref=e36]: python
+      - img [ref=e37]
+    - button "Python Setup" [ref=e39] [cursor=pointer]:
+      - img [ref=e40]
+      - generic [ref=e43]: Python Setup
+    - button "Run All" [ref=e44] [cursor=pointer]:
+      - img [ref=e45]
+      - generic [ref=e48]: Run All
+    - button "Toggle Insert Panel" [ref=e49] [cursor=pointer]:
+      - img [ref=e50]
+    - button "Toggle Properties" [ref=e52] [cursor=pointer]:
+      - img [ref=e53]
+    - button "Toggle Grid" [ref=e55] [cursor=pointer]:
+      - img [ref=e56]
+    - button "Toggle Snap" [ref=e58] [cursor=pointer]:
+      - img [ref=e59]
+    - button "Preferences (Cmd+,)" [ref=e63] [cursor=pointer]:
+      - img [ref=e64]
+    - button "Switch to Dark Mode" [ref=e67] [cursor=pointer]:
+      - img [ref=e68]
+    - button "Zoom Out" [ref=e70] [cursor=pointer]:
+      - img [ref=e71]
+    - button "10%" [ref=e74] [cursor=pointer]
+    - button "Zoom In" [ref=e75] [cursor=pointer]:
+      - img [ref=e76]
+    - button "Fit View" [ref=e79] [cursor=pointer]:
+      - img [ref=e80]
+  - generic [ref=e85]:
+    - generic [ref=e87]:
+      - generic [ref=e88]:
+        - generic [ref=e89]: Insert
+        - button "Collapse panel" [ref=e90] [cursor=pointer]:
+          - img [ref=e91]
+      - button "Text" [ref=e95] [cursor=pointer]:
+        - img [ref=e96]
+        - generic [ref=e98]: Text
+      - generic [ref=e99]:
+        - button "Shapes" [ref=e100] [cursor=pointer]:
+          - img [ref=e101]
+          - text: Shapes
+        - generic [ref=e103]:
+          - button "Rectangle" [ref=e104] [cursor=pointer]:
+            - img [ref=e105]
+            - generic [ref=e107]: Rectangle
+          - button "Circle" [ref=e108] [cursor=pointer]:
+            - img [ref=e109]
+            - generic [ref=e111]: Circle
+          - button "Diamond" [ref=e112] [cursor=pointer]:
+            - img [ref=e113]
+            - generic [ref=e115]: Diamond
+          - button "Triangle" [ref=e116] [cursor=pointer]:
+            - img [ref=e117]
+            - generic [ref=e119]: Triangle
+          - button "Arrow Right" [ref=e120] [cursor=pointer]:
+            - img [ref=e121]
+            - generic [ref=e123]: Arrow Right
+          - button "Arrow Left" [ref=e124] [cursor=pointer]:
+            - img [ref=e125]
+            - generic [ref=e127]: Arrow Left
+          - button "Arrow Up" [ref=e128] [cursor=pointer]:
+            - img [ref=e129]
+            - generic [ref=e131]: Arrow Up
+          - button "Arrow Down" [ref=e132] [cursor=pointer]:
+            - img [ref=e133]
+            - generic [ref=e135]: Arrow Down
+          - button "Chevron" [ref=e136] [cursor=pointer]:
+            - img [ref=e137]
+            - generic [ref=e140]: Chevron
+      - generic [ref=e141]:
+        - button "Lines" [ref=e142] [cursor=pointer]:
+          - img [ref=e143]
+          - text: Lines
+        - generic [ref=e145]:
+          - button "Line" [ref=e146] [cursor=pointer]:
+            - img [ref=e147]
+            - generic [ref=e148]: Line
+          - button "Arrow" [ref=e149] [cursor=pointer]:
+            - img [ref=e150]
+            - generic [ref=e152]: Arrow
+          - button "Smooth" [ref=e153] [cursor=pointer]:
+            - img [ref=e154]
+            - generic [ref=e158]: Smooth
+          - button "Curve" [ref=e159] [cursor=pointer]:
+            - img [ref=e160]
+            - generic [ref=e164]: Curve
+          - button "Step" [ref=e165] [cursor=pointer]:
+            - img [ref=e166]
+            - generic [ref=e169]: Step
+          - button "Pen" [ref=e170] [cursor=pointer]:
+            - img [ref=e171]
+            - generic [ref=e174]: Pen
+      - button "Python Plot" [ref=e176] [cursor=pointer]:
+        - img [ref=e177]
+        - generic [ref=e181]: Python Plot
+      - generic [ref=e182]:
+        - generic [ref=e183]: Figure Labels
+        - generic [ref=e184]:
+          - combobox [ref=e185]:
+            - option "A-H" [selected]
+            - option "a-h"
+            - option "1-8"
+            - option "i-viii"
+            - option "Greek"
+          - generic [ref=e186]:
+            - button "A" [ref=e187] [cursor=pointer]
+            - button "B" [ref=e188] [cursor=pointer]
+            - button "C" [ref=e189] [cursor=pointer]
+            - button "D" [ref=e190] [cursor=pointer]
+            - button "E" [ref=e191] [cursor=pointer]
+            - button "F" [ref=e192] [cursor=pointer]
+            - button "G" [ref=e193] [cursor=pointer]
+            - button "H" [ref=e194] [cursor=pointer]
+      - generic [ref=e195]:
+        - button "Folder Browser" [ref=e196] [cursor=pointer]:
+          - img [ref=e197]
+          - text: Folder Browser
+        - generic [ref=e199]:
+          - generic [ref=e200]:
+            - button "Back" [ref=e201] [cursor=pointer]:
+              - img [ref=e202]
+            - button "Home" [ref=e204] [cursor=pointer]:
+              - img [ref=e205]
+            - button "Refresh" [ref=e208] [cursor=pointer]:
+              - img [ref=e209]
+            - button "New Folder" [ref=e214] [cursor=pointer]:
+              - img [ref=e215]
+          - generic [ref=e217]:
+            - button "cloned" [ref=e218] [cursor=pointer]:
+              - img [ref=e219]
+              - generic [ref=e221]: cloned
+            - button "datasets" [ref=e222] [cursor=pointer]:
+              - img [ref=e223]
+              - generic [ref=e225]: datasets
+            - button "Desktop" [ref=e226] [cursor=pointer]:
+              - img [ref=e227]
+              - generic [ref=e229]: Desktop
+            - button "Documents" [ref=e230] [cursor=pointer]:
+              - img [ref=e231]
+              - generic [ref=e233]: Documents
+            - button "Downloads" [ref=e234] [cursor=pointer]:
+              - img [ref=e235]
+              - generic [ref=e237]: Downloads
+            - button "miniconda3" [ref=e238] [cursor=pointer]:
+              - img [ref=e239]
+              - generic [ref=e241]: miniconda3
+            - button "Music" [ref=e242] [cursor=pointer]:
+              - img [ref=e243]
+              - generic [ref=e245]: Music
+            - button "packages" [ref=e246] [cursor=pointer]:
+              - img [ref=e247]
+              - generic [ref=e249]: packages
+            - button "pano_254x314_1024x512" [ref=e250] [cursor=pointer]:
+              - img [ref=e251]
+              - generic [ref=e253]: pano_254x314_1024x512
+            - button "Pictures" [ref=e254] [cursor=pointer]:
+              - img [ref=e255]
+              - generic [ref=e257]: Pictures
+            - button "projects" [ref=e258] [cursor=pointer]:
+              - img [ref=e259]
+              - generic [ref=e261]: projects
+            - button "Public" [ref=e262] [cursor=pointer]:
+              - img [ref=e263]
+              - generic [ref=e265]: Public
+            - button "snap" [ref=e266] [cursor=pointer]:
+              - img [ref=e267]
+              - generic [ref=e269]: snap
+            - button "snippets" [ref=e270] [cursor=pointer]:
+              - img [ref=e271]
+              - generic [ref=e273]: snippets
+            - button "Templates" [ref=e274] [cursor=pointer]:
+              - img [ref=e275]
+              - generic [ref=e277]: Templates
+            - button "Videos" [ref=e278] [cursor=pointer]:
+              - img [ref=e279]
+              - generic [ref=e281]: Videos
+      - button "Layers (35)" [ref=e283] [cursor=pointer]:
+        - img [ref=e284]
+        - text: Layers (35)
+    - application [ref=e290]:
+      - generic [ref=e292]:
+        - generic:
+          - generic:
+            - group [ref=e293]:
+              - generic [ref=e294]:
+                - generic: <python>
+                - img "Plot output" [ref=e296]
+            - group [ref=e297]:
+              - generic [ref=e298]:
+                - generic: <python>
+                - img "Plot output" [ref=e300]
+            - group [ref=e301]:
+              - generic [ref=e302]:
+                - generic: <python>
+                - img "Plot output" [ref=e304]
+            - group [ref=e305]:
+              - generic [ref=e308]:
+                - generic "Linked — in sync" [ref=e309]
+                - button "Refresh image" [ref=e310] [cursor=pointer]:
+                  - img [ref=e311]
+            - group [ref=e316]:
+              - generic [ref=e319]:
+                - generic "Linked — in sync" [ref=e320]
+                - button "Refresh image" [ref=e321] [cursor=pointer]:
+                  - img [ref=e322]
+            - group [ref=e327]:
+              - generic [ref=e330]:
+                - generic "Linked — in sync" [ref=e331]
+                - button "Refresh image" [ref=e332] [cursor=pointer]:
+                  - img [ref=e333]
+            - group [ref=e338]:
+              - generic [ref=e341]:
+                - generic "Linked — in sync" [ref=e342]
+                - button "Refresh image" [ref=e343] [cursor=pointer]:
+                  - img [ref=e344]
+            - group [ref=e349]
+            - group [ref=e352]
+            - group [ref=e355]
+            - group [ref=e358]:
+              - generic [ref=e361]:
+                - generic "Linked — in sync" [ref=e362]
+                - button "Refresh image" [ref=e363] [cursor=pointer]:
+                  - img [ref=e364]
+            - group [ref=e369]:
+              - generic [ref=e372]:
+                - generic "Linked — in sync" [ref=e373]
+                - button "Refresh image" [ref=e374] [cursor=pointer]:
+                  - img [ref=e375]
+            - group [ref=e380]:
+              - generic [ref=e383]:
+                - generic "Linked — in sync" [ref=e384]
+                - button "Refresh image" [ref=e385] [cursor=pointer]:
+                  - img [ref=e386]
+            - group [ref=e391]:
+              - generic [ref=e394]:
+                - generic "Linked — in sync" [ref=e395]
+                - button "Refresh image" [ref=e396] [cursor=pointer]:
+                  - img [ref=e397]
+            - group [ref=e402]
+            - group [ref=e405]
+            - group [ref=e408]
+            - group [ref=e411]:
+              - generic [ref=e412]:
+                - img
+            - group [ref=e414]:
+              - generic [ref=e415]:
+                - img
+            - group [ref=e417]:
+              - generic [ref=e418]:
+                - img
+            - group [ref=e420]:
+              - generic [ref=e421]:
+                - img
+            - group [ref=e423]:
+              - generic [ref=e424]:
+                - img
+            - group [ref=e426]:
+              - generic [ref=e427]:
+                - img
+            - group [ref=e429]:
+              - generic [ref=e433]: A
+            - group [ref=e434]:
+              - generic [ref=e438]: B
+            - group [ref=e439]:
+              - generic [ref=e443]: i
+            - group [ref=e444]:
+              - generic [ref=e448]: ii
+            - group [ref=e449]:
+              - generic [ref=e450]:
+                - generic: <python>
+                - img "Plot output" [ref=e452]
+            - group [ref=e453]:
+              - generic [ref=e454]:
+                - generic: <python>
+                - img "Plot output" [ref=e456]
+            - group [ref=e457]:
+              - generic [ref=e458]:
+                - generic: <python>
+                - img "Plot output" [ref=e460]
+            - group [ref=e461]:
+              - generic [ref=e465]: iii
+            - group [ref=e466]:
+              - generic [ref=e470]: C
+            - group [ref=e471]:
+              - generic [ref=e475]: D
+            - group [ref=e476]:
+              - generic [ref=e477]:
+                - generic: <python>
+                - img "Plot output" [ref=e479]
+            - group [ref=e480]:
+              - generic [ref=e481]:
+                - generic: <python>
+                - img "Plot output" [ref=e483]
+      - img
+      - img
+      - img "Mini Map" [ref=e485]
+      - generic [ref=e522]: Infinite canvas
+    - generic [ref=e527]:
+      - generic [ref=e528]:
+        - generic [ref=e529]: Properties
+        - button "Collapse panel" [ref=e530] [cursor=pointer]:
+          - img [ref=e531]
+      - generic [ref=e534]:
+        - generic [ref=e535]: Board
+        - generic [ref=e536]:
+          - generic [ref=e537]:
+            - generic [ref=e538]: Name
+            - textbox [ref=e540]: multi_compartment
+          - generic [ref=e541]:
+            - generic [ref=e542]: ID
+            - generic [ref=e544]: bc90e5dd-877f-4a40-a5be-16a96c006972
+      - generic [ref=e545]:
+        - generic [ref=e546]: Canvas
+        - generic [ref=e547]:
+          - generic [ref=e548]:
+            - generic [ref=e549]:
+              - generic [ref=e550]: W
+              - spinbutton [ref=e552]: "2400"
+            - generic [ref=e553]:
+              - generic [ref=e554]: H
+              - spinbutton [ref=e556]: "1600"
+          - generic [ref=e557]:
+            - generic [ref=e558]: Background
+            - generic [ref=e561]:
+              - textbox [ref=e564] [cursor=pointer]: "#ffffff"
+              - button "∅" [ref=e565] [cursor=pointer]
+              - textbox "transparent" [ref=e566]: "#ffffff"
+          - generic [ref=e567]:
+            - generic [ref=e568]: Grid Size
+            - spinbutton [ref=e570]: "20"
+          - generic [ref=e571]:
+            - generic [ref=e572]: Grid Style
+            - combobox [ref=e574]:
+              - option "Dots" [selected]
+              - option "Lines"
+              - option "Cross"
+      - generic [ref=e575]:
+        - generic [ref=e576]: Info
+        - generic [ref=e578]:
+          - generic [ref=e579]: "Elements: 35"
+          - generic [ref=e580]: "Updated: 4/15/2026, 6:09:26 PM"
+          - generic [ref=e581]: Schema v3
+  - generic [ref=e582]:
+    - 'generic "WebSocket: connected" [ref=e583]':
+      - img [ref=e584]
+      - generic [ref=e588]: connected
+    - generic [ref=e589]: multi_compartment
+    - generic [ref=e590]: 35 elements
+    - generic [ref=e591]: 10%

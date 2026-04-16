@@ -22,32 +22,6 @@ async function request<T>(url: string, options?: RequestInit, timeoutMs = 5000):
   }
 }
 
-async function compressedPost<T>(url: string, data: unknown, timeoutMs = 30000): Promise<T> {
-  const json = JSON.stringify(data);
-  const blob = new Blob([json]);
-  const stream = blob.stream().pipeThrough(new CompressionStream('gzip'));
-  const compressed = await new Response(stream).arrayBuffer();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${API_BASE}${url}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Encoding': 'gzip',
-      },
-      body: compressed,
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`API error ${res.status}: ${text}`);
-    }
-    return res.json();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 export interface WorkspaceBoardSummary {
   id: string;
@@ -67,9 +41,12 @@ export const api = {
 
   // Board file operations
   saveBoardToFile: (board: Board, path: string) =>
-    compressedPost<{ path: string; size?: number; oversized?: boolean; soft_limit?: number }>(
+    request<{ path: string; size?: number; oversized?: boolean; soft_limit?: number }>(
       '/boards/save',
-      { board, path },
+      {
+        method: 'POST',
+        body: JSON.stringify({ board, path }),
+      },
       60000,
     ),
 
@@ -116,11 +93,10 @@ export const api = {
 
   // Checkpoint / crash recovery
   saveCheckpoint: (board: Board, path: string) =>
-    compressedPost<{ path: string }>(
-      '/boards/checkpoint/save',
-      { board, path },
-      30000,
-    ),
+    request<{ path: string }>('/boards/checkpoint/save', {
+      method: 'POST',
+      body: JSON.stringify({ board, path }),
+    }),
 
   checkCheckpoint: (path: string) =>
     request<{ exists: boolean; newer?: boolean }>('/boards/checkpoint/check', {
