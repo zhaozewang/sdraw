@@ -22,6 +22,59 @@ async function request<T>(url: string, options?: RequestInit, timeoutMs = 5000):
   }
 }
 
+/** Whether the backend supports gzip-encoded request bodies. Auto-detected
+ *  on the first `compressedPost` call: if the server returns 400, we flip
+ *  to false and every subsequent call uses plain JSON. This makes the
+ *  feature safe even if the backend hasn't been restarted with the
+ *  decompression middleware yet. */
+let gzipRequestSupported: boolean | null = null;
+
+async function compressedPost<T>(url: string, data: unknown, timeoutMs = 30000): Promise<T> {
+  const json = JSON.stringify(data);
+
+  // Try gzip when capability is unknown or confirmed
+  if (gzipRequestSupported !== false && typeof CompressionStream !== 'undefined') {
+    try {
+      const blob = new Blob([json]);
+      const stream = blob.stream().pipeThrough(new CompressionStream('gzip'));
+      const compressed = await new Response(stream).arrayBuffer();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(`${API_BASE}${url}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Encoding': 'gzip',
+          },
+          body: compressed,
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          gzipRequestSupported = true;
+          return res.json();
+        }
+        // 400 likely means server can't decompress — fall through
+        if (res.status === 400) {
+          gzipRequestSupported = false;
+        } else {
+          const text = await res.text();
+          throw new Error(`API error ${res.status}: ${text}`);
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err) {
+      // CompressionStream failed or network error on compressed attempt.
+      // If it was a genuine server rejection (gzipRequestSupported set
+      // to false above), fall through. Otherwise re-throw.
+      if (gzipRequestSupported !== false) throw err;
+    }
+  }
+
+  // Fallback: plain JSON POST
+  return request<T>(url, { method: 'POST', body: json }, timeoutMs);
+}
 
 export interface WorkspaceBoardSummary {
   id: string;
@@ -41,12 +94,9 @@ export const api = {
 
   // Board file operations
   saveBoardToFile: (board: Board, path: string) =>
-    request<{ path: string; size?: number; oversized?: boolean; soft_limit?: number }>(
+    compressedPost<{ path: string; size?: number; oversized?: boolean; soft_limit?: number }>(
       '/boards/save',
-      {
-        method: 'POST',
-        body: JSON.stringify({ board, path }),
-      },
+      { board, path },
       60000,
     ),
 
@@ -93,10 +143,11 @@ export const api = {
 
   // Checkpoint / crash recovery
   saveCheckpoint: (board: Board, path: string) =>
-    request<{ path: string }>('/boards/checkpoint/save', {
-      method: 'POST',
-      body: JSON.stringify({ board, path }),
-    }),
+    compressedPost<{ path: string }>(
+      '/boards/checkpoint/save',
+      { board, path },
+      30000,
+    ),
 
   checkCheckpoint: (path: string) =>
     request<{ exists: boolean; newer?: boolean }>('/boards/checkpoint/check', {

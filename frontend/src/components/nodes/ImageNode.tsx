@@ -117,7 +117,31 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
             alt=""
             className="w-full h-full"
             style={{ objectFit: 'fill' as const }}
-            onLoad={() => setLoading(false)}
+            onLoad={e => {
+              setLoading(false);
+              // When a live-refreshed image loads (version > 0 means file
+              // changed on disk), check whether its aspect ratio differs
+              // from the element's current dimensions. If it does, adjust
+              // height to match the new ratio while keeping width and
+              // top-left position stable. This avoids a stretched/squished
+              // image when the source's dimensions change between runs.
+              if (imageVersion > 0) {
+                const img = e.currentTarget;
+                const nw = img.naturalWidth;
+                const nh = img.naturalHeight;
+                if (nw > 0 && nh > 0) {
+                  const el = useBoardStore.getState().board?.elements.find(el => el.id === elementId);
+                  if (el) {
+                    const newAR = nw / nh;
+                    const curAR = el.width / el.height;
+                    if (Math.abs(newAR - curAR) / curAR > 0.01) {
+                      const newH = Math.round(el.width / newAR);
+                      updateElement(elementId, { height: newH });
+                    }
+                  }
+                }
+              }
+            }}
             onError={() => { setImgError(true); setLoading(false); }}
             draggable={false}
           />
