@@ -9,6 +9,7 @@ export function StatusBar() {
   const zoom = useUIStore(s => s.zoom);
   const connectionStatus = useUIStore(s => s.connectionStatus);
   const recentEvents = useUIStore(s => s.recentEvents);
+  const progressLabel = useUIStore(s => s.progressLabel);
 
   if (!board) return null;
 
@@ -47,8 +48,16 @@ export function StatusBar() {
         </span>
       )}
 
-      {/* Save status */}
-      {isDirty && <span className="text-amber-500">Unsaved</span>}
+      {/* Save status — active save/upload supersedes the "Unsaved" chip so
+          the user sees "Saving… → (gone)" instead of a loud top bar. */}
+      {progressLabel ? (
+        <span className="flex items-center gap-1 text-accent">
+          <Loader2 size={10} className="animate-spin" />
+          {progressLabel}
+        </span>
+      ) : isDirty ? (
+        <span className="text-amber-500">Unsaved</span>
+      ) : null}
 
       {/* Zoom */}
       <span className="tabular-nums">{Math.round(zoom * 100)}%</span>

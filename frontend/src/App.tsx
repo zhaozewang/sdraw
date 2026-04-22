@@ -1255,19 +1255,10 @@ class ErrorBoundary extends React.Component<
 // ---------------------------------------------------------------------------
 // Editor
 // ---------------------------------------------------------------------------
-function ProgressBar() {
-  const label = useUIStore(s => s.progressLabel);
-  if (!label) return null;
-  return (
-    <div className="absolute top-0 left-0 right-0 z-[9999] flex items-center gap-2 px-3 py-1 bg-blue-600 text-white text-xs shadow-md">
-      <div className="h-1 w-16 rounded-full bg-white/30 overflow-hidden">
-        <div className="h-full w-full bg-white rounded-full animate-[progress_1.5s_ease-in-out_infinite]" />
-      </div>
-      <span>{label}</span>
-      <style>{`@keyframes progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }`}</style>
-    </div>
-  );
-}
+// Save/upload progress no longer commandeers a full-width blue strip at the
+// top. It lives in the bottom StatusBar next to the other persistent state
+// (connection, selection count, dirty chip) so a routine autosave doesn't
+// steal visual priority from whatever the user is actually working on.
 
 function Editor() {
   useWebSocket();
@@ -1276,7 +1267,6 @@ function Editor() {
 
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-canvas-bg text-gray-800 dark:text-on-surface-primary relative">
-      <ProgressBar />
       <Toolbar />
       <div className="flex flex-1 min-h-0">
         <InsertPanel />

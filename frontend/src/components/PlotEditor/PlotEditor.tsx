@@ -438,14 +438,29 @@ export function PlotEditor() {
   const codeRef = useRef('');
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Full figures array from the last successful Run, plus the code hash
-  // that produced them. Save uses these to fan the uncropped figures out
-  // to every sibling sharing this plotCodeId — but ONLY when the hash
-  // still matches the code being saved. If the user edited after running,
-  // the figures are stale for siblings; we skip distribute and let the
-  // renderedCodeHash mismatch surface as the amber "stale" badge instead.
-  const lastRunFiguresRef = useRef<Array<{ image: string | null; plotly_json: string | null }> | null>(null);
-  const lastRunCodeHashRef = useRef<string | null>(null);
+  // Full figures array from the last successful Run, scoped to the exact
+  // plotCodeId + code hash that produced them. Save uses these to fan
+  // uncropped figures out to siblings — but ONLY when the hash still
+  // matches the code being saved.
+  //
+  // Scoping to plotCodeId matters: PlotEditor stays mounted when the user
+  // closes it, so the ref would otherwise leak run data across unrelated
+  // panels. Symptom: user opens cbar panel whose code now produces only
+  // one figure (so its output is legitimately missing), and the editor
+  // confusingly shows iso's image from an earlier run of a DIFFERENT
+  // panel. Checking plotCodeId first prevents that.
+  const lastRunRef = useRef<{
+    plotCodeId: string;
+    figures: Array<{ image: string | null; plotly_json: string | null }>;
+    codeHash: string;
+  } | null>(null);
+  // Helper: return the run figures only if they belong to the panel the
+  // user is currently editing. Anything else is treated as "no run."
+  const runFiguresForCurrent = (): Array<{ image: string | null; plotly_json: string | null }> | null => {
+    const r = lastRunRef.current;
+    if (!r || !plotCodeId) return null;
+    return r.plotCodeId === plotCodeId ? r.figures : null;
+  };
 
   // Code edits are kept in local state (codeRef / localCode) until the
   // user clicks Save. No more debounced persist to the board registry on
@@ -467,11 +482,16 @@ export function PlotEditor() {
       // where the latest run produced figures that haven't been saved
       // yet would show stale cached images instead of the fresh run.
       const fidx = element.metadata?.figureIndex ?? 0;
-      const runFig = lastRunFiguresRef.current?.[fidx];
+      const scopedFigures = runFiguresForCurrent();
+      const runFig = scopedFigures?.[fidx];
       if (runFig && runFig.image) {
         setLocalOutput(runFig.image);
         setPlotlyJson(runFig.plotly_json);
       } else {
+        // No run figure for this panel+index → show the element's own
+        // persisted output, or the empty "Double-click to edit" state if
+        // that's null too (legitimately-missing figures). Don't fall back
+        // to some other panel's run.
         setLocalOutput(element.metadata?.lastOutput || null);
         setPlotlyJson(element.metadata?.plotlyJson || null);
       }
@@ -528,7 +548,7 @@ export function PlotEditor() {
   useEffect(() => {
     if (!elementId || !element) return;
     if (element.type !== 'plot') return;
-    if (lastRunFiguresRef.current !== null) return;
+    if (runFiguresForCurrent() !== null) return;
     if (element.metadata?.plotlyJson) return;
     if (previewGhostIdx !== null) return;
     const boardId = useBoardStore.getState().board?.id;
@@ -538,12 +558,12 @@ export function PlotEditor() {
       if (cancelled) return;
       // Double-check after the network round-trip: the user may have run
       // or switched ghosts while we were waiting.
-      if (lastRunFiguresRef.current !== null) return;
+      if (runFiguresForCurrent() !== null) return;
       if (previewGhostIdx !== null) return;
       if (res.plotly_json) setPlotlyJson(res.plotly_json);
     }).catch(() => { /* best-effort: fall back to PNG preview */ });
     return () => { cancelled = true; };
-  }, [elementId, element, previewGhostIdx]);
+  }, [elementId, element, previewGhostIdx, plotCodeId]);
 
   // Keyboard shortcuts for tab switching inside the editor.
   // Use a capture-phase listener so it beats CodeMirror's own key handling.
@@ -647,10 +667,17 @@ export function PlotEditor() {
           : r.image_base64 || r.plotly_json
           ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
           : [];
-      // Stash every figure + the hash that produced them so a subsequent
-      // Save can fan uncropped figures out to sibling elements.
-      lastRunFiguresRef.current = figures;
-      lastRunCodeHashRef.current = plotRenderHash(runSetupCode, runCode);
+      // Stash every figure + the hash + the plotCodeId that produced them
+      // so a subsequent Save can fan uncropped figures out to siblings.
+      // Keying by plotCodeId prevents the stash from leaking across
+      // unrelated panels when the editor is closed and reopened.
+      lastRunRef.current = plotCodeId
+        ? {
+            plotCodeId,
+            figures,
+            codeHash: plotRenderHash(runSetupCode, runCode),
+          }
+        : null;
       const myFig = figures[activeFigureIndex];
       if (myFig) {
         setLocalOutput(myFig.image); setPlotlyJson(myFig.plotly_json);
@@ -790,16 +817,21 @@ export function PlotEditor() {
         const renderedCodeHash = plotRenderHash(board?.setup?.code ?? '', registryCodeNow);
 
         // Fan the uncropped figures from the last run out to every sibling
-        // element sharing this plotCodeId — but only if the last run's
-        // code hash matches the code being saved. If the user edited after
-        // running, the stored figures are stale for siblings; skip distribute
-        // and let renderedCodeHash mismatch surface the amber stale badge.
-        const runHash = lastRunCodeHashRef.current;
-        const runFigures = lastRunFiguresRef.current;
-        if (plotCodeId && runFigures && runHash === renderedCodeHash) {
+        // element sharing this plotCodeId — but only if (a) the last run
+        // belongs to THIS plotCodeId (not a leftover from a previously-
+        // edited panel) and (b) the hash still matches the code being
+        // saved. If either fails, skip distribute and let the
+        // renderedCodeHash mismatch surface the amber stale badge.
+        const lastRun = lastRunRef.current;
+        if (
+          plotCodeId &&
+          lastRun &&
+          lastRun.plotCodeId === plotCodeId &&
+          lastRun.codeHash === renderedCodeHash
+        ) {
           await distributePlotFigures(
             elementId,
-            runFigures,
+            lastRun.figures,
             localStdoutRef.current,
             localErrorRef.current,
           );
@@ -1048,7 +1080,7 @@ export function PlotEditor() {
                         (b.metadata?.figureIndex ?? 0)
                     )
                 : [];
-              const runFigures = lastRunFiguresRef.current ?? [];
+              const runFigures = runFiguresForCurrent() ?? [];
               // Total figure count = max(run-produced, elements-present).
               // If the code produced 3 figures and only 2 elements exist,
               // show 3 thumbs (2 bound, 1 ghost).
