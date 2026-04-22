@@ -40,6 +40,7 @@ import {
   PlayCircle,
   Loader2,
   AlertTriangle,
+  RotateCw,
 } from 'lucide-react';
 
 function RunAllConfirmDialog({ plotCount, onConfirm, onCancel }: {
@@ -131,10 +132,12 @@ export function Toolbar() {
   const kernelStatus = useBoardStore(s => s.kernelStatus);
   const runAllStatus = useBoardStore(s => s.runAllStatus);
   const runAllPlots = useBoardStore(s => s.runAllPlots);
+  const reloadKernelModules = useBoardStore(s => s.reloadKernelModules);
   const saveBoard = useBoardStore(s => s.saveBoard);
   const undo = useBoardStore(s => s.undo);
   const redo = useBoardStore(s => s.redo);
   const [runAllConfirmOpen, setRunAllConfirmOpen] = useState(false);
+  const [reloadStatus, setReloadStatus] = useState<'idle' | 'running' | 'ok' | 'error'>('idle');
   const historyIndex = useBoardStore(s => s.historyIndex);
   const historyLength = useBoardStore(s => s.history.length);
   const addElement = useBoardStore(s => s.addElement);
@@ -165,6 +168,30 @@ export function Toolbar() {
 
   const hasSelection = selectedIds.length > 0;
   const multiSelect = selectedIds.length >= 2;
+
+  const handleReloadModules = useCallback(async () => {
+    if (reloadStatus === 'running') return;
+    setReloadStatus('running');
+    const r = await reloadKernelModules();
+    if (!r.kernelRunning) {
+      // No kernel to reload against — nothing to complain about, nothing
+      // to celebrate. Silently drop back to idle.
+      setReloadStatus('idle');
+      return;
+    }
+    if (r.errors.length > 0) {
+      setReloadStatus('error');
+      console.warn('[sdraw] reloadKernelModules errors:', r.errors);
+    } else {
+      setReloadStatus('ok');
+      console.info(
+        `[sdraw] reloaded ${r.reloaded.length} module(s), rebound ${r.rebound} reference(s):`,
+        r.reloaded,
+      );
+    }
+    // Flash the status briefly, then revert.
+    setTimeout(() => setReloadStatus('idle'), 2000);
+  }, [reloadKernelModules, reloadStatus]);
 
   const handleGoHome = useCallback(() => {
     if (useBoardStore.getState().isDirty) {
@@ -348,6 +375,46 @@ export function Toolbar() {
               }`}
             />
           )}
+        </button>
+
+        {/* Reload modules — FORCE-reloads every project-local .py file in
+            the kernel and rebinds references in setup_ns. Normally this
+            happens automatically before each plot run (mtime-based);
+            this button is for when the mtime heuristic misses an edit
+            (back-dated file, never-imported module, etc.). Setup-loaded
+            data is preserved; existing instances still bind to the
+            pre-reload class — re-run setup to rebind those. */}
+        <button
+          onClick={handleReloadModules}
+          disabled={kernelStatus !== 'ok' && kernelStatus !== 'running'}
+          title={
+            kernelStatus !== 'ok' && kernelStatus !== 'running'
+              ? 'Reload Python modules — run Python Setup first to start the kernel'
+              : 'Force-reload all project-local modules (autoreload runs automatically on every plot)'
+          }
+          className={`flex items-center gap-1 h-6 px-2 rounded border text-2xs font-medium transition-colors ${
+            reloadStatus === 'running'
+              ? 'border-blue-400/40 bg-blue-400/10 text-blue-500 cursor-wait'
+              : reloadStatus === 'ok'
+              ? 'border-green-400/40 bg-green-400/10 text-green-600 dark:text-green-400'
+              : reloadStatus === 'error'
+              ? 'border-red-400/40 bg-red-400/10 text-red-600 dark:text-red-400'
+              : (kernelStatus !== 'ok' && kernelStatus !== 'running')
+              ? 'border-toolbar-border text-gray-300 dark:text-on-surface-disabled cursor-not-allowed'
+              : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
+          }`}
+        >
+          {reloadStatus === 'running' ? (
+            <Loader2 size={12} className="shrink-0 animate-spin" />
+          ) : (
+            <RotateCw size={12} className="shrink-0" />
+          )}
+          <span>
+            {reloadStatus === 'running' ? 'Reloading…'
+              : reloadStatus === 'ok' ? 'Reloaded'
+              : reloadStatus === 'error' ? 'Reload failed'
+              : 'Reload modules'}
+          </span>
         </button>
 
         {/* Run All — runs Python Setup then every plot cell source element

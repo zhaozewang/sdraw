@@ -1333,8 +1333,11 @@ export function PlotEditor() {
           )}
           <span className={`text-xs ${isDark ? 'text-white/30' : 'text-gray-400'}`}>{(activeTab === 'plot' ? isRunning : isSetupRunning) ? '' : '\u2318\u23CE'}</span>
 
-          {/* Always-visible "Run Setup" shortcut: runs the board's shared setup
-              from either tab, so users never have to go hunting for it. */}
+          {/* "Run Setup" shortcut — only shown on the PLOT tab; on the
+              SETUP tab the primary Run button above already runs setup,
+              so rendering both produced two identical "Run Setup" buttons
+              side by side. */}
+          {activeTab === 'plot' && (<>
           <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
           <button
             onClick={handleSetupRun}
@@ -1372,6 +1375,7 @@ export function PlotEditor() {
               />
             )}
           </button>
+          </>)}
 
           <div className={`w-px h-4 mx-1 ${isDark ? 'bg-white/10' : 'bg-gray-200'}`} />
 

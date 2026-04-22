@@ -351,6 +351,19 @@ interface BoardState {
   kernelStatus: KernelStatus;
   runSetup: (code?: string) => Promise<KernelRunResult>;
   restartKernel: () => Promise<void>;
+  /** Force-reload project-local Python modules inside the running
+   *  kernel so edits to helper .py files take effect without killing
+   *  the kernel (setup globals — loaded datasets, fitted models — are
+   *  preserved). Also rebinds `from X import Y` style references in
+   *  setup_ns so they point at the fresh objects. Automatic reload
+   *  also runs before every plot exec; this is the manual override.
+   *  No-op if no kernel is running for this board. */
+  reloadKernelModules: () => Promise<{
+    reloaded: string[];
+    errors: Array<{ module: string; error: string }>;
+    rebound: number;
+    kernelRunning: boolean;
+  }>;
 
   // Multi-figure plot support
   /** Distribute N figures across every element that references the given
@@ -581,6 +594,27 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       set({ kernelStatus: 'idle' });
     } catch {
       set({ kernelStatus: 'error' });
+    }
+  },
+
+  reloadKernelModules: async () => {
+    const { board } = get();
+    if (!board) return { reloaded: [], errors: [], rebound: 0, kernelRunning: false };
+    try {
+      const r = await api.reloadKernelModules(board.id);
+      return {
+        reloaded: r.reloaded,
+        errors: r.errors,
+        rebound: r.rebound,
+        kernelRunning: r.kernel_running,
+      };
+    } catch (err: any) {
+      return {
+        reloaded: [],
+        errors: [{ module: '*', error: String(err?.message ?? err) }],
+        rebound: 0,
+        kernelRunning: false,
+      };
     }
   },
 

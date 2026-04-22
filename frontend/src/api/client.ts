@@ -318,6 +318,18 @@ export const api = {
       body: JSON.stringify({ board_id: boardId }),
     }),
 
+  reloadKernelModules: (boardId: string) =>
+    request<{
+      ok: boolean;
+      reloaded: string[];
+      errors: Array<{ module: string; error: string }>;
+      rebound: number;
+      kernel_running: boolean;
+    }>('/plot/kernel/reload-modules', {
+      method: 'POST',
+      body: JSON.stringify({ board_id: boardId }),
+    }, 30000),
+
   shutdownKernel: (boardId: string) =>
     request<{ shutdown: boolean; board_id: string }>('/plot/kernel/shutdown', {
       method: 'POST',

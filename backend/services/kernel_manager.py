@@ -291,6 +291,22 @@ class KernelManager:
                 timeout=timeout,
             )
 
+    async def reload_modules(self, board_id: str, timeout: float = 30.0) -> dict[str, Any]:
+        """Reload project-local Python modules inside the running kernel.
+
+        Leaves _setup_ns globals intact — just refreshes module contents so
+        the next plot run picks up edits made to helper .py files after
+        setup was executed. No-op if no kernel is running for this board.
+        """
+        async with self._dict_lock:
+            kp = self._kernels.get(board_id)
+        if kp is None or not kp.alive:
+            return {"ok": True, "reloaded": [], "errors": [], "kernel_running": False}
+        async with kp.lock:
+            resp = await kp.request({"op": "reload_modules"}, timeout=timeout)
+            resp["kernel_running"] = True
+            return resp
+
     async def restart(self, board_id: str) -> None:
         async with self._dict_lock:
             kp = self._kernels.get(board_id)

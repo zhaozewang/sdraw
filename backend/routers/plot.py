@@ -578,6 +578,36 @@ async def kernel_restart(body: KernelLifecycleRequest):
     return {"restarted": True, "board_id": body.board_id}
 
 
+class KernelReloadResponse(BaseModel):
+    ok: bool
+    reloaded: list[str]
+    errors: list[dict]
+    rebound: int
+    kernel_running: bool
+
+
+@router.post("/kernel/reload-modules", response_model=KernelReloadResponse)
+async def kernel_reload_modules(body: KernelLifecycleRequest):
+    """Force-reload project-local modules in the board's kernel and
+    rebind references in the setup namespace and in every other
+    project module. ``rebound`` is the count of names that pointed at
+    an old object and were patched to point at the freshly-loaded one —
+    the signal that `from X import Y` style bindings were successfully
+    fixed up.
+
+    Automatic reload also runs before every exec_plot; this endpoint is
+    the manual override for when mtime-based detection misses an edit.
+    """
+    resp = await kernel_manager.reload_modules(body.board_id)
+    return KernelReloadResponse(
+        ok=bool(resp.get("ok")),
+        reloaded=list(resp.get("reloaded") or []),
+        errors=list(resp.get("errors") or []),
+        rebound=int(resp.get("rebound", 0)),
+        kernel_running=bool(resp.get("kernel_running", False)),
+    )
+
+
 @router.post("/kernel/shutdown")
 async def kernel_shutdown(body: KernelLifecycleRequest):
     await kernel_manager.shutdown(body.board_id)
