@@ -69,7 +69,7 @@ export function plotRenderHash(setupCode: string, plotCode: string): string {
  * the same set of code strings. Sorting by content keeps the digest stable
  * regardless of migration order or insertion order.
  */
-function codeDigest(board: Board): string {
+export function codeDigest(board: Board): string {
   const parts: string[] = [];
   parts.push(`setup\n${board.setup?.code ?? ''}`);
   const codes = Object.values(board.plotCodes ?? {})
@@ -82,7 +82,7 @@ function codeDigest(board: Board): string {
 /** Compute per-element hash map and board-level fields hash for delta
  *  detection. Only elements whose hash changed since the last save are
  *  included in the save-delta payload. */
-function computeSaveHashes(board: Board) {
+export function computeSaveHashes(board: Board) {
   const elementHashes = new Map<string, string>();
   for (const el of board.elements) {
     elementHashes.set(el.id, JSON.stringify(el));
@@ -107,7 +107,7 @@ function computeSaveHashes(board: Board) {
  *
  * This runs on load and newBoard. The next normal save persists it.
  */
-function migrateToPlotCodeRegistry(board: any): Board {
+export function migrateToPlotCodeRegistry(board: any): Board {
   if (!board || typeof board !== 'object') return board;
   if (!board.plotCodes || typeof board.plotCodes !== 'object') {
     board.plotCodes = {};
