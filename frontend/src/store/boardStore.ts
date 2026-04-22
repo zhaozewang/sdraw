@@ -62,14 +62,39 @@ export function plotRenderHash(setupCode: string, plotCode: string): string {
   return fnv1a(`setup\n${setupCode ?? ''}\n---\nplot\n${plotCode ?? ''}`);
 }
 
+/**
+ * Content-based code digest: setup code + sorted plot code strings. Does NOT
+ * include plotCodeId keys, because the v2→v3 migration assigns random UUIDs
+ * and two independent migrations of the same file produce different keys but
+ * the same set of code strings. Sorting by content keeps the digest stable
+ * regardless of migration order or insertion order.
+ */
 function codeDigest(board: Board): string {
   const parts: string[] = [];
   parts.push(`setup\n${board.setup?.code ?? ''}`);
-  const entries = Object.entries(board.plotCodes ?? {})
-    .map(([id, entry]) => ({ id, code: String(entry?.code ?? '') }))
-    .sort((a, b) => a.id.localeCompare(b.id));
-  for (const e of entries) parts.push(`plot:${e.id}\n${e.code}`);
+  const codes = Object.values(board.plotCodes ?? {})
+    .map(entry => String(entry?.code ?? ''))
+    .sort();
+  for (const code of codes) parts.push(`plot\n${code}`);
   return fnv1a(parts.join('\n---\n'));
+}
+
+/** Compute per-element hash map and board-level fields hash for delta
+ *  detection. Only elements whose hash changed since the last save are
+ *  included in the save-delta payload. */
+function computeSaveHashes(board: Board) {
+  const elementHashes = new Map<string, string>();
+  for (const el of board.elements) {
+    elementHashes.set(el.id, JSON.stringify(el));
+  }
+  const boardFieldsHash = JSON.stringify({
+    setup: board.setup,
+    plotCodes: board.plotCodes,
+    canvas: board.canvas,
+    autoExport: board.autoExport,
+  });
+  const elementIds = new Set(board.elements.map(e => e.id));
+  return { elementHashes, boardFieldsHash, elementIds };
 }
 
 /**
@@ -300,6 +325,23 @@ interface BoardState {
    * an external process rewrote the file behind our back. */
   loadedCodeDigest: string | null;
 
+  /** Mtime of the board file the last time WE wrote or read it. Primary
+   * external-change signal — if the disk mtime is greater than this, some
+   * other process touched the file. Immune to migration-randomness bugs
+   * that can break content digests. Null until the first successful
+   * open/save. */
+  loadedFileMtime: number | null;
+
+  /** Per-element hash from the last successful save. Used to compute
+   *  deltas: only elements whose hash changed are included in the
+   *  save-delta payload. Keyed by element id → JSON.stringify(element). */
+  _savedElementHashes: Map<string, string>;
+  /** Board-level fields hash from the last save (setup, plotCodes,
+   *  canvas, autoExport — without elements). */
+  _savedBoardFieldsHash: string;
+  /** Element IDs that existed at last save — used to detect adds/removes. */
+  _savedElementIds: Set<string>;
+
   /** Non-null while a save detected divergence and is waiting on the user
    * to pick a resolution. Rendered by ExternalChangeModal. */
   externalConflict: ExternalConflict | null;
@@ -335,6 +377,14 @@ interface BoardState {
    * z-order. Each element's executePlot call reuses the auto-distribute
    * logic, so multi-figure cells keep working. Safe to call from the UI. */
   runAllPlots: () => Promise<void>;
+  /** Run a single plot code entry and fan its figures out to every element
+   * referencing the same plotCodeId via distributePlotFigures. Does NOT
+   * touch runAllStatus so it can be called from per-cell UI (PlotNode Run
+   * button, stale-badge click) without interfering with Run All's progress
+   * bar. Setup code is passed through to the kernel which short-circuits
+   * re-runs when the setup hash is unchanged, so cell-wise Run costs
+   * nothing extra on a warm kernel. */
+  runOnePlot: (plotCodeId: string) => Promise<{ success: boolean; error: string | null }>;
 
   // Undo/redo
   history: HistoryEntry[];
@@ -485,6 +535,10 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   boardFilePath: null,
   isDirty: false,
   loadedCodeDigest: null,
+  loadedFileMtime: null,
+  _savedElementHashes: new Map(),
+  _savedBoardFieldsHash: '',
+  _savedElementIds: new Set(),
   externalConflict: null,
   resolveExternalConflict: (choice) => {
     const conflict = get().externalConflict;
@@ -552,10 +606,15 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       ? Math.max(...existingRefs.map(r => r.figureIndex))
       : -1;
 
-    // Spawn new elements only for figure indices strictly greater than the
-    // highest existing index. This keeps deleted figures deleted — if the
-    // user trashed figure 1, re-running the code that still produces three
-    // figures will update figures 0 and 2 in place and not resurrect fig 1.
+    // Spawn a new canvas element for any figure index the code produces
+    // that doesn't already have an element. Previously we skipped any
+    // index <= maxExistingIndex to avoid "resurrecting" a figure the user
+    // had deleted, but that heuristic also broke the common case where
+    // the user starts with a lone cbar at fidx=1 and later the code begins
+    // returning iso at fidx=0 — iso would be silently dropped. The UX
+    // priority is "Run always puts what the code produces on the canvas";
+    // if the user wants a figure gone, they edit the code to stop
+    // producing it (or delete the element and the code together).
     const newSiblings: BoardElement[] = [];
     const layoutAnchor = existingRefs.length > 0
       ? board.elements.find(el => el.id === existingRefs[existingRefs.length - 1].id) ?? anchor
@@ -563,7 +622,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     let spawnOffset = 1;
     for (let i = 0; i < figures.length; i++) {
       if (existingIndexSet.has(i)) continue;
-      if (i <= maxExistingIndex) continue; // deleted hole — don't refill
       const newEl: BoardElement = {
         ...structuredClone(anchor),
         id: uuidv4(),
@@ -615,12 +673,15 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       const freeze = hasStoredCrop && storedHash === currentRenderHash;
 
       // Frozen cropped plot → update only stdout/error/figureIndex, leave
-      // the image/dims/plotly_json strictly alone.
+      // the image/dims/plotly_json strictly alone. Stamp renderedCodeHash
+      // unconditionally so staleness detection elsewhere works even when a
+      // frozen cell is re-run against matching code.
       if (freeze) {
         const nextMeta: Record<string, any> = {
           ...el.metadata,
           lastStdout: stdout,
           lastError: error,
+          renderedCodeHash: currentRenderHash,
         };
         // If the code no longer produces this figure index, flag it
         // as missing so the user sees a clear error, but still don't
@@ -637,15 +698,17 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
       // Uncropped (or stale-crop) plot → full refresh path. When the code
       // changed, we drop the old crop so the fresh figure isn't cropped to
-      // regions that no longer make sense, and we clear the render hash.
+      // regions that no longer make sense. Stamp the new renderedCodeHash
+      // unconditionally — it is the general "this output was produced by
+      // this code" tag that PlotNode reads to detect staleness.
       const nextMeta: Record<string, any> = {
         ...el.metadata,
         lastStdout: stdout,
         lastError: error,
+        renderedCodeHash: currentRenderHash,
       };
       if (hasStoredCrop) {
         nextMeta.plotCrop = null;
-        nextMeta.renderedCodeHash = undefined;
       }
       const nextHeight = fig?.image
         ? syncHeightForFigure(el.width, el.height, fig.image, null)
@@ -687,6 +750,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           lastStdout: stdout,
           lastError: error,
           figureMissing: !fig,
+          renderedCodeHash: currentRenderHash,
         },
       };
     });
@@ -702,15 +766,68 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     return existingRefs.map(r => r.id);
   },
 
-  runAllPlots: async () => {
+  runOnePlot: async (plotCodeId: string) => {
     const { board, boardFilePath } = get();
+    if (!board) return { success: false, error: 'No board open' };
+    const code = String(board.plotCodes?.[plotCodeId]?.code ?? '');
+    if (code.trim().length === 0) {
+      return { success: false, error: 'Empty plot code' };
+    }
+
+    // Pick the anchor the same way Run All does: lowest figureIndex,
+    // z-order as tiebreaker. distribute fans out to all other refs.
+    let anchor: BoardElement | null = null;
+    for (const el of board.elements) {
+      if (el.type !== 'plot') continue;
+      if (el.metadata?.plotCodeId !== plotCodeId) continue;
+      if (!anchor) { anchor = el; continue; }
+      const figIdx = el.metadata?.figureIndex ?? 0;
+      const anchorIdx = anchor.metadata?.figureIndex ?? 0;
+      if (figIdx < anchorIdx || (figIdx === anchorIdx && el.z_index < anchor.z_index)) {
+        anchor = el;
+      }
+    }
+    if (!anchor) return { success: false, error: 'No element references this plotCodeId' };
+
+    const env = board.pythonEnvPath ?? null;
+    const cwd = boardFilePath ? boardFilePath.replace(/\/[^/]+$/, '') : null;
+    const setupCode = board.setup?.code ?? '';
+    const setupTimeout = board.setup?.timeout ?? 120;
+
+    try {
+      const r = await api.executePlot(
+        code,
+        30,
+        150,
+        env,
+        undefined,
+        cwd,
+        { boardId: board.id, setupCode, setupTimeout },
+      );
+      const figures =
+        r.figures && r.figures.length > 0
+          ? r.figures
+          : r.image_base64 || r.plotly_json
+          ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
+          : [];
+      await get().distributePlotFigures(anchor.id, figures, r.stdout, r.success ? null : r.error);
+      return { success: r.success, error: r.success ? null : r.error };
+    } catch (err: any) {
+      const msg = err?.message ?? String(err);
+      await get().distributePlotFigures(anchor.id, [], null, `Run failed: ${msg}`);
+      return { success: false, error: msg };
+    }
+  },
+
+  runAllPlots: async () => {
+    const { board } = get();
     if (!board) return;
 
     // One run per distinct plot code entry. Pick one anchor element per
-    // plotCodeId (the lowest figureIndex, z-order as tiebreaker) — the
-    // distribute call will fan the figures out across every other element
-    // that shares the same plotCodeId. Skip entries whose code is empty.
-    type RunTarget = { plotCodeId: string; anchor: BoardElement; code: string };
+    // plotCodeId (the lowest figureIndex, z-order as tiebreaker) for the
+    // progress label; runOnePlot picks the same anchor internally. Skip
+    // entries whose code is empty.
+    type RunTarget = { plotCodeId: string; anchor: BoardElement };
     const byCode = new Map<string, RunTarget>();
     for (const el of board.elements) {
       if (el.type !== 'plot') continue;
@@ -722,11 +839,11 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       const existing = byCode.get(pcid);
       const figIdx = el.metadata?.figureIndex ?? 0;
       if (!existing) {
-        byCode.set(pcid, { plotCodeId: pcid, anchor: el, code });
+        byCode.set(pcid, { plotCodeId: pcid, anchor: el });
       } else {
         const existIdx = existing.anchor.metadata?.figureIndex ?? 0;
         if (figIdx < existIdx || (figIdx === existIdx && el.z_index < existing.anchor.z_index)) {
-          byCode.set(pcid, { plotCodeId: pcid, anchor: el, code });
+          byCode.set(pcid, { plotCodeId: pcid, anchor: el });
         }
       }
     }
@@ -739,13 +856,15 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
 
     const env = board.pythonEnvPath ?? null;
+    const { boardFilePath } = get();
     const cwd = boardFilePath ? boardFilePath.replace(/\/[^/]+$/, '') : null;
     const setupCode = board.setup?.code ?? '';
     const setupTimeout = board.setup?.timeout ?? 120;
 
     // Force setup to re-run once at the start of a Run All by explicitly
     // running it here — this gives the user a known-good baseline and
-    // clear feedback if setup itself fails.
+    // clear feedback if setup itself fails. Per-cell Run does NOT do this;
+    // it trusts the kernel's cached setup state.
     if (setupCode.trim().length > 0) {
       set({
         runAllStatus: {
@@ -794,34 +913,9 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           label,
         },
       });
-      try {
-        const r = await api.executePlot(
-          target.code,
-          30,
-          150,
-          env,
-          undefined,
-          cwd,
-          { boardId: board.id, setupCode, setupTimeout },
-        );
-        const figures =
-          r.figures && r.figures.length > 0
-            ? r.figures
-            : r.image_base64 || r.plotly_json
-            ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
-            : [];
-        await get().distributePlotFigures(target.anchor.id, figures, r.stdout, r.success ? null : r.error);
-        if (r.success) successes++;
-        else failures++;
-      } catch (err: any) {
-        failures++;
-        await get().distributePlotFigures(
-          target.anchor.id,
-          [],
-          null,
-          `Run All failed for ${label}: ${err?.message ?? String(err)}`,
-        );
-      }
+      const r = await get().runOnePlot(target.plotCodeId);
+      if (r.success) successes++;
+      else failures++;
     }
 
     set({ runAllStatus: { state: 'done', successes, failures } });
@@ -843,11 +937,15 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       app_version: '0.1.0',
     };
     const result = await api.saveBoardToFile(board, filePath);
+    const newHashes = computeSaveHashes(board);
     set({
       board: board,
       boardFilePath: result.path,
       isDirty: false,
       loadedCodeDigest: codeDigest(board),
+      _savedElementHashes: newHashes.elementHashes,
+      _savedBoardFieldsHash: newHashes.boardFieldsHash,
+      _savedElementIds: newHashes.elementIds,
       history: [{ elements: [], plotCodes: {}, description: 'New board' }],
       historyIndex: 0,
     });
@@ -909,15 +1007,18 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     );
 
     const loadedBoard = { ...board, elements: checkedElements };
+    // Snapshot the loaded state so the first autosave can use delta
+    const initHashes = computeSaveHashes(loadedBoard);
     set({
       board: loadedBoard,
       boardFilePath: result.path,
-      // If any linked image was re-embedded on open, the store now holds
-      // fresher bytes than the .sdraw file — mark dirty so autosave writes
-      // them back.
       isDirty: needsResave,
       loadedCodeDigest: codeDigest(loadedBoard),
+      loadedFileMtime: typeof result.mtime === 'number' ? result.mtime : null,
       externalConflict: null,
+      _savedElementHashes: initHashes.elementHashes,
+      _savedBoardFieldsHash: initHashes.boardFieldsHash,
+      _savedElementIds: initHashes.elementIds,
       history: [{
         elements: structuredClone(checkedElements),
         plotCodes: structuredClone(loadedBoard.plotCodes ?? {}),
@@ -936,24 +1037,36 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const boardFilePath = initial.boardFilePath;
 
     // --- External-change detection ---
-    // Compare a lightweight code digest (just the hash, not the full board)
-    // against the baseline we captured on load/last-save. Only fetches the
-    // full board from disk when a conflict is actually detected — the
-    // common "no conflict" path is a single tiny POST instead of a
-    // multi-MB download.
-    if (initial.loadedCodeDigest !== null) {
+    // Primary signal: file mtime. If the disk mtime is at most the mtime
+    // of our last known write, nothing external could have happened — skip
+    // the entire check (no modal risk, no extra round-trip cost).
+    //
+    // Secondary signal: content digest. Only consulted when mtime actually
+    // moved forward, to distinguish an external edit from the same file
+    // being re-saved by another sdraw client producing identical bytes.
+    // Using digest alone (the old behavior) was brittle: any migration
+    // randomness or subtle cross-language hash quirk triggered a false
+    // conflict, popping the merge modal on every autosave.
+    if (initial.loadedCodeDigest !== null && initial.loadedFileMtime !== null) {
       let conflict = false;
       try {
-        const { digest: diskDigest } = await api.boardCodeDigest(boardFilePath);
-        conflict = diskDigest !== initial.loadedCodeDigest;
+        const { digest: diskDigest, mtime: diskMtime } = await api.boardCodeDigest(boardFilePath);
+        // A 0.5s grace absorbs sub-second filesystem rounding (some FSes
+        // only expose second-precision mtimes).
+        const mtimeAdvanced =
+          typeof diskMtime === 'number' &&
+          diskMtime > (initial.loadedFileMtime ?? 0) + 0.5;
+        conflict = mtimeAdvanced && diskDigest !== initial.loadedCodeDigest;
       } catch {
         // File missing / unreadable — fall through to normal save.
       }
       if (conflict) {
         let diskBoard: Board | null = null;
+        let diskMtime: number | null = null;
         try {
           const r = await api.openBoardFromFile(boardFilePath);
           diskBoard = r.board as Board;
+          diskMtime = typeof r.mtime === 'number' ? r.mtime : null;
         } catch {
           // Can't read disk copy — fall through to save.
         }
@@ -972,6 +1085,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
               board: db,
               isDirty: false,
               loadedCodeDigest: diskDigest,
+              loadedFileMtime: diskMtime,
               history: [{
                 elements: structuredClone(db.elements),
                 plotCodes: structuredClone(db.plotCodes ?? {}),
@@ -1016,18 +1130,85 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       // Thumbnail capture is best-effort
     }
 
-    // Embed images: for each image element with a source path, check
-    // whether the file has changed since we last embedded it. Only
-    // re-fetch + re-encode when the source is genuinely newer — this
-    // avoids ~30 MB of redundant embedImage round-trips on every save
-    // when no source files have changed (the typical case after running
-    // a plot cell).
+    const savedHashes = get()._savedElementHashes;
+    const savedIds = get()._savedElementIds;
+    const hasPriorSave = savedHashes.size > 0;
+
+    // ---- Delta save path ----
+    // If we have a prior save snapshot, compute what changed and send
+    // only the diff. This reduces save traffic from ~12 MB to ~100 KB
+    // for the common case (one plot output changed).
+    if (hasPriorSave) {
+      const current = computeSaveHashes(board);
+      const dirtyElements: BoardElement[] = [];
+      const removedIds: string[] = [];
+
+      // Find changed / added elements
+      for (const el of board.elements) {
+        const oldHash = savedHashes.get(el.id);
+        const newHash = current.elementHashes.get(el.id)!;
+        if (oldHash !== newHash) {
+          dirtyElements.push(el);
+        }
+      }
+
+      // Find removed elements
+      for (const oldId of savedIds) {
+        if (!current.elementIds.has(oldId)) {
+          removedIds.push(oldId);
+        }
+      }
+
+      const boardFieldsChanged = current.boardFieldsHash !== get()._savedBoardFieldsHash;
+
+      // If nothing changed at all, skip the save
+      if (dirtyElements.length === 0 && removedIds.length === 0 && !boardFieldsChanged && !thumbnail) {
+        set({ isDirty: false });
+        return;
+      }
+
+      try {
+        setProgress('Uploading...');
+        const deltaResult = await api.saveBoardDelta({
+          path: boardFilePath,
+          board_id: board.id,
+          updated_at: new Date().toISOString(),
+          thumbnail: thumbnail || null,
+          dirty_elements: dirtyElements,
+          removed_ids: removedIds,
+          ...(boardFieldsChanged ? {
+            setup: board.setup,
+            plot_codes: board.plotCodes,
+            canvas: board.canvas,
+            auto_export: board.autoExport,
+          } : {}),
+        });
+        set({
+          isDirty: false,
+          loadedCodeDigest: codeDigest(board),
+          loadedFileMtime:
+            typeof deltaResult.mtime === 'number' ? deltaResult.mtime : Date.now() / 1000,
+          _savedElementHashes: current.elementHashes,
+          _savedBoardFieldsHash: current.boardFieldsHash,
+          _savedElementIds: current.elementIds,
+        });
+        try { await api.deleteCheckpoint(boardFilePath); } catch {}
+        return; // delta save succeeded
+      } catch {
+        // Delta save failed (409 = file missing, or backend too old).
+        // Fall through to full save.
+        console.warn('[sdraw] Delta save failed, falling back to full save');
+      }
+    }
+
+    // ---- Full save path ----
+    // Used for first save (no prior snapshot) or when delta save fails.
+    // Re-embeds images that have changed on disk.
     const oversizedImages: { path: string; size?: number }[] = [];
     const embeddedElements = await Promise.all(
       board.elements.map(async (el) => {
         if (el.type !== 'image' || !el.source?.path) return el;
         try {
-          // Fast path: source file hasn't changed since we last embedded.
           if (el.source.embeddedData && el.source.lastModified) {
             const check = await api.checkImage(el.source.path);
             if (!check.exists) {
@@ -1037,73 +1218,45 @@ export const useBoardStore = create<BoardState>((set, get) => ({
               return { ...el, source: { ...el.source, linkStatus: 'linked' as const } };
             }
           }
-          // Slow path: source is newer (or never embedded). Re-embed.
           const result = await api.embedImage(el.source.path);
           if (result.exists && result.oversized) {
             oversizedImages.push({ path: el.source.path, size: result.size });
-            return {
-              ...el,
-              source: {
-                ...el.source,
-                lastModified: result.mtime || el.source.lastModified,
-                linkStatus: 'linked' as const,
-              },
-            };
+            return { ...el, source: { ...el.source, lastModified: result.mtime || el.source.lastModified, linkStatus: 'linked' as const } };
           }
           if (result.exists && result.data) {
-            return {
-              ...el,
-              source: {
-                ...el.source,
-                embeddedData: result.data,
-                embeddedMime: result.mime || 'image/png',
-                lastModified: result.mtime || undefined,
-                linkStatus: 'linked' as const,
-              },
-            };
+            return { ...el, source: { ...el.source, embeddedData: result.data, embeddedMime: result.mime || 'image/png', lastModified: result.mtime || undefined, linkStatus: 'linked' as const } };
           }
-          return {
-            ...el,
-            source: { ...el.source, linkStatus: 'unlinked' as const },
-          };
+          return { ...el, source: { ...el.source, linkStatus: 'unlinked' as const } };
         } catch {
           return el;
         }
       })
     );
 
-    const updated = {
-      ...board,
-      elements: embeddedElements,
-      updated_at: new Date().toISOString(),
-      thumbnail,
-    };
+    const updated = { ...board, elements: embeddedElements, updated_at: new Date().toISOString(), thumbnail };
     setProgress('Uploading...');
     const saveResult = await api.saveBoardToFile(updated, boardFilePath);
-    set({ board: updated, isDirty: false, loadedCodeDigest: codeDigest(updated) });
-    setProgress(null);
-    // Clean up checkpoint after a successful save
+    // Build snapshot for future delta saves
+    const hashes = computeSaveHashes(updated);
+    set({
+      board: updated,
+      isDirty: false,
+      loadedCodeDigest: codeDigest(updated),
+      loadedFileMtime:
+        typeof saveResult.mtime === 'number' ? saveResult.mtime : Date.now() / 1000,
+      _savedElementHashes: hashes.elementHashes,
+      _savedBoardFieldsHash: hashes.boardFieldsHash,
+      _savedElementIds: hashes.elementIds,
+    });
     try { await api.deleteCheckpoint(boardFilePath); } catch {}
 
-    // Surface size warnings. The hard cap is already enforced backend-side;
-    // these are informational so users know why an image isn't embedded or
-    // why the file is getting heavy.
     if (oversizedImages.length > 0) {
-      const names = oversizedImages
-        .map(i => i.path.split('/').pop() || i.path)
-        .slice(0, 3)
-        .join(', ');
+      const names = oversizedImages.map(i => i.path.split('/').pop() || i.path).slice(0, 3).join(', ');
       const more = oversizedImages.length > 3 ? ` (+${oversizedImages.length - 3} more)` : '';
-      console.warn(
-        `[sdraw] ${oversizedImages.length} image(s) too large to embed: ${names}${more}. ` +
-          `Linked path preserved but will not render on devices without the source file.`,
-      );
+      console.warn(`[sdraw] ${oversizedImages.length} image(s) too large to embed: ${names}${more}. Linked path preserved but will not render on devices without the source file.`);
     }
     if (saveResult.oversized && saveResult.size) {
-      const mb = (saveResult.size / (1024 * 1024)).toFixed(0);
-      console.warn(
-        `[sdraw] .sdraw file is large (${mb} MB). Consider splitting the board or removing unused images.`,
-      );
+      console.warn(`[sdraw] .sdraw file is large (${(saveResult.size / (1024 * 1024)).toFixed(0)} MB). Consider splitting the board or removing unused images.`);
     }
 
     } finally {
@@ -1210,7 +1363,10 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
 
     useUIStore.getState().setExportStatus('exporting');
-    useUIStore.getState().setProgressLabel('Rendering export...');
+    // No progress bar for auto-export — it's a background task that fires
+    // every few seconds. Showing "Rendering export..." / "Uploading..."
+    // on every cycle is noisy and alarming. The tiny toolbar dot indicator
+    // is enough; the progress bar is reserved for manual user actions.
 
     try {
       // Off-screen DOM rendering: build a hidden container with DOM elements
@@ -1240,7 +1396,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         return;
       }
 
-      useUIStore.getState().setProgressLabel('Uploading export...');
       const mimeType = ae.format === 'jpg' ? 'image/jpeg' : 'image/png';
       const dataUrl = canvas.toDataURL(mimeType, 0.95);
       const res = await fetch('/api/export/save', {
@@ -1258,7 +1413,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         return;
       }
 
-      useUIStore.getState().setProgressLabel(null);
       if (!res.ok) {
         console.error('Auto-export save failed:', await res.text());
         useUIStore.getState().setExportStatus('error');
@@ -1275,7 +1429,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       console.error('Auto-export failed:', err);
       const { useUIStore: ui } = await import('@/store/uiStore');
       ui.getState().setExportStatus('error');
-      ui.getState().setProgressLabel(null);
     }
   },
 

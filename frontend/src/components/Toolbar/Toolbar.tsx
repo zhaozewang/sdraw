@@ -295,14 +295,21 @@ export function Toolbar() {
         {/* File actions */}
         <ToolButton onClick={() => saveBoard()} icon={Save} title="Save (Cmd+S)" disabled={!isDirty} />
         <div className="relative">
-          <ToolButton onClick={() => setShowExportDialog(true)} icon={FileOutput} title="Auto Export" />
+          <ToolButton onClick={() => setShowExportDialog(true)} icon={FileOutput}
+            title={exportStatus === 'error' ? 'Auto Export — last export failed (click to configure)' : 'Auto Export'} />
           {board.autoExport?.enabled && board.autoExport?.outputPath && (
-            <div className={`absolute top-0 right-0 w-1.5 h-1.5 rounded-full ${
-              exportStatus === 'exporting' ? 'bg-yellow-400 animate-pulse' :
-              exportStatus === 'error' ? 'bg-red-500' :
-              exportStatus === 'success' ? 'bg-green-500' :
-              'bg-green-500 animate-pulse'
-            }`} />
+            <div
+              className={`absolute rounded-full ${
+                exportStatus === 'error'
+                  ? 'top-0 right-0 w-2.5 h-2.5 bg-red-500 animate-pulse'
+                  : exportStatus === 'exporting'
+                    ? 'top-0 right-0 w-1.5 h-1.5 bg-yellow-400 animate-pulse'
+                  : exportStatus === 'success'
+                    ? 'top-0 right-0 w-1.5 h-1.5 bg-green-500'
+                    : 'top-0 right-0 w-1.5 h-1.5 bg-green-500 animate-pulse'
+              }`}
+              title={exportStatus === 'error' ? 'Export failed' : exportStatus === 'exporting' ? 'Exporting...' : 'Auto-export active'}
+            />
           )}
         </div>
 

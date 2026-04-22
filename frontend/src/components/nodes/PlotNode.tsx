@@ -1,8 +1,8 @@
 import { memo, useCallback, useState } from 'react';
 import { NodeProps } from '@xyflow/react';
-import { useBoardStore } from '@/store/boardStore';
+import { useBoardStore, plotRenderHash } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
-import { Code2, Lock, AlertTriangle, X } from 'lucide-react';
+import { Code2, Lock, AlertTriangle, X, Play, Loader2 } from 'lucide-react';
 import { Resizer } from './Resizer';
 
 interface PlotNodeData {
@@ -15,15 +15,36 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
   const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
+  const runOnePlot = useBoardStore(s => s.runOnePlot);
+  // Subscribe to the bits of the board needed for staleness detection only
+  // (setup code + the specific plotCodes entry). Selecting primitives keeps
+  // unrelated board updates from re-rendering this node.
+  const plotCodeId: string | undefined = element?.metadata?.plotCodeId;
+  const setupCode = useBoardStore(s => s.board?.setup?.code ?? '');
+  const currentPlotCode = useBoardStore(s =>
+    plotCodeId ? s.board?.plotCodes?.[plotCodeId]?.code ?? '' : ''
+  );
   const zoom = useUIStore(s => s.zoom);
   const invZoom = 1 / Math.max(zoom, 0.1);
   const [errorExpanded, setErrorExpanded] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
 
   const handleDoubleClick = useCallback(() => {
     if (element && !element.locked) {
       useUIStore.getState().setPlotEditorElementId(elementId);
     }
   }, [elementId, element?.locked]);
+
+  const handleRunCell = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!plotCodeId || isRunning) return;
+    setIsRunning(true);
+    try {
+      await runOnePlot(plotCodeId);
+    } finally {
+      setIsRunning(false);
+    }
+  }, [plotCodeId, isRunning, runOnePlot]);
 
   const onResizeAbsolute = useCallback((x: number, y: number, w: number, h: number) => {
     updateElement(elementId, { x, y, width: w, height: h });
@@ -45,6 +66,15 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
   const lastStdout = metadata?.lastStdout as string | null;
   const lastError = metadata?.lastError as string | null;
   const rotation = element.rotation || 0;
+
+  // Stale when we have a cached output stamped with a hash, and the
+  // current code hash no longer matches that stamp. If there is no stamp
+  // (e.g. never rendered, or legacy file) we show neither stale nor fresh —
+  // the "Double-click to edit" placeholder already communicates the state.
+  const storedHash = metadata?.renderedCodeHash as string | undefined;
+  const hasOutput = !!(lastOutput || lastStdout);
+  const currentHash = plotRenderHash(setupCode, currentPlotCode);
+  const isStale = hasOutput && typeof storedHash === 'string' && storedHash !== currentHash;
 
   return (
     <div
@@ -81,12 +111,16 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
       <div
         className="w-full h-full relative overflow-hidden"
         style={{
-          // Red ring if the last run failed, regardless of whether a cached
-          // image is still visible — so you can spot failed cells from a
-          // zoomed-out view without having to open each one.
-          borderColor: lastError ? '#ef4444' : (style.borderColor || '#d0d0d0'),
-          borderWidth: lastError ? 2 : (style.borderWidth ?? 0),
-          borderStyle: lastError || (style.borderWidth ?? 0) > 0 ? 'solid' : 'none',
+          // Red ring for errors, amber dashed ring for stale cache, else
+          // the element's own border style. Error wins over stale so a
+          // failed re-run is still obvious from a zoomed-out view.
+          borderColor: lastError ? '#ef4444' : isStale ? '#f59e0b' : (style.borderColor || '#d0d0d0'),
+          borderWidth: lastError || isStale ? 2 : (style.borderWidth ?? 0),
+          borderStyle: lastError
+            ? 'solid'
+            : isStale
+            ? 'dashed'
+            : (style.borderWidth ?? 0) > 0 ? 'solid' : 'none',
           borderRadius: style.borderRadius ?? 0,
           backgroundColor: style.background || 'transparent',
           boxShadow: style.shadow ? '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.06)' : 'none',
@@ -117,12 +151,43 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         )}
 
-        {/* Status indicators */}
-        <div className="absolute top-1 right-1 flex gap-1">
+        {/* Status indicators + per-cell Run button. Run is zoom-invariant so
+            it stays clickable when the user is zoomed way out. */}
+        <div
+          className="absolute top-1 right-1 flex items-center gap-1"
+          style={{
+            transformOrigin: 'top right',
+            transform: `scale(${invZoom})`,
+          }}
+        >
           {element.locked && (
             <div className="bg-white/80 dark:bg-black/40 rounded p-0.5" title="Locked">
               <Lock size={10} className="text-gray-500 dark:text-gray-400" />
             </div>
+          )}
+          {!element.locked && plotCodeId && (
+            <button
+              type="button"
+              onClick={handleRunCell}
+              onDoubleClick={e => e.stopPropagation()}
+              disabled={isRunning}
+              title={
+                isStale
+                  ? 'Code changed since last render — click to re-run this cell'
+                  : 'Run this cell'
+              }
+              className={
+                'flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium shadow-sm ' +
+                'transition-colors ' +
+                (isStale
+                  ? 'bg-amber-500 text-white hover:bg-amber-600'
+                  : 'bg-white/90 dark:bg-black/60 text-gray-700 dark:text-gray-200 hover:bg-white dark:hover:bg-black/80') +
+                (isRunning ? ' opacity-70 cursor-wait' : '')
+              }
+            >
+              {isRunning ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />}
+              <span>{isStale ? 'Stale — Run' : 'Run'}</span>
+            </button>
           )}
         </div>
 

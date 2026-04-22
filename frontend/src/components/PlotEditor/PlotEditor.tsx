@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useBoardStore, plotRenderHash } from '@/store/boardStore';
+import type { BoardElement } from '@/types/board';
 import { useUIStore } from '@/store/uiStore';
 import { api } from '@/api/client';
 import { Play, Square, Loader2, X, Crop, Check, Save, Braces } from 'lucide-react';
@@ -385,6 +386,15 @@ export function PlotEditor() {
   const [cropSnapshot, setCropSnapshot] = useState<string | null>(null);
   const [cropAspectRatio, setCropAspectRatio] = useState<number | null>(null); // w/h pixel ratio, null = free
 
+  // When the user clicks a ghost thumbnail (a figure that the last Run
+  // produced but has no canvas element yet), we preview it in-editor
+  // without spawning a canvas element or changing `elementId`. This state
+  // records which ghost figureIndex is being previewed so the strip can
+  // move the blue "active" border onto the ghost thumb — otherwise the
+  // preview swaps but the border stays on the real sibling, which looked
+  // like a broken focus to the user.
+  const [previewGhostIdx, setPreviewGhostIdx] = useState<number | null>(null);
+
   // Tab within the editor: plot code or shared board-level Python setup.
   const [activeTab, setActiveTab] = useState<'plot' | 'setup'>('plot');
   const board = useBoardStore(s => s.board);
@@ -428,18 +438,20 @@ export function PlotEditor() {
   const codeRef = useRef('');
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Code-only persist (debounced) — writes code edits to the board-level
-  // plot code registry entry. Every figure element that references this
-  // plotCodeId immediately sees the new code. The Save button handles the
-  // cropped image + metadata; this path only touches the code text.
-  const persistCode = useCallback(() => {
-    if (!plotCodeId) return;
-    setPlotCode(plotCodeId, codeRef.current);
-  }, [plotCodeId, setPlotCode]);
-  const schedulePersist = useCallback(() => {
-    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
-    persistTimerRef.current = setTimeout(() => persistCode(), 2000);
-  }, [persistCode]);
+  // Full figures array from the last successful Run, plus the code hash
+  // that produced them. Save uses these to fan the uncropped figures out
+  // to every sibling sharing this plotCodeId — but ONLY when the hash
+  // still matches the code being saved. If the user edited after running,
+  // the figures are stale for siblings; we skip distribute and let the
+  // renderedCodeHash mismatch surface as the amber "stale" badge instead.
+  const lastRunFiguresRef = useRef<Array<{ image: string | null; plotly_json: string | null }> | null>(null);
+  const lastRunCodeHashRef = useRef<string | null>(null);
+
+  // Code edits are kept in local state (codeRef / localCode) until the
+  // user clicks Save. No more debounced persist to the board registry on
+  // every keystroke — that was marking the board dirty and triggering
+  // autosave + auto-export while the user was still iterating, which
+  // saturated SSH tunnels with multi-MB saves every few seconds.
 
   useEffect(() => {
     if (elementId && element && initRef.current !== elementId) {
@@ -448,17 +460,24 @@ export function PlotEditor() {
       // figure element with the same plotCodeId.
       const code = registryCode || '';
       setLocalCode(code); codeRef.current = code;
-      // Preview / stdout / error / crop come from the CLICKED element,
-      // which may be a per-figure sibling with its own cached output + crop.
-      setLocalOutput(element.metadata?.lastOutput || null);
+      // Preview source precedence: fresh figure from the most recent Run
+      // (applies to whichever sibling the user just switched to) >
+      // the element's cached lastOutput (may be stale from an earlier
+      // buggy capture). Without this, switching thumbnails in a session
+      // where the latest run produced figures that haven't been saved
+      // yet would show stale cached images instead of the fresh run.
+      const fidx = element.metadata?.figureIndex ?? 0;
+      const runFig = lastRunFiguresRef.current?.[fidx];
+      if (runFig && runFig.image) {
+        setLocalOutput(runFig.image);
+        setPlotlyJson(runFig.plotly_json);
+      } else {
+        setLocalOutput(element.metadata?.lastOutput || null);
+        setPlotlyJson(element.metadata?.plotlyJson || null);
+      }
       setLocalStdout(element.metadata?.lastStdout || null);
       setLocalError(element.metadata?.lastError || null);
       setCropRect(element.metadata?.plotCrop || null);
-      // plotlyJson is lazy-loaded (see the effect below) — seed with
-      // whatever is already in-memory on the element. If the user just
-      // finished a run in this session it will be populated; otherwise
-      // the lazy fetch will hydrate it from the board cache.
-      setPlotlyJson(element.metadata?.plotlyJson || null);
       // Clear any snapshot captured from the previous editor session —
       // otherwise Save would pick up the old element's image as the
       // "full image" and write it onto this element.
@@ -466,29 +485,65 @@ export function PlotEditor() {
       setCropMode(false); setIsRunning(false); setHasRun(false); setExecutionId(null);
       setActiveTab('plot');
       setSetupStdout(null); setSetupError(null);
+      // Switching to a real sibling clears any ghost-preview mode so the
+      // active border snaps onto the real thumb.
+      setPreviewGhostIdx(null);
     }
   }, [elementId, element, registryCode]);
+
+  // When a ghost figure gains a real canvas element (e.g. Save spawned it),
+  // drop the ghost-preview flag so the active-border logic falls back to
+  // the normal `ref.id === elementId` path.
+  useEffect(() => {
+    if (previewGhostIdx === null) return;
+    if (!plotCodeId || !board) return;
+    const hasRealAtIdx = board.elements.some(
+      el =>
+        el.type === 'plot' &&
+        el.metadata?.plotCodeId === plotCodeId &&
+        (el.metadata?.figureIndex ?? 0) === previewGhostIdx,
+    );
+    if (hasRealAtIdx) setPreviewGhostIdx(null);
+  }, [previewGhostIdx, plotCodeId, board]);
 
   // Lazy-load plotlyJson for the open element. The /boards/open response
   // no longer carries plotlyJson (it's several MB per plot and only the
   // editor needs it), so fetch from ~/.sdraw/cache/ when the editor opens
-  // on an element whose spec isn't already in memory. Harmless when the
-  // element has no cached spec — the fetch returns null and the UI falls
-  // back to the PNG preview.
+  // on an element whose spec isn't already in memory.
+  //
+  // IMPORTANT race condition: this effect fires on every elementId change
+  // and can overwrite plotlyJson that the init effect just set to `null`
+  // deliberately (for matplotlib siblings whose runFigure has no plotly
+  // spec). If the sidecar has stale plotly data from an older buggy
+  // capture (e.g. cbar's id keyed to iso's spec), the fetch silently
+  // replaces the PNG preview with the stale plotly widget — which the
+  // user sees as "thumbnail briefly swaps then reverts."
+  //
+  // Gates, in priority order:
+  //   1. A run happened this session → runFigures is authoritative for
+  //      EVERY sibling, including "null means matplotlib." Don't fetch.
+  //   2. Element already has plotlyJson in metadata → nothing to fetch.
+  //   3. We're already previewing a ghost → don't fetch (we're showing
+  //      the ghost's figure, not the element's).
   useEffect(() => {
     if (!elementId || !element) return;
     if (element.type !== 'plot') return;
+    if (lastRunFiguresRef.current !== null) return;
+    if (element.metadata?.plotlyJson) return;
+    if (previewGhostIdx !== null) return;
     const boardId = useBoardStore.getState().board?.id;
     if (!boardId) return;
-    // Already have it (freshly run this session) — nothing to do.
-    if (element.metadata?.plotlyJson) return;
     let cancelled = false;
     api.getPlotlyJson(boardId, elementId).then(res => {
       if (cancelled) return;
+      // Double-check after the network round-trip: the user may have run
+      // or switched ghosts while we were waiting.
+      if (lastRunFiguresRef.current !== null) return;
+      if (previewGhostIdx !== null) return;
       if (res.plotly_json) setPlotlyJson(res.plotly_json);
     }).catch(() => { /* best-effort: fall back to PNG preview */ });
     return () => { cancelled = true; };
-  }, [elementId, element]);
+  }, [elementId, element, previewGhostIdx]);
 
   // Keyboard shortcuts for tab switching inside the editor.
   // Use a capture-phase listener so it beats CodeMirror's own key handling.
@@ -527,7 +582,7 @@ export function PlotEditor() {
       EditorState.tabSize.of(4),
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) { const c = u.state.doc.toString(); codeRef.current = c; setLocalCode(c); schedulePersist(); }
+        if (u.docChanged) { const c = u.state.doc.toString(); codeRef.current = c; setLocalCode(c); }
       }),
       EditorView.theme({
         '&': { height: '100%', fontSize: '13px' },
@@ -566,45 +621,41 @@ export function PlotEditor() {
     // drop it so Save always re-captures from the fresh plotly output.
     setCropSnapshot(null);
     setIsRunning(true); setExecutionId(execId); setLocalError(null); setLocalStdout(null);
+    // New run → old ghost preview no longer corresponds to anything.
+    setPreviewGhostIdx(null);
     try {
       const boardState = useBoardStore.getState().board;
       const env = boardState?.pythonEnvPath ?? useUIStore.getState().pythonEnvPath;
       const bp = useBoardStore.getState().boardFilePath;
       const cwd = bp ? bp.replace(/\/[^/]+$/, '') : null;
-      const r = await api.executePlot(codeRef.current, 30, 150, env, execId, cwd, {
+      // Snapshot the code + setup we're actually running. codeRef.current
+      // may drift if the user keeps typing during the await — hashing the
+      // snapshot keeps the Run→Save distribute path honest.
+      const runCode = codeRef.current;
+      const runSetupCode = boardState?.setup?.code ?? '';
+      const r = await api.executePlot(runCode, 30, 150, env, execId, cwd, {
         boardId: boardState?.id,
-        setupCode: boardState?.setup?.code ?? '',
+        setupCode: runSetupCode,
         setupTimeout: boardState?.setup?.timeout ?? 120,
       });
-      // Normalize to figures[]: backend always returns it now, but be
-      // defensive for any legacy caller or error path.
+      // Keep results in local PlotEditor state only — don't write to the
+      // board store until the user clicks Save. This prevents autosave from
+      // firing multi-MB saves while the user is still iterating on code.
       const figures =
         r.figures && r.figures.length > 0
           ? r.figures
           : r.image_base64 || r.plotly_json
           ? [{ image: r.image_base64, plotly_json: r.plotly_json }]
           : [];
-      // Before distributing, make sure the latest in-memory code is
-      // persisted to the registry — distributePlotFigures reads the
-      // registry to compute the per-plot render hash that controls the
-      // freeze policy.
-      if (plotCodeId) setPlotCode(plotCodeId, codeRef.current);
-      // Distribute across every element that references this plotCodeId
-      // by figureIndex. Auto-spawns new siblings only for indices past the
-      // current highest — deleted figures stay deleted.
-      await distributePlotFigures(
-        elementId,
-        figures,
-        r.stdout,
-        r.success ? null : r.error,
-      );
+      // Stash every figure + the hash that produced them so a subsequent
+      // Save can fan uncropped figures out to sibling elements.
+      lastRunFiguresRef.current = figures;
+      lastRunCodeHashRef.current = plotRenderHash(runSetupCode, runCode);
       const myFig = figures[activeFigureIndex];
       if (myFig) {
         setLocalOutput(myFig.image); setPlotlyJson(myFig.plotly_json);
         setLocalError(r.success ? null : r.error);
       } else if (figures.length > 0) {
-        // The clicked element's figureIndex is past the end of the new
-        // figures list. Show the missing-figure placeholder.
         setLocalOutput(null); setPlotlyJson(null);
         setLocalError(
           `Figure ${activeFigureIndex} missing: code now produces only ${figures.length} figure${figures.length === 1 ? '' : 's'}.`,
@@ -616,7 +667,7 @@ export function PlotEditor() {
       setLocalStdout(r.stdout);
     } catch (err: any) { if (!String(err).includes('abort')) setLocalError(String(err)); }
     finally { setIsRunning(false); setHasRun(true); setExecutionId(null); }
-  }, [elementId, plotCodeId, activeFigureIndex, isRunning, distributePlotFigures, setPlotCode]);
+  }, [elementId, plotCodeId, activeFigureIndex, isRunning]);
 
   const handleAbort = useCallback(async () => { if (executionId) { try { await api.abortPlot(executionId); } catch {} } }, [executionId]);
 
@@ -729,21 +780,39 @@ export function PlotEditor() {
         // reads from the registry so the digest we stamp matches what
         // distribute will read on the next run.
         if (plotCodeId) setPlotCode(plotCodeId, codeRef.current);
-        // Stamp the code hash only when there's a real user crop — that's
-        // what the freeze path in distributePlotFigures keys off. Read the
-        // code from the registry after the persist above.
-        const isCropped = !!(currentCrop && currentCrop.w > 0.02 && currentCrop.h > 0.02);
+        // Stamp renderedCodeHash unconditionally — it is the general
+        // "this output was produced by this code" tag used by PlotNode's
+        // staleness indicator, not only by the crop-freeze path.
         const board = useBoardStore.getState().board;
         const registryCodeNow = plotCodeId
           ? String(board?.plotCodes?.[plotCodeId]?.code ?? codeRef.current)
           : codeRef.current;
-        const renderedCodeHash = isCropped
-          ? plotRenderHash(board?.setup?.code ?? '', registryCodeNow)
-          : undefined;
+        const renderedCodeHash = plotRenderHash(board?.setup?.code ?? '', registryCodeNow);
+
+        // Fan the uncropped figures from the last run out to every sibling
+        // element sharing this plotCodeId — but only if the last run's
+        // code hash matches the code being saved. If the user edited after
+        // running, the stored figures are stale for siblings; skip distribute
+        // and let renderedCodeHash mismatch surface the amber stale badge.
+        const runHash = lastRunCodeHashRef.current;
+        const runFigures = lastRunFiguresRef.current;
+        if (plotCodeId && runFigures && runHash === renderedCodeHash) {
+          await distributePlotFigures(
+            elementId,
+            runFigures,
+            localStdoutRef.current,
+            localErrorRef.current,
+          );
+        }
+
+        // Override the current element's fields with the cropped image
+        // (distribute above used the uncropped figure for it). We write
+        // last so this is the final state the canvas sees.
+        const freshEl = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
         updateElement(elementId, {
           width: el.width, height: newHeight,
           metadata: {
-            ...el.metadata, lastOutput: outputB64,
+            ...(freshEl?.metadata ?? el.metadata), lastOutput: outputB64,
             lastStdout: localStdoutRef.current, lastError: localErrorRef.current,
             plotCrop: currentCrop, plotlyJson: currentJson,
             renderedCodeHash,
@@ -761,7 +830,7 @@ export function PlotEditor() {
       isSavingRef.current = false;
       setIsSaving(false);
     }
-  }, [elementId, plotCodeId, setPlotCode, updateElement, pushHistory, getCurrentPlotlyJson, saveBoard, loadImage, captureFromPlotly]);
+  }, [elementId, plotCodeId, setPlotCode, updateElement, distributePlotFigures, pushHistory, getCurrentPlotlyJson, saveBoard, loadImage, captureFromPlotly]);
 
   // Enter crop mode: capture snapshot, then switch to crop UI
   const enterCropMode = useCallback(async () => {
@@ -957,10 +1026,17 @@ export function PlotEditor() {
 
           {/* Right: output */}
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden" style={{ backgroundColor: isDark ? '#1a1a2e' : '#fafafa' }}>
-            {/* Thumbnail strip — shown when the source element has more than
-                one figure (i.e. sibling references exist). Clicking a
-                thumbnail re-points the editor at the element bound to that
-                figure so the user sees its own crop and preview. */}
+            {/* Thumbnail strip — one entry per figure the code is known to
+                produce. Sources, in priority order:
+                  1. Existing canvas elements (siblings sharing plotCodeId).
+                     Click → switches editor to that element's own crop.
+                  2. Ghost entries for figures that came out of the most
+                     recent Run but have no canvas element yet. These
+                     materialize as real elements on Save. Click has no
+                     effect (nothing to switch to) but the thumbnail shows
+                     the user what's coming.
+                The strip renders whenever there's ≥ 2 total entries so the
+                single-figure case stays uncluttered. */}
             {(() => {
               const allElements = board?.elements ?? [];
               const refs = plotCodeId
@@ -972,7 +1048,17 @@ export function PlotEditor() {
                         (b.metadata?.figureIndex ?? 0)
                     )
                 : [];
-              if (refs.length <= 1) return null;
+              const runFigures = lastRunFiguresRef.current ?? [];
+              // Total figure count = max(run-produced, elements-present).
+              // If the code produced 3 figures and only 2 elements exist,
+              // show 3 thumbs (2 bound, 1 ghost).
+              const refByIdx = new Map<number, BoardElement>();
+              for (const el of refs) {
+                const idx = el.metadata?.figureIndex ?? 0;
+                if (!refByIdx.has(idx)) refByIdx.set(idx, el);
+              }
+              const totalFigs = Math.max(refs.length, runFigures.length);
+              if (totalFigs <= 1) return null;
               return (
                 <div
                   className="shrink-0 flex items-center gap-2 px-3 py-2 overflow-x-auto"
@@ -983,22 +1069,65 @@ export function PlotEditor() {
                   }}
                 >
                   <span className={`text-2xs shrink-0 ${isDark ? 'text-white/40' : 'text-gray-500'}`}>
-                    {refs.length} figures
+                    {totalFigs} figures
                   </span>
-                  {refs.map((ref, i) => {
-                    const isActive = ref.id === elementId;
-                    const thumb = ref.metadata?.lastOutput;
-                    const missing = ref.metadata?.figureMissing;
+                  {Array.from({ length: totalFigs }, (_, i) => {
+                    const ref = refByIdx.get(i);
+                    const isGhost = !ref;
+                    // Active = whichever thumb matches what's currently
+                    // shown in the preview. For real siblings that's
+                    // `elementId`. For ghosts it's `previewGhostIdx`.
+                    // Clicking a real thumb clears previewGhostIdx in the
+                    // init effect, so the two modes can't both be active.
+                    const isActive = isGhost
+                      ? previewGhostIdx === i
+                      : ref?.id === elementId && previewGhostIdx === null;
+                    // Prefer the fresh figure from the most recent Run
+                    // over the element's cached lastOutput. Otherwise two
+                    // siblings with identical (stale) stored outputs would
+                    // render identical thumbnails even after a Run that
+                    // produced distinct iso + cbar figures.
+                    const runThumb = runFigures[i]?.image ?? null;
+                    const boundThumb = ref?.metadata?.lastOutput ?? null;
+                    const thumb = runThumb || boundThumb;
+                    const missing = ref?.metadata?.figureMissing;
                     return (
                       <button
-                        key={ref.id}
-                        onClick={() =>
-                          useUIStore.getState().setPlotEditorElementId(ref.id)
+                        key={ref?.id ?? `ghost-${i}`}
+                        onClick={() => {
+                          if (ref) {
+                            // Real sibling — switch editor to that element.
+                            // The init effect will clear previewGhostIdx.
+                            useUIStore.getState().setPlotEditorElementId(ref.id);
+                          } else {
+                            // Ghost — preview the figure in this editor
+                            // session. No element exists yet (spawned on
+                            // Save), so we just swap the preview surface
+                            // and mark this ghost index as "previewing" so
+                            // the blue active border moves onto it.
+                            const fig = runFigures[i];
+                            if (fig) {
+                              setLocalOutput(fig.image);
+                              setPlotlyJson(fig.plotly_json);
+                              setCropRect(null);
+                              setCropSnapshot(null);
+                              setCropMode(false);
+                              setPreviewGhostIdx(i);
+                            }
+                          }
+                        }}
+                        title={
+                          isGhost
+                            ? `Figure ${i} — preview only; click Save to add to canvas`
+                            : `Figure ${i} (${isActive ? 'current' : 'click to switch'})`
                         }
-                        title={`Figure ${i} (${isActive ? 'current' : 'click to switch'})`}
                         className={`shrink-0 rounded overflow-hidden border-2 transition-all ${
                           isActive
-                            ? (isDark ? 'border-blue-400' : 'border-blue-500')
+                            ? (isDark
+                                ? (isGhost ? 'border-amber-400' : 'border-blue-400')
+                                : (isGhost ? 'border-amber-500' : 'border-blue-500'))
+                            : isGhost
+                            ? (isDark ? 'border-amber-500/40 border-dashed hover:border-amber-400' : 'border-amber-400/60 border-dashed hover:border-amber-500')
                             : (isDark ? 'border-white/10 hover:border-white/30' : 'border-gray-200 hover:border-gray-400')
                         }`}
                         style={{ width: 56, height: 40 }}

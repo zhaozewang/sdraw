@@ -80,72 +80,122 @@ def _write_frame(stream: io.BufferedWriter, obj: dict[str, Any]) -> None:
 
 # ----- Matplotlib / plotly capture ------------------------------------------
 #
-# Adapted from backend/services/plot_runner.py. Kept inline (not imported)
-# because plot_runner lives in a separate process lifetime and we don't want
-# its module-level import side effects running here.
+# A single namespace walk produces figures in the order the user's code bound
+# them, so `iso_fig, cbar_fig = make_figs()` puts iso at index 0 and cbar at
+# index 1 regardless of whether one is matplotlib and the other is plotly.
+# That ordering maps directly to the sdraw element `figureIndex` metadata.
 
 
-def _capture_matplotlib_all(dpi: int) -> list[dict[str, Any]]:
-    """Capture EVERY open matplotlib figure as a PNG base64, in creation order.
+def _render_matplotlib(fig, dpi: int) -> str | None:
+    """Render a matplotlib Figure to base64 PNG, or None if rendering fails.
 
-    Returns a list of `{"image": b64, "plotly_json": None}` dicts. Empty if
-    matplotlib isn't installed or no figures have any axes. All figures are
-    closed at the end so they don't leak into the next run.
+    `bbox_inches="tight"` is dropped on retry because some colorbar-only
+    figures raise inside tight-layout computation but render fine without it.
     """
+    import io as _io
+    import base64 as _b64
+    for kwargs in ({"bbox_inches": "tight"}, {}):
+        try:
+            buf = _io.BytesIO()
+            fig.savefig(buf, format="png", dpi=dpi, **kwargs)
+            return _b64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception:
+            continue
+    return None
+
+
+def _render_plotly(fig) -> tuple[str | None, str | None]:
+    """Render a plotly Figure to (plotly_json, image_b64 or None)."""
     try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        return []
+        plotly_json = fig.to_json()
+    except Exception:
+        plotly_json = None
+    image_b64: str | None = None
+    try:
+        img_bytes = fig.to_image(format="png", scale=2)
+        image_b64 = base64.b64encode(img_bytes).decode("ascii")
+    except Exception:
+        pass  # kaleido not installed; frontend renders the JSON spec
+    return plotly_json, image_b64
+
+
+def _capture_all_figures(
+    ns: dict[str, Any],
+    setup_obj_ids: set[int],
+    dpi: int,
+) -> list[dict[str, Any]]:
+    """Capture figures CREATED BY THE PLOT CODE, in tuple-unpack order.
+
+    `setup_obj_ids` is the set of id() values of everything in _setup_ns
+    BEFORE this plot ran. Any figure whose id() is in this set came from
+    setup (e.g. a template go.Figure) and is not a plot output, so we skip
+    it. Without this filter, a template figure in setup would hijack
+    `figureIndex=0` and the user's real figures would slide to 1, 2, etc.
+
+    Returns `{"image": b64 | None, "plotly_json": json | None}` per figure.
+    Pyplot's state is always cleared so it doesn't leak across runs.
+    """
     out: list[dict[str, Any]] = []
-    try:
-        for num in plt.get_fignums():
-            fig = plt.figure(num)
-            if not fig.get_axes():
-                continue
-            buf = io.BytesIO()
-            try:
-                fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
-            except Exception:
-                continue
-            out.append({
-                "image": base64.b64encode(buf.getvalue()).decode("ascii"),
-                "plotly_json": None,
-            })
-    finally:
-        plt.close("all")
-    return out
+    seen: set[int] = set()
 
-
-def _capture_plotly_all(ns: dict[str, Any]) -> list[dict[str, Any]]:
-    """Capture EVERY plotly Figure instance in the namespace, in insertion order.
-
-    Returns `{"image": b64 or None, "plotly_json": json}` per figure. The
-    image is None if kaleido isn't installed; the frontend renders from
-    plotly_json directly in that case.
-    """
     try:
         import plotly.graph_objects as go
+        plotly_fig_cls: type | None = go.Figure
     except ImportError:
-        return []
-    out: list[dict[str, Any]] = []
-    seen: set[int] = set()  # dedup by id() in case the same fig is bound twice
+        plotly_fig_cls = None
+
+    try:
+        import matplotlib.figure as _mpl_figure
+        import matplotlib.pyplot as plt
+        mpl_fig_cls: type | None = _mpl_figure.Figure
+    except ImportError:
+        mpl_fig_cls = None
+        plt = None  # type: ignore[assignment]
+
+    # Pass 1: walk the user's namespace in insertion order. Skip anything
+    # carried over from setup (id in setup_obj_ids) so template figures
+    # can't take fig-index 0 from the user's real outputs.
     for val in ns.values():
-        if not isinstance(val, go.Figure):
+        vid = id(val)
+        if vid in seen or vid in setup_obj_ids:
             continue
-        if id(val) in seen:
+        if plotly_fig_cls is not None and isinstance(val, plotly_fig_cls):
+            seen.add(vid)
+            plotly_json, image_b64 = _render_plotly(val)
+            out.append({"image": image_b64, "plotly_json": plotly_json})
             continue
-        seen.add(id(val))
+        if mpl_fig_cls is not None and isinstance(val, mpl_fig_cls):
+            if not val.get_axes():
+                continue
+            seen.add(vid)
+            image_b64 = _render_matplotlib(val, dpi)
+            if image_b64 is None:
+                continue
+            out.append({"image": image_b64, "plotly_json": None})
+            continue
+
+    # Pass 2: pyplot-tracked matplotlib figures not bound to any name in ns
+    # (e.g. `plt.figure(); plt.plot(...)` at module level). Append at the
+    # end so named bindings keep their natural insertion order.
+    if plt is not None:
         try:
-            plotly_json = val.to_json()
-        except Exception:
-            plotly_json = None
-        image_b64: str | None = None
-        try:
-            img_bytes = val.to_image(format="png", scale=2)
-            image_b64 = base64.b64encode(img_bytes).decode("ascii")
-        except Exception:
-            pass  # kaleido not installed; frontend renders the JSON spec
-        out.append({"image": image_b64, "plotly_json": plotly_json})
+            for num in plt.get_fignums():
+                fig = plt.figure(num)
+                fid = id(fig)
+                if fid in seen or fid in setup_obj_ids:
+                    continue
+                if not fig.get_axes():
+                    continue
+                seen.add(fid)
+                image_b64 = _render_matplotlib(fig, dpi)
+                if image_b64 is None:
+                    continue
+                out.append({"image": image_b64, "plotly_json": None})
+        finally:
+            # Always clear pyplot state — this is the only place that drops
+            # it between runs, so skipping would leak figures cross-run.
+            plt.close("all")
+
     return out
 
 
@@ -171,6 +221,25 @@ def _run_user_code(
     `want_figure=False` still closes any stray figures so they don't leak
     across runs (e.g. a stray plt.plot at the end of a setup block).
     """
+    # Snapshot setup's object identities BEFORE running, so we can tell
+    # setup-retained figures (templates, shared fig instances) apart from
+    # figures the plot code produces. For plot runs this is ns itself,
+    # which started as `{**_setup_ns, ...}` — so id() of every setup value
+    # is represented once.
+    setup_obj_ids: set[int] = (
+        {id(v) for v in _setup_ns.values()} if want_figure else set()
+    )
+
+    # Defensive pyplot reset BEFORE the run — a setup run that left stray
+    # figures (should not happen, but matplotlib is happy to keep them)
+    # would otherwise be captured as phantom plot outputs.
+    if want_figure:
+        try:
+            import matplotlib.pyplot as _plt_reset
+            _plt_reset.close("all")
+        except ImportError:
+            pass
+
     captured = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = captured
@@ -184,10 +253,11 @@ def _run_user_code(
 
     figures: list[dict[str, Any]] = []
     if want_figure:
-        # Matplotlib figures come out in creation order; plotly figures come
-        # out in namespace-insertion order. Matplotlib first matches user
-        # intuition ("the figure I saw first is on the left").
-        figures = _capture_matplotlib_all(dpi) + _capture_plotly_all(ns)
+        # A single walk of the user's namespace preserves tuple-unpack order
+        # across figure types — critical for `a, b = make_figs()` where one
+        # is plotly and one is matplotlib. Un-named pyplot figures append
+        # after named ones.
+        figures = _capture_all_figures(ns, setup_obj_ids, dpi)
     else:
         # Close any stray matplotlib figures so they don't leak into the
         # next plot run.

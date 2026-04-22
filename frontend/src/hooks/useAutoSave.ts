@@ -2,34 +2,23 @@ import { useEffect, useRef } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 
 const CHECKPOINT_INTERVAL = 3000;
-// Full save flushes the store (including freshly rendered plot PNGs and
-// re-embedded images) to the .sdraw file so the render guarantee holds
-// without requiring an explicit Save click. Longer than checkpoint because
-// it re-embeds images and captures a thumbnail.
 const FULL_SAVE_INTERVAL = 8000;
-const EXPORT_INTERVAL = 5000;
 
 export function useAutoSave() {
   const isDirty = useBoardStore(s => s.isDirty);
   const board = useBoardStore(s => s.board);
-  const boardId = board?.id;
   const checkpointTimerRef = useRef<number>();
   const fullSaveTimerRef = useRef<number>();
-  const exportIntervalRef = useRef<number>();
-  const lastExportFingerprintRef = useRef('');
-  const lastExportBoardIdRef = useRef<string | undefined>();
 
-  // Reset fingerprint when board changes
-  useEffect(() => {
-    if (boardId !== lastExportBoardIdRef.current) {
-      lastExportFingerprintRef.current = '';
-      lastExportBoardIdRef.current = boardId;
-    }
-  }, [boardId]);
-
-  // Checkpoint save (crash recovery) — lightweight, no embed/thumbnail.
+  // Checkpoint save (crash recovery). When delta save is active (we have
+  // a saved snapshot), the .sdraw file is already updated within 8 seconds
+  // by the full-save timer, so the checkpoint is redundant — skip it to
+  // avoid sending 12 MB over the wire every 3 seconds. Only use the
+  // network checkpoint for the first save (before the snapshot exists).
   useEffect(() => {
     if (!isDirty || !board) return;
+    // Delta save keeps the file fresh — no need for a separate checkpoint.
+    if (useBoardStore.getState()._savedElementHashes.size > 0) return;
 
     checkpointTimerRef.current = window.setTimeout(() => {
       useBoardStore.getState().saveCheckpoint();
@@ -60,60 +49,28 @@ export function useAutoSave() {
     };
   }, [isDirty, board]);
 
-  // Auto-export: interval-based, scoped to current board
+  // Auto-export: event-driven, fires once after each successful save.
+  // The old timer-based approach polled every 5 seconds and fired a heavy
+  // canvas render + upload on every fingerprint change (even a single plot
+  // run). This made the network unusable. Now auto-export piggybacks on
+  // the save cycle: save completes → isDirty flips false → export once.
   const autoExportEnabled = board?.autoExport?.enabled && !!board?.autoExport?.outputPath;
+  const wasDirtyRef = useRef(false);
 
   useEffect(() => {
-    if (!autoExportEnabled || !boardId) {
-      if (exportIntervalRef.current) {
-        clearInterval(exportIntervalRef.current);
-        exportIntervalRef.current = undefined;
-      }
-      return;
+    // Detect the transition isDirty: true → false (a save just completed).
+    if (wasDirtyRef.current && !isDirty && board && autoExportEnabled) {
+      // Small delay so the save fully settles before we render + export.
+      const timer = window.setTimeout(() => {
+        const state = useBoardStore.getState();
+        const b = state.board;
+        if (b?.autoExport?.enabled && b.autoExport.outputPath) {
+          state.triggerAutoExport(b);
+        }
+      }, 500);
+      wasDirtyRef.current = false;
+      return () => clearTimeout(timer);
     }
-
-    const scopedBoardId = boardId;
-
-    const check = () => {
-      const state = useBoardStore.getState();
-      const b = state.board;
-      if (!b || b.id !== scopedBoardId) return;
-      if (!b.autoExport?.enabled || !b.autoExport.outputPath) return;
-
-      // Content-only fingerprint: elements + image versions for THIS board's images only
-      // Does NOT include zoom, pan, selection, or viewport state
-      const boardImagePaths = new Set(
-        b.elements.filter(e => e.source?.path).map(e => e.source!.path)
-      );
-      const relevantVersions: Record<string, number> = {};
-      for (const [path, ver] of Object.entries(state.imageVersions)) {
-        if (boardImagePaths.has(path)) relevantVersions[path] = ver;
-      }
-
-      const fp = JSON.stringify({
-        els: b.elements.map(e => ({
-          id: e.id, x: e.x, y: e.y, w: e.width, h: e.height,
-          z: e.z_index, v: e.visible, r: e.rotation,
-          t: e.text, s: e.style, src: e.source?.path,
-          crop: e.crop, meta: e.metadata, pts: e.points,
-        })),
-        bg: b.canvas.background,
-        iv: relevantVersions,
-      });
-
-      if (fp !== lastExportFingerprintRef.current) {
-        lastExportFingerprintRef.current = fp;
-        // Pass the board snapshot directly to avoid TOCTOU race:
-        // the store state could change between this check and
-        // triggerAutoExport reading it.
-        state.triggerAutoExport(b);
-      }
-    };
-
-    exportIntervalRef.current = window.setInterval(check, EXPORT_INTERVAL);
-
-    return () => {
-      if (exportIntervalRef.current) clearInterval(exportIntervalRef.current);
-    };
-  }, [autoExportEnabled, boardId]);
+    wasDirtyRef.current = isDirty;
+  }, [isDirty, board, autoExportEnabled]);
 }

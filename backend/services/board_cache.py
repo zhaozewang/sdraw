@@ -102,13 +102,27 @@ def _cache_dir(board_id: str) -> Path:
     return CACHE_ROOT / board_id
 
 
-def save_cache(board: dict) -> None:
+def save_cache(board: dict, authoritative_ids: set[str] | None = None) -> None:
     """Extract cacheable data from a board and write to cache dir.
 
     Merges with any existing cache so plotlyJson entries that the client
     never hydrated (because they're now lazy-fetched by the PlotEditor)
     are preserved instead of being dropped. Entries for elements that no
     longer exist in the board are cleaned up.
+
+    ``authoritative_ids``: when provided, only elements in this set have
+    their sidecar entry overwritten — AND explicitly cleared when the
+    element's metadata carries a null/missing value for a cache key. This
+    is the delta-save semantics: the frontend just ran/saved these
+    elements, so their metadata is the source of truth. For unchanged
+    elements we preserve whatever was in sidecar (frontend may hold that
+    data only in UI state, never mirrored to metadata).
+
+    When ``authoritative_ids`` is None (full save), every element's
+    metadata is treated as authoritative — so a full save also actively
+    clears stale entries, which was the old implicit behavior except the
+    "clear on null" step was missing. That's how this file accumulated
+    matplotlib elements with stale iso plotly_json for months.
     """
     board_id = board.get("id")
     if not board_id:
@@ -130,15 +144,30 @@ def save_cache(board: dict) -> None:
     current_ids = {el.get("id") for el in board.get("elements", []) if el.get("id")}
     elements_cache = {eid: val for eid, val in elements_cache.items() if eid in current_ids}
 
-    # Overlay any freshly-provided values from the incoming board.
+    # Overlay / clear based on each element's current metadata.
     for el in board.get("elements", []):
         el_id = el.get("id")
         if not el_id:
             continue
+        # Respect authoritative_ids: skip elements we don't have fresh
+        # info about (their sidecar entries remain untouched).
+        if authoritative_ids is not None and el_id not in authoritative_ids:
+            continue
         meta = el.get("metadata") or {}
         for key in _CACHE_METADATA_KEYS:
-            if meta.get(key):
-                elements_cache.setdefault(el_id, {})[key] = meta[key]
+            val = meta.get(key)
+            if val:
+                elements_cache.setdefault(el_id, {})[key] = val
+            else:
+                # Metadata explicitly says null/absent → drop the stale
+                # sidecar entry. This fixes the matplotlib-element case
+                # where plotlyJson is legitimately null but the sidecar
+                # still holds iso plotly data from an earlier buggy run.
+                entry = elements_cache.get(el_id)
+                if entry is not None and key in entry:
+                    del entry[key]
+                    if not entry:
+                        del elements_cache[el_id]
 
     if elements_cache:
         cache["elements"] = elements_cache

@@ -94,20 +94,38 @@ export const api = {
 
   // Board file operations
   saveBoardToFile: (board: Board, path: string) =>
-    compressedPost<{ path: string; size?: number; oversized?: boolean; soft_limit?: number }>(
+    compressedPost<{ path: string; size?: number; mtime?: number; oversized?: boolean; soft_limit?: number }>(
       '/boards/save',
       { board, path },
       60000,
     ),
 
   boardCodeDigest: (path: string) =>
-    request<{ digest: string }>('/boards/digest', {
+    request<{ digest: string; mtime?: number }>('/boards/digest', {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
 
+  saveBoardDelta: (delta: {
+    path: string;
+    board_id: string;
+    updated_at: string;
+    thumbnail?: string | null;
+    dirty_elements: any[];
+    removed_ids: string[];
+    setup?: any;
+    plot_codes?: any;
+    canvas?: any;
+    auto_export?: any;
+  }) =>
+    compressedPost<{ path: string; size?: number; mtime?: number }>(
+      '/boards/save-delta',
+      delta,
+      60000,
+    ),
+
   openBoardFromFile: (path: string) =>
-    request<{ path: string; board: Board }>(
+    request<{ path: string; board: Board; mtime?: number }>(
       '/boards/open',
       {
         method: 'POST',
