@@ -3,6 +3,7 @@ import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import type { BoardElement, ElementStyle, CanvasSettings } from '@/types/board';
 import { formatFileSize, formatTimestamp, getFileName } from '@/utils/helpers';
+import { getRecentColors, addRecentColor } from '@/utils/localStorage';
 import { RefreshCw, Trash2, Copy, Lock, Unlock, Eye, EyeOff, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { ResizeHandle } from '@/components/InsertPanel/InsertPanel';
 
@@ -337,24 +338,6 @@ function NumberInput({ value, onChange, min, max, step, className, placeholder }
       className={`w-full min-w-[40px] px-1 py-px text-2xs border border-gray-200 dark:border-border rounded bg-white dark:bg-surface-tertiary dark:text-on-surface-primary focus:border-accent focus:outline-none ${className || ''}`}
     />
   );
-}
-
-const RECENT_COLORS_KEY = 'sdraw_recent_colors';
-const MAX_RECENT_COLORS = 8;
-
-function getRecentColors(): string[] {
-  try {
-    const raw = localStorage.getItem(RECENT_COLORS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-function addRecentColor(color: string) {
-  if (!color || color === 'transparent') return;
-  const normalized = color.toLowerCase();
-  const colors = getRecentColors().filter(c => c.toLowerCase() !== normalized);
-  colors.unshift(color);
-  localStorage.setItem(RECENT_COLORS_KEY, JSON.stringify(colors.slice(0, MAX_RECENT_COLORS)));
 }
 
 function ColorInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {

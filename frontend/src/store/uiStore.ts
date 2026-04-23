@@ -1,4 +1,10 @@
 import { create } from 'zustand';
+import {
+  getTheme,
+  setTheme as persistTheme,
+  getPythonEnv,
+  setPythonEnv as persistPythonEnv,
+} from '@/utils/localStorage';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type InsertMode = null | 'image' | 'text' | 'rectangle' | 'arrow' | 'pen' | 'plot';
@@ -114,32 +120,23 @@ interface UIState {
   setAutoSaveEnabled: (enabled: boolean) => void;
 }
 
-function getInitialTheme(): ThemeMode {
-  try {
-    const stored = localStorage.getItem('sdraw_theme');
-    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
-  } catch {}
-  return 'light';
-}
-
 function applyThemeToDOM(theme: ThemeMode) {
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', isDark);
 }
 
 // Apply on load
-applyThemeToDOM(getInitialTheme());
+applyThemeToDOM(getTheme());
 
 // Listen for OS theme changes when in 'system' mode
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-  const theme = localStorage.getItem('sdraw_theme') as ThemeMode;
-  if (theme === 'system') applyThemeToDOM('system');
+  if (getTheme() === 'system') applyThemeToDOM('system');
 });
 
 export const useUIStore = create<UIState>((set, get) => ({
-  theme: getInitialTheme(),
+  theme: getTheme(),
   setTheme: (theme) => {
-    localStorage.setItem('sdraw_theme', theme);
+    persistTheme(theme);
     applyThemeToDOM(theme);
     set({ theme });
   },
@@ -173,12 +170,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   setupEditorOpen: false,
   openSetupEditor: () => set({ setupEditorOpen: true }),
   closeSetupEditor: () => set({ setupEditorOpen: false }),
-  pythonEnvPath: (() => { try { return localStorage.getItem('sdraw_python_env') || null; } catch { return null; } })(),
+  pythonEnvPath: getPythonEnv(),
   setPythonEnvPath: (path) => {
-    try {
-      if (path) localStorage.setItem('sdraw_python_env', path);
-      else localStorage.removeItem('sdraw_python_env');
-    } catch {}
+    persistPythonEnv(path);
     set({ pythonEnvPath: path });
   },
   exportStatus: 'idle',

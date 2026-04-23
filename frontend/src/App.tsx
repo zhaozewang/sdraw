@@ -19,44 +19,18 @@ import { api } from '@/api/client';
 import type { DirEntry } from '@/types/board';
 import { getLastDirectory, saveLastDirectory, fetchUserHome, getLastDirectoryOrHome } from '@/utils/helpers';
 import {
+  getRecentBoards,
+  addRecentBoard,
+  removeRecentBoard,
+  type RecentBoard,
+} from '@/utils/localStorage';
+import {
   Folder, ArrowLeft, Home, HardDrive,
   FileText, RefreshCw, FolderPlus, Plus, X, Clock,
   LayoutGrid, Image as ImageIcon, Layers, Trash2,
   Sun, Moon,
 } from 'lucide-react';
 import type { WorkspaceBoardSummary } from '@/api/client';
-
-// ---------------------------------------------------------------------------
-// Recent boards (persisted in localStorage)
-// ---------------------------------------------------------------------------
-interface RecentBoard {
-  name: string;
-  path: string;
-  openedAt: string; // ISO timestamp
-}
-
-const RECENT_KEY = 'sdraw_recent_boards';
-const MAX_RECENT = 10;
-
-function getRecentBoards(): RecentBoard[] {
-  try {
-    const raw = localStorage.getItem(RECENT_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function addRecentBoard(name: string, path: string) {
-  const boards = getRecentBoards().filter(b => b.path !== path);
-  boards.unshift({ name, path, openedAt: new Date().toISOString() });
-  localStorage.setItem(RECENT_KEY, JSON.stringify(boards.slice(0, MAX_RECENT)));
-}
-
-function removeRecentBoard(path: string) {
-  const boards = getRecentBoards().filter(b => b.path !== path);
-  localStorage.setItem(RECENT_KEY, JSON.stringify(boards));
-}
 
 // ---------------------------------------------------------------------------
 // Folder browser used both for picking a save location and opening files
