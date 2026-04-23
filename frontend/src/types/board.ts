@@ -169,15 +169,6 @@ export interface DirEntry {
   dimensions?: { width: number; height: number };
 }
 
-export interface DirEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  size: number;
-  modified_time: string;
-  dimensions?: { width: number; height: number };
-}
-
 export interface FileEvent {
   event_type: 'file_changed' | 'file_created' | 'file_deleted' | 'file_moved';
   path: string;
