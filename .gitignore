@@ -42,3 +42,7 @@ release/
 backend/dist/
 backend/build/
 backend/*.spec
+
+# Ephemeral / agent-local
+.playwright-mcp/
+.claude/agent-memory/
