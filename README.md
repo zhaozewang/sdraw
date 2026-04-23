@@ -100,7 +100,7 @@ sdraw/
 │       └── workspace.py     # Workspace/config management
 ├── frontend/                # React + TypeScript + Vite
 │   └── src/
-│       ├── App.tsx           # Main app shell (home screen + board view)
+│       ├── App.tsx           # App shell + editor view (home screen lives under screens/)
 │       ├── api/client.ts     # HTTP + WebSocket API client
 │       ├── components/
 │       │   ├── Canvas/       # React Flow canvas wrapper
@@ -109,10 +109,11 @@ sdraw/
 │       │   ├── StatusBar/    # Bottom status bar
 │       │   ├── Toolbar/      # Top toolbar (tools, actions)
 │       │   └── nodes/        # Custom React Flow nodes (Image, Text, Rect, Arrow)
+│       ├── screens/          # Full-screen views (welcome/home screen + its dialogs)
 │       ├── hooks/            # useAutoSave, useKeyboardShortcuts, useWebSocket
 │       ├── store/            # Zustand stores (board state, UI state)
 │       ├── types/board.ts    # TypeScript type definitions
-│       └── utils/helpers.ts  # Utility functions
+│       └── utils/            # Helpers, typed localStorage accessors, etc.
 ├── scripts/                 # Sample data generator
 ├── run.sh                   # One-command launcher
 └── workspace/               # Default workspace directory (git-ignored)
