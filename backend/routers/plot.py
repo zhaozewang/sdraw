@@ -31,7 +31,7 @@ _running_procs: dict[str, subprocess.Popen] = {}
 
 class ExecutePlotRequest(BaseModel):
     code: str
-    timeout: int = 30  # seconds
+    timeout: int = 600  # seconds
     dpi: int = 150
     python_path: str | None = None  # None = use default
     execution_id: str | None = None  # for cancellation tracking
@@ -483,7 +483,7 @@ class KernelExecuteRequest(BaseModel):
     setup_code: str = ""
     python_path: str | None = None
     dpi: int = 150
-    timeout: int = 30
+    timeout: int = 600
     setup_timeout: int = 120
     cwd: str | None = None
 

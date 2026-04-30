@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
 import { LayoutGrid, Layers, Trash2 } from 'lucide-react';
 import type { WorkspaceBoardSummary } from '@/api/client';
+import { deriveBoardName } from '@/utils/boardName';
 
 export function BoardCard({ board, onClick, onDelete }: { board: WorkspaceBoardSummary; onClick: () => void; onDelete: () => void }) {
+  const name = deriveBoardName(board.path);
   const timeAgo = useMemo(() => {
     try {
       const d = new Date(board.updated_at);
@@ -35,7 +37,7 @@ export function BoardCard({ board, onClick, onDelete }: { board: WorkspaceBoardS
       {/* Preview area */}
       <div className="relative w-full aspect-[3/2] bg-gradient-to-br from-gray-50 to-gray-100 dark:from-surface-secondary dark:to-surface-tertiary flex items-center justify-center overflow-hidden">
         {board.thumbnail ? (
-          <img src={board.thumbnail} alt={board.name} className="w-full h-full object-cover" />
+          <img src={board.thumbnail} alt={name} className="w-full h-full object-cover" />
         ) : board.image_count > 0 ? (
           <div className="flex items-center gap-3 text-gray-300">
             <LayoutGrid size={32} strokeWidth={1.5} />
@@ -54,7 +56,7 @@ export function BoardCard({ board, onClick, onDelete }: { board: WorkspaceBoardS
       </div>
       {/* Info */}
       <div className="px-3 py-2.5 border-t border-gray-100 dark:border-border flex-1 flex flex-col gap-0.5">
-        <div className="text-sm font-medium text-gray-800 dark:text-on-surface-primary truncate">{board.name}</div>
+        <div className="text-sm font-medium text-gray-800 dark:text-on-surface-primary truncate">{name}</div>
         <div className="flex items-center gap-2 text-[11px] text-gray-400 dark:text-on-surface-muted">
           <span>{board.element_count} element{board.element_count !== 1 ? 's' : ''}</span>
           <span className="text-gray-200 dark:text-on-surface-disabled">|</span>

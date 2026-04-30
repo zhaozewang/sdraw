@@ -185,10 +185,25 @@ export const useUIStore = create<UIState>((set, get) => ({
   setZoomTo: (fn) => set({ zoomTo: fn }),
   setFitView: (fn) => set({ fitView: fn }),
 
-  setSelectedIds: (ids) => set({ selectedIds: ids }),
-  addToSelection: (id) => set(s => ({ selectedIds: [...s.selectedIds, id] })),
-  removeFromSelection: (id) => set(s => ({ selectedIds: s.selectedIds.filter(i => i !== id) })),
-  clearSelection: () => set({ selectedIds: [] }),
+  setSelectedIds: (ids) => set(s => {
+    // Idempotent: skip the update if the set of ids is unchanged. This
+    // prevents a store→RF→onSelectionChange→store echo loop when the sync
+    // effect pushes selection back to React Flow's node state.
+    if (s.selectedIds.length === ids.length) {
+      const a = s.selectedIds;
+      let same = true;
+      for (let i = 0; i < a.length; i++) { if (a[i] !== ids[i]) { same = false; break; } }
+      if (same) return s;
+    }
+    return { selectedIds: ids };
+  }),
+  addToSelection: (id) => set(s => (
+    s.selectedIds.includes(id) ? s : { selectedIds: [...s.selectedIds, id] }
+  )),
+  removeFromSelection: (id) => set(s => (
+    s.selectedIds.includes(id) ? { selectedIds: s.selectedIds.filter(i => i !== id) } : s
+  )),
+  clearSelection: () => set(s => (s.selectedIds.length === 0 ? s : { selectedIds: [] })),
 
   toggleInspector: () => set(s => ({ showInspector: !s.showInspector })),
   toggleInsertPanel: () => set(s => ({ showInsertPanel: !s.showInsertPanel })),

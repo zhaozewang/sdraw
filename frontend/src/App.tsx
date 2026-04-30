@@ -10,6 +10,7 @@ import { PlotEditor } from '@/components/PlotEditor/PlotEditor';
 import { SetupEditor } from '@/components/SetupEditor/SetupEditor';
 import { ExternalChangeModal } from '@/components/ExternalChangeModal';
 import { useBoardStore } from '@/store/boardStore';
+import { deriveBoardName } from '@/utils/boardName';
 import { useUIStore } from '@/store/uiStore';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
@@ -35,7 +36,8 @@ function ExportDialog() {
   const updateAutoExport = useBoardStore(s => s.updateAutoExport);
   const triggerAutoExport = useBoardStore(s => s.triggerAutoExport);
   const saveBoard = useBoardStore(s => s.saveBoard);
-  const boardName = board?.name || 'board';
+  const boardFilePath = useBoardStore(s => s.boardFilePath);
+  const boardName = deriveBoardName(boardFilePath);
   const autoExport = board?.autoExport || { enabled: false, outputPath: '', format: 'png' as const, dpi: 2, transparent: false, sizeMode: 'fit' as const, fixedWidth: 1920, fixedHeight: 1080 };
   // Capture the original path when dialog opens — never changes during the dialog session
   const [originalSettings] = useState(() => ({
@@ -154,56 +156,60 @@ function ExportDialog() {
   const doSave = async () => {
     if (!browsedFolder || !fileName) return;
     setShowConfirm(null);
+    setExporting(true);
+    try {
+      // Delete old export file if path changed
+      if (isAlreadyExporting && oldPath && newPath !== oldPath) {
+        try {
+          await api.deleteBoardFile(oldPath);
+        } catch { /* file may not exist */ }
+      }
 
-    // Delete old export file if path changed
-    if (isAlreadyExporting && oldPath && newPath !== oldPath) {
-      try {
-        await api.deleteBoardFile(oldPath);
-      } catch { /* file may not exist */ }
-    }
-
-    // Also clean up any stale files with the same base name but different extension
-    if (browsedFolder && fileName) {
-      const extensions = ['png', 'jpg', 'jpeg', 'pdf', 'svg'];
-      for (const ext of extensions) {
-        if (ext === format) continue;
-        const stalePath = `${browsedFolder}/${fileName}.${ext}`;
-        if (stalePath !== newPath) {
-          try { await api.deleteBoardFile(stalePath); } catch {}
+      // Also clean up any stale files with the same base name but different extension
+      if (browsedFolder && fileName) {
+        const extensions = ['png', 'jpg', 'jpeg', 'pdf', 'svg'];
+        for (const ext of extensions) {
+          if (ext === format) continue;
+          const stalePath = `${browsedFolder}/${fileName}.${ext}`;
+          if (stalePath !== newPath) {
+            try { await api.deleteBoardFile(stalePath); } catch {}
+          }
         }
       }
-    }
 
-    // Write all settings at once — single source of truth
-    const boardState = useBoardStore.getState();
-    const updatedBoard = {
-      ...boardState.board!,
-      autoExport: {
-        enabled: true,
-        outputPath: newPath,
-        format: format as any,
-        dpi,
-        transparent,
-        sizeMode,
-        fixedWidth: sizeMode === 'fixed' ? fixedWidth : undefined,
-        fixedHeight: sizeMode === 'fixed' ? fixedHeight : undefined,
-      },
-    };
-    useBoardStore.setState({ board: updatedBoard, isDirty: true });
-    await new Promise(r => setTimeout(r, 50));
-    await useBoardStore.getState().saveBoard();
-    const savedBoard = useBoardStore.getState().board;
-    if (savedBoard) {
-      await useBoardStore.getState().triggerAutoExport(savedBoard);
+      // Write all settings at once — single source of truth
+      const boardState = useBoardStore.getState();
+      const updatedBoard = {
+        ...boardState.board!,
+        autoExport: {
+          enabled: true,
+          outputPath: newPath,
+          format: format as any,
+          dpi,
+          transparent,
+          sizeMode,
+          fixedWidth: sizeMode === 'fixed' ? fixedWidth : undefined,
+          fixedHeight: sizeMode === 'fixed' ? fixedHeight : undefined,
+        },
+      };
+      useBoardStore.setState({ board: updatedBoard, isDirty: true });
+      await new Promise(r => setTimeout(r, 50));
+      await useBoardStore.getState().saveBoard();
+      const savedBoard = useBoardStore.getState().board;
+      if (savedBoard) {
+        await useBoardStore.getState().triggerAutoExport(savedBoard);
+      }
+      setLastExportTime(new Date().toLocaleTimeString());
+      setShowExportDialog(false);
+    } finally {
+      setExporting(false);
     }
-    setLastExportTime(new Date().toLocaleTimeString());
-    setShowExportDialog(false);
   };
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setShowExportDialog(false)}>
-        <div className="bg-white dark:bg-surface-primary rounded-lg shadow-xl w-[480px] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className={`fixed inset-0 bg-black/30 flex items-center justify-center z-50 ${exporting ? 'cursor-wait' : ''}`} onClick={() => { if (!exporting) setShowExportDialog(false); }}>
+        <div className={`bg-white dark:bg-surface-primary rounded-lg shadow-xl w-[480px] max-h-[80vh] flex flex-col ${exporting ? 'cursor-wait' : ''}`} onClick={e => e.stopPropagation()}>
           <div className="px-4 py-3 border-b border-gray-200 dark:border-border flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-800 dark:text-on-surface-primary">Auto Export</h2>
             <button onClick={() => setShowExportDialog(false)} className="text-gray-400 dark:text-on-surface-muted hover:text-gray-600 dark:hover:text-on-surface-primary text-lg leading-none">&times;</button>
@@ -351,8 +357,11 @@ function ExportDialog() {
                   {exporting ? 'Exporting...' : 'Export Now'}
                 </button>
               )}
-              <button onClick={handleSave} disabled={!browsedFolder || !fileName} className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50">
-                {isAlreadyExporting ? 'Update' : 'Save & Export'}
+              <button onClick={handleSave} disabled={!browsedFolder || !fileName || exporting} className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-wait flex items-center gap-1.5 min-w-[90px] justify-center">
+                {exporting && <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+                {exporting
+                  ? (isAlreadyExporting ? 'Updating…' : 'Saving…')
+                  : (isAlreadyExporting ? 'Update' : 'Save & Export')}
               </button>
             </div>
           </div>
@@ -399,11 +408,14 @@ function ExportDialog() {
               )}
             </div>
             <div className="px-4 py-3 border-t border-gray-100 dark:border-border flex justify-end gap-2">
-              <button onClick={() => setShowConfirm(null)} className="px-3 py-1.5 text-sm text-gray-600 dark:text-on-surface-secondary hover:bg-gray-100 dark:hover:bg-surface-tertiary rounded">
+              <button onClick={() => setShowConfirm(null)} disabled={exporting} className="px-3 py-1.5 text-sm text-gray-600 dark:text-on-surface-secondary hover:bg-gray-100 dark:hover:bg-surface-tertiary rounded disabled:opacity-50">
                 Cancel
               </button>
-              <button onClick={doSave} className="px-3 py-1.5 text-sm bg-red-100 text-red-600 rounded hover:bg-red-200">
-                {showConfirm === 'change' ? 'Delete Old & Export' : 'Overwrite'}
+              <button onClick={doSave} disabled={exporting} className="px-3 py-1.5 text-sm bg-red-100 text-red-600 rounded hover:bg-red-200 disabled:opacity-60 disabled:cursor-wait flex items-center gap-1.5">
+                {exporting && <span className="w-3 h-3 border-2 border-red-300 border-t-red-600 rounded-full animate-spin" />}
+                {exporting
+                  ? 'Working…'
+                  : (showConfirm === 'change' ? 'Delete Old & Export' : 'Overwrite')}
               </button>
             </div>
           </div>
@@ -504,6 +516,10 @@ function AppContent() {
   // error, bad path, migrate threw, etc.). Until then, we never render
   // the welcome screen — avoids the "home page flash then editor" bug.
   const [openFailed, setOpenFailed] = useState(false);
+  // Flips true the first time a board is mounted. After that, `board === null`
+  // means the user intentionally went home — not a mid-load race.
+  const [everLoadedOnce, setEverLoadedOnce] = useState(false);
+  useEffect(() => { if (board) setEverLoadedOnce(true); }, [board]);
 
   // VS Code webview bridge (no-op when not in VS Code)
   useVSCodeBridge();
@@ -570,19 +586,19 @@ function AppContent() {
     }
   }, []);
 
-  // Sync URL and page title when board changes
-  const boardName = useBoardStore(s => s.board?.name);
+  // Sync URL and page title when board changes. Name is derived from the
+  // file path — the filename stem IS the board name (single source of truth).
   useEffect(() => {
     const url = new URL(window.location.href);
     if (boardFilePath) {
       url.searchParams.set('board', boardFilePath);
-      document.title = `${boardName || 'Untitled'} | sDraw`;
+      document.title = `${deriveBoardName(boardFilePath)} | sDraw`;
     } else {
       url.searchParams.delete('board');
       document.title = 'sDraw | Scientific Figure Board';
     }
     window.history.replaceState({}, '', url.toString());
-  }, [boardFilePath, boardName]);
+  }, [boardFilePath]);
 
   // Show the loading screen while the initial openBoard is in-flight,
   // AND also whenever the URL said we should have a board but we don't
@@ -590,7 +606,7 @@ function AppContent() {
   // race where `initializing` could briefly flip to false before the
   // board state has been committed, which previously caused the welcome
   // screen to flash for one frame before the editor took over.
-  if (initializing || (hadBoardInUrl && !board && !openFailed)) return (
+  if (initializing || (hadBoardInUrl && !board && !openFailed && !everLoadedOnce)) return (
     <div className="h-screen w-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 dark:from-[#1e1f22] dark:to-[#2b2d31]">
       <div className="text-sm text-gray-400 dark:text-on-surface-muted">Loading...</div>
     </div>

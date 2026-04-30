@@ -3,6 +3,7 @@ import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import type { BoardElement, ElementStyle, CanvasSettings } from '@/types/board';
 import { formatFileSize, formatTimestamp, getFileName } from '@/utils/helpers';
+import { deriveBoardName } from '@/utils/boardName';
 import { getRecentColors, addRecentColor } from '@/utils/localStorage';
 import { RefreshCw, Trash2, Copy, Lock, Unlock, Eye, EyeOff, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { ResizeHandle } from '@/components/InsertPanel/InsertPanel';
@@ -471,21 +472,22 @@ function ColorPalette({ onApply }: { onApply: (fill: string, border: string) => 
 
 function BoardInspector() {
   const board = useBoardStore(s => s.board);
-  const setBoardName = useBoardStore(s => s.setBoardName);
+  const boardFilePath = useBoardStore(s => s.boardFilePath);
   const updateCanvas = useBoardStore(s => s.updateCanvas);
 
   if (!board) return null;
+
+  // Name lives on the filename (edited in the Toolbar). Here we just show it
+  // read-only alongside the file path so the Inspector is informational.
+  const displayName = deriveBoardName(boardFilePath);
 
   return (
     <>
       <Section title="Board">
         <Field label="Name">
-          <input
-            type="text"
-            value={board.name}
-            onChange={e => setBoardName(e.target.value)}
-            className="w-full min-w-[40px] px-1 py-px text-2xs border border-gray-200 dark:border-border rounded bg-white dark:bg-surface-tertiary dark:text-on-surface-primary focus:border-accent focus:outline-none"
-          />
+          <span className="text-2xs text-gray-600 dark:text-on-surface-secondary truncate block" title="Rename the board in the top bar">
+            {displayName}
+          </span>
         </Field>
         <Field label="ID">
           <span className="text-2xs text-gray-400 dark:text-on-surface-muted font-mono truncate block">{board.id}</span>

@@ -653,7 +653,7 @@ export function PlotEditor() {
       // snapshot keeps the Run→Save distribute path honest.
       const runCode = codeRef.current;
       const runSetupCode = boardState?.setup?.code ?? '';
-      const r = await api.executePlot(runCode, 30, 150, env, execId, cwd, {
+      const r = await api.executePlot(runCode, 600, 150, env, execId, cwd, {
         boardId: boardState?.id,
         setupCode: runSetupCode,
         setupTimeout: boardState?.setup?.timeout ?? 120,

@@ -63,7 +63,9 @@ class WorkspaceService:
                 summaries.append(
                     {
                         "id": data.get("id", p.stem),
-                        "name": data.get("name", "Untitled"),
+                        # Filename stem is the board name (single source of
+                        # truth). The in-file `name` field is deprecated.
+                        "name": p.stem,
                         "updated_at": data.get("updated_at", ""),
                         "path": str(p),
                         "element_count": len(elements),

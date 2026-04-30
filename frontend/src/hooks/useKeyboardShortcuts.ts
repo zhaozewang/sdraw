@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { pasteImageFromBlob } from '@/utils/pasteImage';
 
 export function useKeyboardShortcuts() {
   const board = useBoardStore(s => s.board);
@@ -50,10 +51,11 @@ export function useKeyboardShortcuts() {
       return;
     }
 
-    // Copy — serialize selected elements to system clipboard so paste works across boards
-    if (mod && e.key === 'c') {
+    // Serialize selected elements to system clipboard. Returns the expanded
+    // id set (groups pull in their children) so Cut can delete the same scope.
+    const writeSelectionToClipboard = (): string[] | null => {
       const b = store.board;
-      if (!b || selectedIds.length === 0) return;
+      if (!b || selectedIds.length === 0) return null;
 
       // Expand selection: if a group is selected, also include its children
       const idSet = new Set(selectedIds);
@@ -64,7 +66,7 @@ export function useKeyboardShortcuts() {
         }
       }
       const elements = b.elements.filter(el => idSet.has(el.id));
-      if (elements.length === 0) return;
+      if (elements.length === 0) return null;
 
       // Include the plot code entries referenced by the pasted plots so a
       // cross-board paste carries its Python source along — without this,
@@ -88,37 +90,112 @@ export function useKeyboardShortcuts() {
       };
       (window as any).__sdraw_clipboard = payload;
       try { navigator.clipboard.writeText(JSON.stringify(payload)); } catch {}
+      return Array.from(idSet);
+    };
+
+    // Copy
+    if (mod && !e.shiftKey && e.key === 'c') {
+      writeSelectionToClipboard();
       return;
     }
 
-    // Paste — read from system clipboard, fall back to in-memory; remap IDs
+    // Cut — copy to clipboard then delete the same elements
+    if (mod && !e.shiftKey && e.key === 'x') {
+      e.preventDefault();
+      const ids = writeSelectionToClipboard();
+      if (ids && ids.length > 0) {
+        useUIStore.getState().clearSelection();
+        store.removeElements(ids);
+      }
+      return;
+    }
+
+    // Paste — read whatever's actually on the OS clipboard right now. The
+    // window.__sdraw_clipboard cache is only a last-resort fallback for
+    // when clipboard permissions block reads entirely; otherwise letting
+    // it win produces a stale-paste bug where copying an image externally
+    // still pastes a sdraw selection from earlier in the session because
+    // the in-memory cache was never invalidated.
+    //
+    // Priority once the OS clipboard is readable:
+    //   1. sdraw JSON (text/plain that parses as our payload format)
+    //   2. image/* bytes (copied screenshot, dragged image, etc.) →
+    //      embedded as a fresh image element on the active board
     if (mod && e.key === 'v') {
       e.preventDefault();
       (async () => {
-        let payload: any = (window as any).__sdraw_clipboard;
-        try {
-          const text = await navigator.clipboard.readText();
-          if (text) {
-            try {
-              const parsed = JSON.parse(text);
-              if (parsed?.__sdraw === 'clipboard' && Array.isArray(parsed.elements)) {
-                payload = parsed;
-              }
-            } catch {}
-          }
-        } catch {}
+        let payload: any = null;
+        let imageBlob: { blob: Blob; mime: string } | null = null;
+        let osReadAttempted = false;
 
-        if (!payload?.elements?.length) return;
+        try {
+          const items = await navigator.clipboard.read();
+          osReadAttempted = true;
+          for (const item of items) {
+            if (!payload && item.types.includes('text/plain')) {
+              try {
+                const text = await (await item.getType('text/plain')).text();
+                const parsed = JSON.parse(text);
+                if (parsed?.__sdraw === 'clipboard' && Array.isArray(parsed.elements)) {
+                  payload = parsed;
+                }
+              } catch {}
+            }
+            if (!imageBlob) {
+              const imgType = item.types.find(t => t.startsWith('image/'));
+              if (imgType) {
+                try {
+                  imageBlob = { blob: await item.getType(imgType), mime: imgType };
+                } catch {}
+              }
+            }
+          }
+        } catch {
+          // clipboard.read() unsupported or denied — try readText().
+          try {
+            const text = await navigator.clipboard.readText();
+            osReadAttempted = true;
+            if (text) {
+              try {
+                const parsed = JSON.parse(text);
+                if (parsed?.__sdraw === 'clipboard' && Array.isArray(parsed.elements)) {
+                  payload = parsed;
+                }
+              } catch {}
+            }
+          } catch {}
+        }
+
+        // Only consult the in-memory cache when we couldn't read the OS
+        // clipboard at all. If the OS read succeeded but had nothing
+        // useful, the user copied something else externally and we
+        // honour that instead of resurrecting an old sdraw payload.
+        if (!payload && !imageBlob && !osReadAttempted) {
+          const cached = (window as any).__sdraw_clipboard;
+          if (cached?.elements?.length) payload = cached;
+        }
+
         const cur = useBoardStore.getState();
         if (!cur.board) return;
-        const sameBoard = cur.board.id === payload.sourceBoardId;
-        const offset = sameBoard ? { x: 20, y: 20 } : { x: 0, y: 0 };
-        const pasted = cur.pasteElements(
-          payload.elements,
-          offset,
-          payload.plotCodes ?? undefined,
-        );
-        useUIStore.getState().setSelectedIds(pasted.map(el => el.id));
+
+        if (payload?.elements?.length) {
+          const sameBoard = cur.board.id === payload.sourceBoardId;
+          const offset = sameBoard ? { x: 20, y: 20 } : { x: 0, y: 0 };
+          const pasted = cur.pasteElements(
+            payload.elements,
+            offset,
+            payload.plotCodes ?? undefined,
+          );
+          useUIStore.getState().setSelectedIds(pasted.map(el => el.id));
+          return;
+        }
+
+        if (imageBlob) {
+          const pastedImage = await pasteImageFromBlob(imageBlob.blob, imageBlob.mime);
+          if (pastedImage) {
+            useUIStore.getState().setSelectedIds([pastedImage.id]);
+          }
+        }
       })();
       return;
     }

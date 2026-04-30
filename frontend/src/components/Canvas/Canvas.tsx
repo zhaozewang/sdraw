@@ -294,6 +294,48 @@ export function Canvas() {
   const boardRef = useRef(board);
   boardRef.current = board;
 
+  // Live modifier state for Shift / Cmd / Ctrl — used to compute additive
+  // selection in onSelectionChange. We don't rely on React Flow's built-in
+  // multiSelectionKeyCode because its internal key-press state can lag
+  // behind fast clicks, leaving Shift+click behaving like a plain click.
+  const modKeyRef = useRef({ shift: false, mod: false });
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') modKeyRef.current.shift = true;
+      if (e.metaKey || e.ctrlKey) modKeyRef.current.mod = true;
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') modKeyRef.current.shift = false;
+      if (!e.metaKey && !e.ctrlKey) modKeyRef.current.mod = false;
+    };
+    const onBlur = () => { modKeyRef.current.shift = false; modKeyRef.current.mod = false; };
+    document.addEventListener('keydown', onDown, true);
+    document.addEventListener('keyup', onUp, true);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      document.removeEventListener('keydown', onDown, true);
+      document.removeEventListener('keyup', onUp, true);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+
+  // Authoritative record of the node the user just pressed on. Captured at
+  // the pointerdown capture phase — BEFORE React Flow's own handlers and
+  // before onSelectionChange fires — so we don't have to diff prev-vs-new
+  // selection sets to guess which node was clicked. Diffing was the source
+  // of the "clicked 2nd, 3rd got unselected" bug.
+  const clickedNodeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      const nodeEl = target?.closest?.('.react-flow__node') as HTMLElement | null;
+      const id = nodeEl?.getAttribute('data-id');
+      clickedNodeIdRef.current = id || null;
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, []);
+
   const setSelectedIds = useUIStore(s => s.setSelectedIds);
   const setZoom = useUIStore(s => s.setZoom);
   const zoom = useUIStore(s => s.zoom);
@@ -398,6 +440,40 @@ export function Canvas() {
   // Use React Flow's own state management
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<Node>([]);
 
+  // -------------------------------------------------------------------------
+  // Single source of truth: `useUIStore.selectedIds` drives RF's node.selected.
+  //
+  // Before this effect existed, RF's internal node.selected flags and our
+  // store's `selectedIds` could drift — we'd `setSelectedIds` in response to
+  // a click, but RF kept its own opinion. The next click would compute diffs
+  // against stale RF state, producing "I clicked X and Y got unselected"
+  // bugs. This effect keeps RF in sync with the store, so the store is
+  // authoritative and RF's rendering is a projection of it.
+  // -------------------------------------------------------------------------
+  const storeSelectedIds = useUIStore(s => s.selectedIds);
+  useEffect(() => {
+    const selSet = new Set(storeSelectedIds);
+    setNodes(nds => {
+      let changed = false;
+      const next = nds.map(n => {
+        // Skip nodes RF can't select (arrows, pens, unfilled shapes). They
+        // carry selectable:false on the wrapper and read their selection
+        // state from the UI store directly, so projecting onto them is a
+        // no-op visually — but it triggers RF to fire onSelectionChange
+        // with these nodes missing from params.nodes, which the handler
+        // would echo back to the store as a deselect. That silently drops
+        // drag-selected arrows out of selectedIds, breaking Cmd+X / Cmd+C
+        // for any selection that includes an arrow.
+        if (n.selectable === false) return n;
+        const shouldBeSelected = selSet.has(n.id);
+        if (!!n.selected === shouldBeSelected) return n;
+        changed = true;
+        return { ...n, selected: shouldBeSelected };
+      });
+      return changed ? next : nds;
+    });
+  }, [storeSelectedIds, setNodes]);
+
   // When suppressPositionSync turns off, invalidate fingerprints to force a full sync
   const suppressPositionSync = useUIStore(s => s.suppressPositionSync);
   useEffectReact(() => {
@@ -423,8 +499,14 @@ export function Canvas() {
     // Structural fingerprint: things that require a full node rebuild
     // Structural fingerprint: only fields that affect which nodes exist and their visual type.
     // Exclude source.embeddedData/linkStatus/lastModified to avoid spurious rebuilds on save.
+    // Text content is intentionally excluded: TextNode subscribes to the
+    // store directly, so content edits already re-render without a rebuild.
+    // Including text here caused every Inspector keystroke to run the rebuild
+    // path below, which produces fresh node objects without the `selected`
+    // flag and makes RF fire onSelectionChange with an empty selection —
+    // deselecting the element and collapsing the Properties panel mid-edit.
     const structFingerprint = board.elements
-      .map(el => `${el.id}:${el.visible}:${!!el.hidden}:${el.locked}:${el.type}:${el.source?.path || ''}:${el.text || ''}:${el.metadata?.shape || ''}:${el.style?.fill || ''}:${el.style?.strokeColor || ''}`)
+      .map(el => `${el.id}:${el.visible}:${!!el.hidden}:${el.locked}:${el.type}:${el.source?.path || ''}:${el.metadata?.shape || ''}:${el.style?.fill || ''}:${el.style?.strokeColor || ''}`)
       .join('|');
     // Position/size fingerprint
     const posFingerprint = board.elements
@@ -433,14 +515,33 @@ export function Canvas() {
     const zFingerprint = board.elements.map(el => `${el.id}:${el.z_index}`).join('|');
 
     if (structFingerprint !== prevBoardRef.current) {
-      // Full rebuild needed (element added/removed, type changed, etc.)
+      // Full rebuild needed (element added/removed, type changed, etc.).
+      // Use the STORE selection — not `nds.filter(n => n.selected)` — as
+      // the source of truth. After paste/duplicate, the store has already
+      // been switched to the new ids; reading from old nds would carry
+      // the old (source) RF.selected flags forward and the dragged
+      // selection would still include the source elements. Same logic
+      // also covers the Inspector hidden/locked toggle case the
+      // preservation was originally meant for: those don't change
+      // store.selectedIds, so it's preserved automatically.
       prevBoardRef.current = structFingerprint;
       prevPosRef.current = posFingerprint;
       prevZRef.current = zFingerprint;
-      const newNodes = board.elements
-        .filter(el => el.visible)
-        .map(elementToNode);
-      setNodes(newNodes);
+      const storeSelected = new Set(useUIStore.getState().selectedIds);
+      setNodes(() => {
+        return board.elements
+          .filter(el => el.visible)
+          .map(el => {
+            const n = elementToNode(el);
+            // Don't set `selected` on passthrough nodes — RF won't render
+            // it for selectable:false anyway and it can confuse the
+            // selection-projection effect that skips passthroughs.
+            if (storeSelected.has(el.id) && n.selectable !== false) {
+              n.selected = true;
+            }
+            return n;
+          });
+      });
     } else {
       // In-place updates that preserve selection
       let needsUpdate = false;
@@ -482,6 +583,22 @@ export function Canvas() {
     if (useUIStore.getState().suppressPositionSync) return;
 
     let isDragging = false;
+
+    // Identify arrows in the current selection. React Flow can't drag them
+    // (they're selectable:false / draggable:false passthrough nodes), so when
+    // the user drags a shape that's part of a larger selection, the arrow
+    // would otherwise be left behind. We translate it ourselves below using
+    // the same delta the shapes moved, and tell updateConnectedArrows to
+    // skip it so its endpoints don't get yanked to whichever shape moved.
+    const selectedIds = useUIStore.getState().selectedIds;
+    const selectedArrowIds = new Set<string>();
+    if (selectedIds.length > 1) {
+      for (const id of selectedIds) {
+        const el = b.elements.find(e => e.id === id);
+        if (el && el.type === 'arrow' && !el.locked) selectedArrowIds.add(id);
+      }
+    }
+    let dragDelta: { x: number; y: number } | null = null;
 
     for (const change of changes) {
       if (change.type === 'position' && change.position && change.id) {
@@ -544,11 +661,22 @@ export function Canvas() {
             setSpacing(result.spacing);
           }
 
+          // Capture the drag delta from the first dragging position change.
+          // Used to translate selected arrows in lockstep below.
+          if (change.dragging && !dragDelta && selectedArrowIds.size > 0) {
+            dragDelta = { x: x - el.x, y: y - el.y };
+          }
+
           updateElement(change.id, { x, y });
 
-          // Auto-update connected arrow endpoints when a shape moves
+          // Auto-update connected arrow endpoints when a shape moves. Skip
+          // arrows that are themselves selected — those move with the
+          // selection (translated below), not glued to this shape.
           if (change.dragging) {
-            useBoardStore.getState().updateConnectedArrows(change.id);
+            useBoardStore.getState().updateConnectedArrows(
+              change.id,
+              selectedArrowIds.size > 0 ? selectedArrowIds : undefined,
+            );
           }
 
           if (!change.dragging && dragStartRef.current.has(change.id)) {
@@ -579,6 +707,37 @@ export function Canvas() {
         }
       }
     }
+
+    // Multi-select drag: translate every selected arrow by the same delta
+    // the shapes moved. Arrows are passthrough nodes (selectable:false),
+    // so React Flow doesn't include them in its drag — without this they
+    // stay pinned in place while the rest of the selection slides away.
+    // We also drop any cached startAbsPos/endAbsPos so the next time
+    // updateConnectedArrows runs (e.g. user drags a connected shape that
+    // ISN'T in the selection), it regenerates the cache from the arrow's
+    // new bbox rather than its pre-translation origin.
+    if (isDragging && dragDelta && (dragDelta.x !== 0 || dragDelta.y !== 0)) {
+      for (const arrowId of selectedArrowIds) {
+        const arrow = b.elements.find(e => e.id === arrowId);
+        if (!arrow) continue;
+        const meta = arrow.metadata || {};
+        const hasAbs = meta.startAbsPos || meta.endAbsPos;
+        let newMeta = meta;
+        if (hasAbs) {
+          newMeta = { ...meta };
+          delete newMeta.startAbsPos;
+          delete newMeta.endAbsPos;
+        }
+        updateElement(arrowId, {
+          x: arrow.x + dragDelta.x,
+          y: arrow.y + dragDelta.y,
+          ...(hasAbs ? { metadata: newMeta } : {}),
+        });
+      }
+      // History gets pushed by the shape's drag-end handler — the arrow
+      // translations land in the same 'Move' entry, so no extra bookkeeping
+      // here.
+    }
   }, [onNodesChangeBase, updateElement, pushHistory]);
 
   // Track the drag-selection rectangle in canvas coordinates so we can
@@ -599,15 +758,16 @@ export function Canvas() {
     selectionRectRef.current.x2 = pos.x;
     selectionRectRef.current.y2 = pos.y;
 
-    // When the selection rectangle covers ONLY passthrough elements (pens,
-    // arrows, unfilled shapes), ReactFlow never fires onSelectionChange
-    // because no selectable nodes changed state. Run the passthrough check
-    // here so those elements still get selected.
+    // ReactFlow only fires onSelectionChange for selectable nodes — so any
+    // arrows/pens/unfilled shapes ("passthrough" elements) inside the drag
+    // rectangle are never picked up by onSelectionChange. We have to add
+    // them here. We must NOT early-return when currentSel is non-empty:
+    // the common case is "drag-select grabs both shapes AND arrows"; in
+    // that case currentSel contains the shapes and we still need to fold
+    // in the arrows. Otherwise Cmd+X / Cmd+C silently drop arrows.
     const rect = selectionRectRef.current;
     const b = boardRef.current;
     if (!b) return;
-    const currentSel = useUIStore.getState().selectedIds;
-    if (currentSel.length > 0) return; // onSelectionChange already handled it
 
     const selMinX = Math.min(rect.x, rect.x2);
     const selMinY = Math.min(rect.y, rect.y2);
@@ -625,15 +785,44 @@ export function Canvas() {
       const isNonRect = el.type === 'rectangle' && !!shape && shape !== 'rectangle' && !elFilled;
       if (!isArrow && !isPenEl && !isNonRect) continue;
 
-      const eR = el.x + el.width;
-      const eB = el.y + el.height;
-      if (el.x < selMaxX && eR > selMinX && el.y < selMaxY && eB > selMinY) {
+      // For arrows, expand bounds to include curve control points so a
+      // drag rect that overlaps the bowed-out part of the curve still
+      // catches it.
+      let eMinX = el.x, eMinY = el.y;
+      let eMaxX = el.x + el.width, eMaxY = el.y + el.height;
+      if (isArrow) {
+        const pts = el.points && el.points.length >= 2
+          ? el.points
+          : [{ x: 0, y: el.height / 2 }, { x: el.width, y: el.height / 2 }];
+        const ctrl = (el.metadata?.controlPoints as Array<{ x: number; y: number }> | undefined) || [];
+        for (const p of [...pts, ...ctrl]) {
+          if (!p) continue;
+          eMinX = Math.min(eMinX, el.x + p.x);
+          eMinY = Math.min(eMinY, el.y + p.y);
+          eMaxX = Math.max(eMaxX, el.x + p.x);
+          eMaxY = Math.max(eMaxY, el.y + p.y);
+        }
+      }
+
+      if (eMinX < selMaxX && eMaxX > selMinX && eMinY < selMaxY && eMaxY > selMinY) {
         ids.push(el.metadata?.groupId ? el.metadata.groupId as string : el.id);
       }
     }
-    if (ids.length > 0) {
-      setSelectedIds([...new Set(ids)]);
-    }
+    if (ids.length === 0) return;
+
+    // Merge with whatever onSelectionChange already put in the store
+    // (the selectable shapes inside the rect). For Shift/Cmd drag-select,
+    // currentSel already contains the prior selection because the
+    // onSelectionChange handler added it.
+    const next = new Set([...useUIStore.getState().selectedIds, ...ids]);
+    setSelectedIds([...next]);
+    // Drag-rect is consumed — clear so the next programmatic
+    // onSelectionChange (e.g. the structural rebuild after paste) takes
+    // the click/programmatic branch instead of re-running the rect's
+    // passthrough sweep against stale coords. Without this, copy+paste
+    // would silently re-pull source arrows that overlap the old rect
+    // back into the new selection.
+    selectionRectRef.current = null;
   }, [screenToFlowPosition, setSelectedIds]);
 
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: { nodes: Node[] }) => {
@@ -660,7 +849,53 @@ export function Canvas() {
     // selection rectangle — NOT when clicking on individual nodes (which
     // would incorrectly select nearby arrows/pens that overlap the node).
     if (!hasDragRect) {
-      setSelectedIds([...new Set(ids)]);
+      const prevIds = useUIStore.getState().selectedIds;
+      const additive = modKeyRef.current.shift || modKeyRef.current.mod;
+
+      // Prefer the node the user actually pressed on (captured at the
+      // pointerdown capture phase). Resolve group membership so clicking a
+      // child selects its group. Fall back to RF's reported ids when we
+      // don't have a captured click (programmatic changes, keyboard).
+      const rawClicked = clickedNodeIdRef.current;
+      clickedNodeIdRef.current = null;
+      let clickedId: string | null = null;
+      if (rawClicked) {
+        const el = b.elements.find(x => x.id === rawClicked);
+        clickedId = (el?.metadata?.groupId as string | undefined) ?? rawClicked;
+      }
+
+      if (clickedId) {
+        if (additive) {
+          // Shift / Cmd / Ctrl + click: toggle the clicked item.
+          if (prevIds.includes(clickedId)) {
+            setSelectedIds(prevIds.filter(id => id !== clickedId));
+          } else {
+            setSelectedIds([...prevIds, clickedId]);
+          }
+          return;
+        }
+        // Plain click on a selected member of a multi-selection: unselect
+        // just that one, keep the rest. Plain click anywhere else collapses
+        // to a single-selection of the clicked item (file-manager default).
+        if (prevIds.length >= 2 && prevIds.includes(clickedId)) {
+          setSelectedIds(prevIds.filter(id => id !== clickedId));
+          return;
+        }
+        setSelectedIds([clickedId]);
+        return;
+      }
+
+      // Programmatic onSelectionChange (no recent click, no drag rect) —
+      // typically fires when setNodes runs in response to a board update.
+      // RF's params.nodes never includes selectable:false elements (arrows,
+      // pens, unfilled shapes), so a naive setSelectedIds(ids) would silently
+      // drop those from the store and break Cmd+X / Cmd+C on multi-selections
+      // that include an arrow. Merge prior passthrough members back in.
+      const passThroughPrev = prevIds.filter(id => {
+        const el = b.elements.find(x => x.id === id);
+        return !!el && isPassThrough(el);
+      });
+      setSelectedIds([...new Set([...ids, ...passThroughPrev])]);
       return;
     }
 
@@ -727,14 +962,22 @@ export function Canvas() {
       }
     }
 
-    setSelectedIds([...new Set(ids)]);
+    // Shift/Cmd + drag-rectangle: add the dragged-over items to the existing
+    // selection instead of replacing it.
+    const next = new Set(ids);
+    if (modKeyRef.current.shift || modKeyRef.current.mod) {
+      for (const id of useUIStore.getState().selectedIds) next.add(id);
+    }
+    setSelectedIds([...next]);
   }, [setSelectedIds]);
 
   const onPaneClick = useCallback(() => {
-    // Clear selection when clicking empty canvas
-    if (!useUIStore.getState().insertPayload) {
-      useUIStore.getState().setSelectedIds([]);
-    }
+    // Clear selection when clicking empty canvas, unless the user is holding
+    // Shift/Cmd (they're mid-additive-selection and an accidental empty-area
+    // click shouldn't blow away the multi-select).
+    if (useUIStore.getState().insertPayload) return;
+    if (modKeyRef.current.shift || modKeyRef.current.mod) return;
+    useUIStore.getState().setSelectedIds([]);
   }, []);
 
   /** Convert client coords to canvas coords */

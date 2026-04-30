@@ -56,12 +56,19 @@ function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
             onPointerDown={(e) => {
               e.stopPropagation();
               const sel = useUIStore.getState().selectedIds;
-              if (e.shiftKey) {
-                if (sel.includes(elementId)) useUIStore.getState().removeFromSelection(elementId);
+              const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+              const wasSelected = sel.includes(elementId);
+              if (additive) {
+                if (wasSelected) useUIStore.getState().removeFromSelection(elementId);
                 else useUIStore.getState().addToSelection(elementId);
-              } else if (!sel.includes(elementId)) {
+              } else if (!wasSelected) {
                 useUIStore.getState().setSelectedIds([elementId]);
               }
+              // If the element was already part of a multi-selection and no
+              // modifier is held, defer the decision to pointerup: if the
+              // user didn't drag, treat it as a plain click and remove only
+              // this element from the multi-selection.
+              const deferredRemove = !additive && wasSelected && sel.length >= 2;
               // Drag support
               if (element.locked) return;
               const startX = e.clientX, startY = e.clientY;
@@ -81,6 +88,7 @@ function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
                 document.removeEventListener('pointermove', onMove);
                 document.removeEventListener('pointerup', onUp);
                 if (moved) pushHistory('Move');
+                else if (deferredRemove) useUIStore.getState().removeFromSelection(elementId);
               };
               document.addEventListener('pointermove', onMove);
               document.addEventListener('pointerup', onUp);

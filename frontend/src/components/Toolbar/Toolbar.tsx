@@ -1,7 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { PythonEnvPicker } from '@/components/PythonEnvPicker/PythonEnvPicker';
+import { deriveBoardName } from '@/utils/boardName';
 import {
   Save,
   Undo2,
@@ -41,6 +42,7 @@ import {
   Loader2,
   AlertTriangle,
   RotateCw,
+  ChevronDown,
 } from 'lucide-react';
 
 function RunAllConfirmDialog({ plotCount, onConfirm, onCancel }: {
@@ -166,8 +168,105 @@ export function Toolbar() {
   const setTheme = useUIStore(s => s.setTheme);
   const [showSavePrompt, setShowSavePrompt] = useState(false);
 
+  // --- Board name == filename --------------------------------------------
+  // The filename is the single source of truth. The input shows the derived
+  // name and keeps a local buffer only while focused; on blur (or Enter) we
+  // call renameBoardFile, which moves the file on disk and updates the MRU +
+  // URL. If the rename fails, we surface an inline error and drop the buffer.
+  const boardFilePath = useBoardStore(s => s.boardFilePath);
+  const renameBoardFile = useBoardStore(s => s.renameBoardFile);
+  const currentFileBase = useMemo(() => deriveBoardName(boardFilePath), [boardFilePath]);
+  const [nameBuffer, setNameBuffer] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState('');
+
+  const handleNameFocus = useCallback(() => {
+    setNameBuffer(currentFileBase);
+    setRenameError('');
+  }, [currentFileBase]);
+
+  const handleNameBlur = useCallback(async () => {
+    const buffer = nameBuffer;
+    setNameBuffer(null);
+    if (buffer === null) return;
+    if (!boardFilePath) return;
+    const now = buffer.trim();
+    if (!now) return; // empty → silently revert to current filename
+    if (now === currentFileBase) return;
+    const sanitized = now.replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
+    if (!sanitized || sanitized === currentFileBase) return;
+    setRenameBusy(true);
+    setRenameError('');
+    try {
+      await renameBoardFile(sanitized);
+      // Filename changed; currentFileBase updates via the subscription.
+    } catch (err: any) {
+      const raw = err?.message || '';
+      const friendly =
+        raw.includes('409') ? 'A file with that name already exists'
+        : raw.includes('405') || raw.includes('404') ? 'Rename endpoint unavailable — restart the backend'
+        : raw.includes('400') ? 'Invalid filename'
+        : (raw || 'Rename failed');
+      setRenameError(friendly);
+      setTimeout(() => setRenameError(''), 6000);
+    } finally {
+      setRenameBusy(false);
+    }
+  }, [nameBuffer, boardFilePath, currentFileBase, renameBoardFile]);
+
   const hasSelection = selectedIds.length > 0;
   const multiSelect = selectedIds.length >= 2;
+
+  // --- Overflow-driven compaction ----------------------------------------
+  // When the toolbar would overflow (narrow window, Inspector open, multi-
+  // select adding the alignment row, etc.), fold the Python stack (env
+  // picker + Python Setup + Reload modules) into a single dropdown. Run All
+  // stays visible since it's the primary action. On wide screens everything
+  // renders at full width.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [pythonCollapsed, setPythonCollapsed] = useState(false);
+  const [pythonMenuOpen, setPythonMenuOpen] = useState(false);
+  const pythonMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const measure = () => {
+      // Width budget of the Python stack at full render ~= 510px; folding
+      // it saves ~330px. Collapse when the toolbar would overflow; expand
+      // with a buffer so we don't flap on ±1px drifts.
+      const required = 1200
+        + (multiSelect ? 280 : 0)
+        + (hasSelection && !multiSelect ? 180 : 0);
+      const w = el.clientWidth;
+      setPythonCollapsed(prev => {
+        if (!prev && w < required) return true;
+        if (prev && w > required + 80) return false;
+        return prev;
+      });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [multiSelect, hasSelection]);
+
+  // Close the collapsed Python menu on outside click / escape.
+  useEffect(() => {
+    if (!pythonMenuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (pythonMenuRef.current && !pythonMenuRef.current.contains(e.target as Node)) {
+        setPythonMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPythonMenuOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pythonMenuOpen]);
 
   const handleReloadModules = useCallback(async () => {
     if (reloadStatus === 'running') return;
@@ -295,7 +394,7 @@ export function Toolbar() {
 
   return (
     <>
-      <div className="h-10 bg-toolbar-bg border-b border-toolbar-border flex items-center px-2 gap-0.5 select-none shrink-0">
+      <div ref={toolbarRef} className="h-10 bg-toolbar-bg border-b border-toolbar-border flex items-center px-2 gap-0.5 select-none shrink-0 overflow-hidden">
         {/* Logo + Home */}
         <button
           onClick={handleGoHome}
@@ -307,16 +406,45 @@ export function Toolbar() {
         </button>
 
 
-        {/* Board name (editable) */}
-        <div className="flex items-center mx-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        {/* Board name (editable) — the filename IS the name. Blur renames. */}
+        <div className="flex items-center mx-1 relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <input
             type="text"
-            value={board.name}
-            onChange={e => useBoardStore.getState().setBoardName(e.target.value)}
-            className="text-xs text-gray-700 dark:text-on-surface-secondary bg-transparent border border-gray-200 dark:border-border rounded px-1.5 py-0.5 hover:border-gray-300 dark:hover:border-on-surface-disabled focus:border-accent focus:outline-none w-28 min-w-[50px] truncate"
-            title={`${board.name}.sdraw`}
+            value={nameBuffer ?? currentFileBase}
+            onChange={e => setNameBuffer(e.target.value)}
+            onFocus={handleNameFocus}
+            onBlur={handleNameBlur}
+            onKeyDown={e => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              if (e.key === 'Escape') {
+                setNameBuffer(null);
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            disabled={renameBusy}
+            className={`text-xs text-gray-700 dark:text-on-surface-secondary bg-transparent border rounded px-1.5 py-0.5 hover:border-gray-300 dark:hover:border-on-surface-disabled focus:border-accent focus:outline-none w-28 min-w-[50px] truncate ${
+              renameError
+                ? 'border-red-400'
+                : 'border-gray-200 dark:border-border'
+            }`}
+            title={renameError ? renameError : `Editing the name renames the file on disk. Current: ${currentFileBase}.sdraw`}
           />
           <span className="text-2xs text-gray-400 dark:text-on-surface-muted shrink-0 ml-0.5">.sdraw</span>
+          {renameBusy && (
+            <Loader2 size={12} className="animate-spin text-gray-400 dark:text-on-surface-muted shrink-0 ml-1" />
+          )}
+          {renameError && !renameBusy && (
+            <div className="absolute top-full left-0 mt-1 z-50 px-2 py-1 bg-red-50 border border-red-200 rounded text-2xs text-red-700 whitespace-nowrap shadow-sm flex items-center gap-1">
+              <AlertTriangle size={10} className="shrink-0" />
+              <span>{renameError}</span>
+            </div>
+          )}
+          {nameBuffer !== null && nameBuffer.trim() !== currentFileBase && !renameBusy && !renameError && (
+            <div className="absolute top-full left-0 mt-1 z-50 px-2 py-1 bg-amber-50 border border-amber-200 rounded text-2xs text-amber-700 whitespace-nowrap shadow-sm flex items-center gap-1">
+              <AlertTriangle size={10} className="shrink-0" />
+              <span>This will rename the .sdraw file on disk. Press Enter to confirm, Esc to cancel.</span>
+            </div>
+          )}
         </div>
 
         {/* File actions */}
@@ -348,74 +476,141 @@ export function Toolbar() {
 
         <Separator />
 
-        {/* Python env picker */}
-        <PythonEnvPicker />
+        {/* Python controls — full on wide, collapsed into a menu when narrow */}
+        {!pythonCollapsed ? (
+          <>
+            <PythonEnvPicker />
 
-        {/* Python Setup — shared imports/data that run once per board.
-            Labeled pill (not just an icon) to make the feature discoverable
-            and distinct from the Terminal-icon Python env picker next to it. */}
-        <button
-          onClick={() => useUIStore.getState().openSetupEditor()}
-          title="Python Setup — shared code that runs before every plot on this board (⌘;)"
-          className={`flex items-center gap-1 h-6 px-2 rounded border text-2xs font-medium transition-colors ${
-            board.setup?.code
-              ? 'border-accent/40 bg-accent/10 text-accent hover:bg-accent/15'
-              : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
-          }`}
-        >
-          <Braces size={12} className="shrink-0" />
-          <span>Python Setup</span>
-          {board.setup?.code && (
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                kernelStatus === 'running' ? 'bg-blue-400 animate-pulse'
-                : kernelStatus === 'ok' ? 'bg-green-500'
-                : kernelStatus === 'error' ? 'bg-red-500'
-                : 'bg-gray-400'
+            {/* Python Setup — shared imports/data that run once per board. */}
+            <button
+              onClick={() => useUIStore.getState().openSetupEditor()}
+              title="Python Setup — shared code that runs before every plot on this board (⌘;)"
+              className={`flex items-center gap-1 h-6 px-2 rounded border text-2xs font-medium transition-colors ${
+                board.setup?.code
+                  ? 'border-accent/40 bg-accent/10 text-accent hover:bg-accent/15'
+                  : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
               }`}
-            />
-          )}
-        </button>
+            >
+              <Braces size={12} className="shrink-0" />
+              <span>Python Setup</span>
+              {board.setup?.code && (
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    kernelStatus === 'running' ? 'bg-blue-400 animate-pulse'
+                    : kernelStatus === 'ok' ? 'bg-green-500'
+                    : kernelStatus === 'error' ? 'bg-red-500'
+                    : 'bg-gray-400'
+                  }`}
+                />
+              )}
+            </button>
 
-        {/* Reload modules — FORCE-reloads every project-local .py file in
-            the kernel and rebinds references in setup_ns. Normally this
-            happens automatically before each plot run (mtime-based);
-            this button is for when the mtime heuristic misses an edit
-            (back-dated file, never-imported module, etc.). Setup-loaded
-            data is preserved; existing instances still bind to the
-            pre-reload class — re-run setup to rebind those. */}
-        <button
-          onClick={handleReloadModules}
-          disabled={kernelStatus !== 'ok' && kernelStatus !== 'running'}
-          title={
-            kernelStatus !== 'ok' && kernelStatus !== 'running'
-              ? 'Reload Python modules — run Python Setup first to start the kernel'
-              : 'Force-reload all project-local modules (autoreload runs automatically on every plot)'
-          }
-          className={`flex items-center gap-1 h-6 px-2 rounded border text-2xs font-medium transition-colors ${
-            reloadStatus === 'running'
-              ? 'border-blue-400/40 bg-blue-400/10 text-blue-500 cursor-wait'
-              : reloadStatus === 'ok'
-              ? 'border-green-400/40 bg-green-400/10 text-green-600 dark:text-green-400'
-              : reloadStatus === 'error'
-              ? 'border-red-400/40 bg-red-400/10 text-red-600 dark:text-red-400'
-              : (kernelStatus !== 'ok' && kernelStatus !== 'running')
-              ? 'border-toolbar-border text-gray-300 dark:text-on-surface-disabled cursor-not-allowed'
-              : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
-          }`}
-        >
-          {reloadStatus === 'running' ? (
-            <Loader2 size={12} className="shrink-0 animate-spin" />
-          ) : (
-            <RotateCw size={12} className="shrink-0" />
-          )}
-          <span>
-            {reloadStatus === 'running' ? 'Reloading…'
-              : reloadStatus === 'ok' ? 'Reloaded'
-              : reloadStatus === 'error' ? 'Reload failed'
-              : 'Reload modules'}
-          </span>
-        </button>
+            {/* Reload modules — force-reloads every project-local .py file. */}
+            <button
+              onClick={handleReloadModules}
+              disabled={kernelStatus !== 'ok' && kernelStatus !== 'running'}
+              title={
+                kernelStatus !== 'ok' && kernelStatus !== 'running'
+                  ? 'Reload Python modules — run Python Setup first to start the kernel'
+                  : 'Force-reload all project-local modules (autoreload runs automatically on every plot)'
+              }
+              className={`flex items-center gap-1 h-6 px-2 rounded border text-2xs font-medium transition-colors ${
+                reloadStatus === 'running'
+                  ? 'border-blue-400/40 bg-blue-400/10 text-blue-500 cursor-wait'
+                  : reloadStatus === 'ok'
+                  ? 'border-green-400/40 bg-green-400/10 text-green-600 dark:text-green-400'
+                  : reloadStatus === 'error'
+                  ? 'border-red-400/40 bg-red-400/10 text-red-600 dark:text-red-400'
+                  : (kernelStatus !== 'ok' && kernelStatus !== 'running')
+                  ? 'border-toolbar-border text-gray-300 dark:text-on-surface-disabled cursor-not-allowed'
+                  : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
+              }`}
+            >
+              {reloadStatus === 'running' ? (
+                <Loader2 size={12} className="shrink-0 animate-spin" />
+              ) : (
+                <RotateCw size={12} className="shrink-0" />
+              )}
+              <span>
+                {reloadStatus === 'running' ? 'Reloading…'
+                  : reloadStatus === 'ok' ? 'Reloaded'
+                  : reloadStatus === 'error' ? 'Reload failed'
+                  : 'Reload modules'}
+              </span>
+            </button>
+          </>
+        ) : (
+          <div className="relative" ref={pythonMenuRef}>
+            <button
+              onClick={() => setPythonMenuOpen(v => !v)}
+              title="Python controls (narrow — expanded inline on wider screens)"
+              className={`flex items-center gap-1 h-6 px-2 rounded border text-2xs font-medium transition-colors ${
+                pythonMenuOpen
+                  ? 'border-accent/40 bg-accent/10 text-accent'
+                  : 'border-toolbar-border text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
+              }`}
+            >
+              <Braces size={12} className="shrink-0" />
+              <span>Python</span>
+              {/* Status dot: the most-important signal bubbled out of the menu. */}
+              {board.setup?.code && (
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    kernelStatus === 'running' ? 'bg-blue-400 animate-pulse'
+                    : kernelStatus === 'ok' ? 'bg-green-500'
+                    : kernelStatus === 'error' ? 'bg-red-500'
+                    : reloadStatus === 'error' ? 'bg-red-500'
+                    : 'bg-gray-400'
+                  }`}
+                />
+              )}
+              <ChevronDown size={10} className="shrink-0 opacity-60" />
+            </button>
+            {pythonMenuOpen && (
+              <div className="absolute top-full left-0 mt-1 z-50 w-60 bg-white dark:bg-surface-primary border border-gray-200 dark:border-border rounded-lg shadow-xl py-1">
+                <button
+                  onClick={() => { setPythonMenuOpen(false); useUIStore.getState().openSetupEditor(); }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-2xs text-gray-700 dark:text-on-surface-secondary hover:bg-gray-100 dark:hover:bg-surface-tertiary"
+                >
+                  <Braces size={12} className="shrink-0" />
+                  <span className="flex-1 text-left">Python Setup</span>
+                  {board.setup?.code && (
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        kernelStatus === 'running' ? 'bg-blue-400 animate-pulse'
+                        : kernelStatus === 'ok' ? 'bg-green-500'
+                        : kernelStatus === 'error' ? 'bg-red-500'
+                        : 'bg-gray-400'
+                      }`}
+                    />
+                  )}
+                </button>
+                <button
+                  onClick={() => { setPythonMenuOpen(false); handleReloadModules(); }}
+                  disabled={kernelStatus !== 'ok' && kernelStatus !== 'running'}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-2xs text-gray-700 dark:text-on-surface-secondary hover:bg-gray-100 dark:hover:bg-surface-tertiary disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                >
+                  {reloadStatus === 'running' ? (
+                    <Loader2 size={12} className="shrink-0 animate-spin" />
+                  ) : (
+                    <RotateCw size={12} className="shrink-0" />
+                  )}
+                  <span className="flex-1 text-left">
+                    {reloadStatus === 'running' ? 'Reloading…'
+                      : reloadStatus === 'ok' ? 'Reloaded ✓'
+                      : reloadStatus === 'error' ? 'Reload failed'
+                      : 'Reload modules'}
+                  </span>
+                </button>
+                <div className="border-t border-gray-100 dark:border-border my-1" />
+                <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-400 dark:text-on-surface-muted">Interpreter</div>
+                <div className="px-2 pb-1">
+                  <PythonEnvPicker />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Run All — runs Python Setup then every plot cell source element
             in z-order. Asks for confirmation before executing. */}
@@ -543,6 +738,7 @@ export function Toolbar() {
           onCancel={() => setShowSavePrompt(false)}
         />
       )}
+
 
       {runAllConfirmOpen && (
         <RunAllConfirmDialog

@@ -1,9 +1,11 @@
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { Wifi, WifiOff, Loader2 } from 'lucide-react';
+import { deriveBoardName } from '@/utils/boardName';
 
 export function StatusBar() {
   const board = useBoardStore(s => s.board);
+  const boardFilePath = useBoardStore(s => s.boardFilePath);
   const isDirty = useBoardStore(s => s.isDirty);
   const selectedIds = useUIStore(s => s.selectedIds);
   const zoom = useUIStore(s => s.zoom);
@@ -29,8 +31,8 @@ export function StatusBar() {
         <span>{connectionStatus}</span>
       </div>
 
-      {/* Board info */}
-      <span>{board.name}</span>
+      {/* Board info — name derived from the filename stem. */}
+      <span>{deriveBoardName(boardFilePath)}</span>
       <span>{board.elements.length} elements</span>
 
       {/* Selection */}

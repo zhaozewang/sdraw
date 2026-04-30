@@ -159,6 +159,12 @@ export const api = {
       body: JSON.stringify({ path }),
     }),
 
+  renameBoardFile: (oldPath: string, newPath: string) =>
+    request<{ path: string; mtime: number }>('/boards/rename-file', {
+      method: 'POST',
+      body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
+    }),
+
   // Checkpoint / crash recovery
   saveCheckpoint: (board: Board, path: string) =>
     compressedPost<{ path: string }>(
@@ -256,7 +262,7 @@ export const api = {
   // Plot execution
   executePlot: (
     code: string,
-    timeout = 30,
+    timeout = 600,
     dpi = 150,
     pythonPath?: string | null,
     executionId?: string,

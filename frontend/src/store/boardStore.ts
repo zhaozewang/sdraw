@@ -413,7 +413,7 @@ interface BoardState {
   saveCheckpoint: () => Promise<void>;
   deleteCheckpoint: () => Promise<void>;
   closeBoard: () => void;
-  setBoardName: (name: string) => void;
+  renameBoardFile: (newBaseName: string) => Promise<{ newPath: string }>;
   setSetupCode: (code: string) => void;
   setSetupTimeout: (timeout: number) => void;
   updateAutoExport: (settings: Partial<AutoExportSettings>) => void;
@@ -459,7 +459,11 @@ interface BoardState {
   redo: () => void;
 
   // Actions - Connected arrows
-  updateConnectedArrows: (movedElementId: string) => void;
+  // skipArrowIds: arrows to leave alone (e.g. ones being translated as part
+  // of a multi-selection drag). Without this, dragging a shape that's also
+  // selected alongside an arrow would yank the arrow's endpoint back to the
+  // shape, defeating the user's intent of moving the whole group together.
+  updateConnectedArrows: (movedElementId: string, skipArrowIds?: Set<string>) => void;
 
   // Actions - Image refresh
   bumpImageVersion: (path: string) => void;
@@ -538,6 +542,94 @@ function reattachBlobsAfterHistory(
     }
     return el;
   });
+}
+
+/**
+ * Deep-clone a set of elements with full ID remapping. The single source of
+ * truth for "fork these elements as independent copies" — used by both
+ * `pasteElements` (Cmd+V across boards/sessions) and `duplicateElements`
+ * (Cmd+D in-place).
+ *
+ * Internal references that must follow the new IDs:
+ *   - `el.id`                         → new uuid
+ *   - `group.children[]`              → new ids (drop entries not in payload)
+ *   - `child.metadata.groupId`        → new id, or strip {groupId,relX,relY}
+ *                                      if the group wasn't included
+ *   - `arrow.metadata.startConnection`→ new id, or drop both connection +
+ *                                      its anchor if target wasn't included
+ *   - `arrow.metadata.endConnection`  → ditto
+ *   - `arrow.metadata.startAbsPos /
+ *      endAbsPos`                     → always dropped (cached against old
+ *                                      coords; regenerated on next
+ *                                      updateConnectedArrows)
+ *   - `plot.metadata.plotCodeId`      → caller-supplied map (the registry
+ *                                      lives outside the element)
+ *
+ * Skipping any of the above produces a "linked clone" — symptoms ranging
+ * from "moving the duplicate also moves the source" to "ungrouping the
+ * copy ungroups the original". Callers must use this helper, not their
+ * own ad-hoc clone loop.
+ */
+function cloneElementsWithRemap(
+  sourceElements: BoardElement[],
+  plotCodeIdMap?: Map<string, string>,
+): { cloned: BoardElement[]; idMap: Map<string, string> } {
+  const idMap = new Map<string, string>();
+  for (const el of sourceElements) idMap.set(el.id, uuidv4());
+
+  const cloned = sourceElements.map((src) => {
+    const c: BoardElement = structuredClone(src);
+    c.id = idMap.get(src.id)!;
+
+    if (c.children) {
+      c.children = c.children
+        .map((cid) => idMap.get(cid))
+        .filter((cid): cid is string => !!cid);
+    }
+
+    const meta = c.metadata || {};
+    if (meta.groupId) {
+      const newGid = idMap.get(meta.groupId);
+      if (newGid) {
+        c.metadata = { ...meta, groupId: newGid };
+      } else {
+        const { groupId: _g, relX: _rx, relY: _ry, ...rest } = meta;
+        c.metadata = rest;
+      }
+    }
+
+    if (c.type === 'plot' && c.metadata?.plotCodeId && plotCodeIdMap) {
+      const newPcid = plotCodeIdMap.get(c.metadata.plotCodeId as string);
+      if (newPcid) c.metadata = { ...c.metadata, plotCodeId: newPcid };
+    }
+
+    if (c.type === 'arrow') {
+      const m = { ...(c.metadata || {}) };
+      for (const key of ['startConnection', 'endConnection'] as const) {
+        if (m[key]) {
+          const remapped = idMap.get(m[key] as string);
+          if (remapped) {
+            m[key] = remapped;
+          } else {
+            // Connection target not part of this clone batch — drop the
+            // connection and its anchor so the endpoint becomes free.
+            delete m[key];
+            const anchorKey = key === 'startConnection' ? 'startAnchor' : 'endAnchor';
+            delete m[anchorKey];
+          }
+        }
+      }
+      // Cached absolute positions reference the OLD bbox; let
+      // updateConnectedArrows regenerate them.
+      delete m.startAbsPos;
+      delete m.endAbsPos;
+      c.metadata = m;
+    }
+
+    return c;
+  });
+
+  return { cloned, idMap };
 }
 
 // Abort controller for cancelling in-flight exports on board switch
@@ -730,22 +822,21 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         return { ...el, metadata: nextMeta };
       }
 
-      // Uncropped (or stale-crop) plot → full refresh path. When the code
-      // changed, we drop the old crop so the fresh figure isn't cropped to
-      // regions that no longer make sense. Stamp the new renderedCodeHash
-      // unconditionally — it is the general "this output was produced by
-      // this code" tag that PlotNode reads to detect staleness.
+      // Uncropped or stale-crop plot → full refresh path. The image is
+      // replaced with the fresh figure, but any existing user crop is
+      // preserved so manual framing work isn't lost on re-run. The crop is
+      // stored as fractions [0,1] so it applies to the new figure too.
+      // Stamp the new renderedCodeHash unconditionally — it is the general
+      // "this output was produced by this code" tag that PlotNode reads to
+      // detect staleness.
       const nextMeta: Record<string, any> = {
         ...el.metadata,
         lastStdout: stdout,
         lastError: error,
         renderedCodeHash: currentRenderHash,
       };
-      if (hasStoredCrop) {
-        nextMeta.plotCrop = null;
-      }
       const nextHeight = fig?.image
-        ? syncHeightForFigure(el.width, el.height, fig.image, null)
+        ? syncHeightForFigure(el.width, el.height, fig.image, hasStoredCrop ? plotCrop : null)
         : el.height;
       if (fig) {
         nextMeta.lastOutput = fig.image ?? null;
@@ -831,7 +922,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     try {
       const r = await api.executePlot(
         code,
-        30,
+        600,
         150,
         env,
         undefined,
@@ -1340,10 +1431,32 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     set({ board: null, boardFilePath: null, isDirty: false, kernelStatus: 'idle', history: [], historyIndex: -1 });
   },
 
-  setBoardName: (name: string) => {
-    const { board } = get();
-    if (!board) return;
-    set({ board: { ...board, name }, isDirty: true });
+  renameBoardFile: async (newBaseName: string) => {
+    const { boardFilePath } = get();
+    if (!boardFilePath) throw new Error('No board file loaded');
+    const sanitized = newBaseName.replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
+    if (!sanitized) throw new Error('Filename cannot be empty');
+    const lastSlash = boardFilePath.lastIndexOf('/');
+    const dir = lastSlash >= 0 ? boardFilePath.slice(0, lastSlash) : '';
+    const newPath = dir ? `${dir}/${sanitized}.sdraw` : `${sanitized}.sdraw`;
+    if (newPath === boardFilePath) return { newPath };
+    const result = await api.renameBoardFile(boardFilePath, newPath);
+    // Point the MRU entry at the new filename so the welcome screen picks it up.
+    try {
+      const { getRecentBoards, setRecentBoards } = await import('@/utils/localStorage');
+      const list = getRecentBoards().map(b =>
+        b.path === boardFilePath ? { ...b, path: result.path, name: sanitized } : b,
+      );
+      setRecentBoards(list);
+    } catch { /* non-fatal */ }
+    set({ boardFilePath: result.path, loadedFileMtime: result.mtime });
+    // Rewrite the URL so a page reload stays pointed at the renamed file.
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set('board', result.path);
+      window.history.replaceState(null, '', u.toString());
+    } catch { /* non-fatal */ }
+    return { newPath: result.path };
   },
 
   setSetupCode: (code: string) => {
@@ -1634,8 +1747,22 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   duplicateElements: (ids: string[]) => {
     const { board } = get();
     if (!board) return [];
+
+    // Expand selection: duplicating a group must drag its children along,
+    // otherwise the duplicate group ends up with `children` pointing at
+    // nothing-in-this-batch and (after id remap) zero children, which
+    // visually presents as an empty group floating next to the source.
+    // Same shape as the writeSelectionToClipboard expansion in the keyboard
+    // handler — keep the two in sync.
     const idSet = new Set(ids);
+    for (const id of ids) {
+      const el = board.elements.find(e => e.id === id);
+      if (el?.type === 'group' && el.children) {
+        for (const cid of el.children) idSet.add(cid);
+      }
+    }
     const toDuplicate = board.elements.filter(el => idSet.has(el.id));
+    if (toDuplicate.length === 0) return [];
     const maxZ = board.elements.reduce((max, el) => Math.max(max, el.z_index), 0);
 
     // A duplicated figure should reference a FRESH plot code entry so the
@@ -1654,22 +1781,14 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       plotCodeIdMap.set(pcid, newId);
     }
 
-    const duplicated = toDuplicate.map((el, i) => {
-      const cloned: BoardElement = {
-        ...structuredClone(el),
-        id: uuidv4(),
-        x: el.x + 20,
-        y: el.y + 20,
-        z_index: maxZ + 1 + i,
-      };
-      if (cloned.type === 'plot' && cloned.metadata?.plotCodeId) {
-        const newPcid = plotCodeIdMap.get(cloned.metadata.plotCodeId);
-        if (newPcid) {
-          cloned.metadata = { ...cloned.metadata, plotCodeId: newPcid };
-        }
-      }
-      return cloned;
+    const { cloned } = cloneElementsWithRemap(toDuplicate, plotCodeIdMap);
+    const duplicated = cloned.map((c, i) => {
+      c.x = c.x + 20;
+      c.y = c.y + 20;
+      c.z_index = maxZ + 1 + i;
+      return c;
     });
+
     set({
       board: {
         ...board,
@@ -1685,9 +1804,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   pasteElements: (sourceElements: BoardElement[], offset = { x: 0, y: 0 }, sourcePlotCodes) => {
     const { board } = get();
     if (!board || sourceElements.length === 0) return [];
-
-    const idMap = new Map<string, string>();
-    for (const el of sourceElements) idMap.set(el.id, uuidv4());
 
     // Build a plot-code-id remap: every distinct old plotCodeId in the
     // payload becomes a new registry entry in this board. Multiple pasted
@@ -1707,48 +1823,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     const maxZ = board.elements.reduce((max, el) => Math.max(max, el.z_index), 0);
 
-    const pasted = sourceElements.map((src, i) => {
-      const cloned: BoardElement = structuredClone(src);
-      cloned.id = idMap.get(src.id)!;
-      cloned.x = src.x + offset.x;
-      cloned.y = src.y + offset.y;
-      cloned.z_index = maxZ + 1 + i;
-
-      if (cloned.children) {
-        cloned.children = cloned.children
-          .map(cid => idMap.get(cid))
-          .filter((cid): cid is string => !!cid);
-      }
-
-      const meta = cloned.metadata || {};
-      if (meta.groupId) {
-        const newGid = idMap.get(meta.groupId);
-        if (newGid) {
-          cloned.metadata = { ...meta, groupId: newGid };
-        } else {
-          const { groupId: _g, relX: _rx, relY: _ry, ...rest } = meta;
-          cloned.metadata = rest;
-        }
-      }
-      if (cloned.type === 'plot' && cloned.metadata?.plotCodeId) {
-        const newPcid = plotCodeIdMap.get(cloned.metadata.plotCodeId);
-        if (newPcid) {
-          cloned.metadata = { ...cloned.metadata, plotCodeId: newPcid };
-        }
-      }
-      if (cloned.type === 'arrow') {
-        const m = { ...(cloned.metadata || {}) };
-        for (const key of ['startConnection', 'endConnection'] as const) {
-          if (m[key]) {
-            const remapped = idMap.get(m[key]);
-            if (remapped) m[key] = remapped;
-            else delete m[key];
-          }
-        }
-        cloned.metadata = m;
-      }
-
-      return cloned;
+    const { cloned } = cloneElementsWithRemap(sourceElements, plotCodeIdMap);
+    const pasted = cloned.map((c, i) => {
+      c.x = c.x + offset.x;
+      c.y = c.y + offset.y;
+      c.z_index = maxZ + 1 + i;
+      return c;
     });
 
     set({
@@ -2051,7 +2131,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     });
   },
 
-  updateConnectedArrows: (movedElementId: string) => {
+  updateConnectedArrows: (movedElementId: string, skipArrowIds?: Set<string>) => {
     const { board } = get();
     if (!board) return;
     const movedEl = board.elements.find(e => e.id === movedElementId);
@@ -2059,6 +2139,9 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     for (const arrow of board.elements) {
       if (arrow.type !== 'arrow') continue;
+      // Caller is translating these arrows wholesale — don't snap their
+      // endpoints to the moved shape, that would override the translation.
+      if (skipArrowIds?.has(arrow.id)) continue;
       const startConn = arrow.metadata?.startConnection as string | undefined;
       const endConn = arrow.metadata?.endConnection as string | undefined;
       if (startConn !== movedElementId && endConn !== movedElementId) continue;
@@ -2091,16 +2174,85 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         return { x: arrow.x + pts[ptIdx].x, y: arrow.y + pts[ptIdx].y };
       };
 
+      // Snapshot the OLD line endpoints (in absolute canvas coords) before
+      // we resolve the new ones — needed to reparameterize control points
+      // in line-relative coordinates so the curve "sticks" to the line as
+      // its endpoints move with the connected shape.
+      const oldStart = { x: arrow.x + pts[0].x, y: arrow.y + pts[0].y };
+      const oldEnd = { x: arrow.x + pts[1].x, y: arrow.y + pts[1].y };
+
       const sAbs = resolveEndpoint(startConn, 'startAnchor', 'startAbsPos', 0);
       const eAbs = resolveEndpoint(endConn, 'endAnchor', 'endAbsPos', 1);
 
       if (!startConn) newMeta.startAbsPos = sAbs;
       if (!endConn) newMeta.endAbsPos = eAbs;
 
-      const minX = Math.min(sAbs.x, eAbs.x);
-      const minY = Math.min(sAbs.y, eAbs.y);
-      const w = Math.max(Math.abs(eAbs.x - sAbs.x), 1);
-      const h = Math.max(Math.abs(eAbs.y - sAbs.y), 1);
+      // Re-anchor any curve control points to the new line. Control points
+      // live in arrow-local coords (offsets from arrow.x/y), so the old
+      // bbox origin is implicit in their values. Convert to absolute, then
+      // express in line-relative (along, perp) against the OLD line, then
+      // re-emit against the NEW line. This preserves curve shape as the
+      // line stretches/rotates with the connected shape, instead of
+      // leaving control points pinned to a stale origin (which made the
+      // curve look like it had vanished).
+      const oldCtrl = (arrow.metadata?.controlPoints as Array<{ x: number; y: number }> | undefined) || [];
+      if (oldCtrl.length > 0) {
+        const oldDx = oldEnd.x - oldStart.x;
+        const oldDy = oldEnd.y - oldStart.y;
+        const oldLen = Math.hypot(oldDx, oldDy);
+        const newDx = eAbs.x - sAbs.x;
+        const newDy = eAbs.y - sAbs.y;
+        const newLen = Math.hypot(newDx, newDy);
+
+        if (oldLen > 1e-6 && newLen > 1e-6) {
+          const oldUx = oldDx / oldLen, oldUy = oldDy / oldLen;
+          const newUx = newDx / newLen, newUy = newDy / newLen;
+          newMeta.controlPoints = oldCtrl.map(c => {
+            const cAbs = { x: arrow.x + c.x, y: arrow.y + c.y };
+            const relX = cAbs.x - oldStart.x;
+            const relY = cAbs.y - oldStart.y;
+            // Decompose along old line basis: parallel (along) and perpendicular.
+            const along = relX * oldUx + relY * oldUy;
+            const perp = relX * (-oldUy) + relY * oldUx;
+            // Scale the parallel component by len ratio so the curve stretches
+            // proportionally; keep perpendicular at the same fraction of length
+            // for the same reason (curve depth scales with line length).
+            const t = along / oldLen;
+            const newAlong = t * newLen;
+            const newPerp = perp * (newLen / oldLen);
+            const newAbsX = sAbs.x + newAlong * newUx + newPerp * (-newUy);
+            const newAbsY = sAbs.y + newAlong * newUy + newPerp * newUx;
+            return { x: newAbsX, y: newAbsY }; // converted to local coords below
+          });
+        } else {
+          // Degenerate old or new line (zero length): translate control
+          // points by the start-endpoint delta as a safe fallback.
+          const dx = sAbs.x - oldStart.x;
+          const dy = sAbs.y - oldStart.y;
+          newMeta.controlPoints = oldCtrl.map(c => ({
+            x: arrow.x + c.x + dx,
+            y: arrow.y + c.y + dy,
+          }));
+        }
+      }
+
+      // Bounding box must include control points so they aren't lost when
+      // the SVG overflow gets clipped at high zoom levels or during export.
+      const allAbs = [sAbs, eAbs, ...((newMeta.controlPoints as Array<{ x: number; y: number }> | undefined) || [])];
+      const minX = Math.min(...allAbs.map(p => p.x));
+      const minY = Math.min(...allAbs.map(p => p.y));
+      const maxX = Math.max(...allAbs.map(p => p.x));
+      const maxY = Math.max(...allAbs.map(p => p.y));
+      const w = Math.max(maxX - minX, 1);
+      const h = Math.max(maxY - minY, 1);
+
+      // Convert control points from absolute back to local (offsets from new minX/minY)
+      if (newMeta.controlPoints) {
+        newMeta.controlPoints = (newMeta.controlPoints as Array<{ x: number; y: number }>).map(c => ({
+          x: c.x - minX,
+          y: c.y - minY,
+        }));
+      }
 
       get().updateElement(arrow.id, {
         x: minX, y: minY, width: w, height: h,

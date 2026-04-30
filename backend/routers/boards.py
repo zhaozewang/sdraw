@@ -73,15 +73,19 @@ def _fnv1a(s: str) -> str:
 
 
 def _with_manual(clean_board: dict) -> dict:
-    """Return a new dict with `_manual` injected as the first key.
+    """Return a new dict with `_manual` injected as the first key, and the
+    deprecated top-level `name` field stripped.
 
     Agents reading the file skim top-down, so ordering matters. Python
     dicts preserve insertion order since 3.7; constructing a fresh dict
     with `_manual` first guarantees the preamble leads the JSON.
+
+    The `name` field is deprecated — the filename stem is the board's
+    display name. Every save drops `name` so legacy boards normalize.
     """
     ordered = {"_manual": SDRAW_MANUAL}
     for k, v in clean_board.items():
-        if k == "_manual":
+        if k in ("_manual", "name"):
             continue
         ordered[k] = v
     return ordered
@@ -397,7 +401,9 @@ async def board_summary(body: SummaryRequest):
                 thumbnail = cache.get("thumbnail")
         return {
             "id": data.get("id", p.stem),
-            "name": data.get("name", "Untitled"),
+            # The filename stem IS the board name. The legacy `name` field
+            # inside the JSON is deprecated and ignored here.
+            "name": p.stem,
             "updated_at": data.get("updated_at", ""),
             "path": str(p),
             "element_count": len(elements),
@@ -422,6 +428,42 @@ async def delete_board_file(body: DeleteBoardFileRequest):
     try:
         p.unlink()
         return {"deleted": str(p)}
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+class RenameBoardFileRequest(BaseModel):
+    old_path: str
+    new_path: str
+
+
+@router.post("/rename-file")
+async def rename_board_file(body: RenameBoardFileRequest):
+    """Rename a .sdraw file on disk. Also moves the matching crash-recovery
+    checkpoint (`.<name>.checkpoint`) so recovery still works for the new
+    filename. Refuses to overwrite an existing target and refuses
+    cross-directory moves (that's a separate "move" operation).
+    """
+    old_p = Path(body.old_path).resolve()
+    new_p = Path(body.new_path).resolve()
+    if not old_p.exists() or not old_p.is_file():
+        raise HTTPException(status_code=404, detail="Source file not found")
+    if old_p == new_p:
+        return {"path": str(old_p), "mtime": old_p.stat().st_mtime}
+    if new_p.exists():
+        raise HTTPException(status_code=409, detail="Target file already exists")
+    if new_p.parent != old_p.parent:
+        raise HTTPException(status_code=400, detail="Cross-directory rename not supported")
+    try:
+        old_p.rename(new_p)
+        old_cp = old_p.parent / f".{old_p.name}.checkpoint"
+        if old_cp.exists():
+            new_cp = new_p.parent / f".{new_p.name}.checkpoint"
+            try:
+                old_cp.rename(new_cp)
+            except OSError:
+                pass
+        return {"path": str(new_p), "mtime": new_p.stat().st_mtime}
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

@@ -408,12 +408,31 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
     origPosRef.current = { x: el.x, y: el.y };
     useUIStore.getState().setSuppressPositionSync(true);
 
+    // Seed baseline ctrl so every index is populated before any single one
+    // moves. Without this, dragging idx=1 on a cubic curve whose metadata
+    // has no controlPoints yet produces [<hole>, {x,y}], and the next render
+    // crashes on `c.x` when mapping over the array.
+    const baselinePts = el.points && el.points.length >= 2
+      ? el.points
+      : [{ x: 0, y: el.height / 2 }, { x: el.width, y: el.height / 2 }];
+    const storedCtrl = (el.metadata?.controlPoints as Array<{ x: number; y: number }> | undefined) || [];
+    const lt = (el.metadata?.lineType as LineType) || 'straight';
+    const needsAutoCtrl = (lt === 'quadratic' || lt === 'cubic' || lt === 'arc' || lt === 'smooth')
+      && storedCtrl.length === 0;
+    const baselineCtrl = needsAutoCtrl
+      ? defaultControlPoints(baselinePts[0], baselinePts[1], lt)
+      : storedCtrl;
+
     const onMove = (ev: PointerEvent) => {
       const coords = getCanvasCoords(ev);
       if (!coords) return;
       const orig = origPosRef.current;
       const el = useBoardStore.getState().board?.elements.find(e => e.id === elementId);
-      const ctrl = [...((el?.metadata?.controlPoints as Array<{ x: number; y: number }>) || [])];
+      const cur = (el?.metadata?.controlPoints as Array<{ x: number; y: number }> | undefined) || [];
+      // Use whichever array is more populated as the base (handles the
+      // first move after drag-start where stored is still empty).
+      const base = cur.length >= baselineCtrl.length ? cur : baselineCtrl;
+      const ctrl = [...base];
       ctrl[idx] = { x: coords.x - orig.x, y: coords.y - orig.y };
       updateElement(elementId, { metadata: { ...el?.metadata, controlPoints: ctrl } });
     };
@@ -450,11 +469,16 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
     ? element.points
     : [{ x: 0, y: element.height / 2 }, { x: element.width, y: element.height / 2 }];
 
-  const ctrl: Array<{ x: number; y: number }> = (metadata?.controlPoints as any) || [];
+  const ctrlRaw: Array<{ x: number; y: number } | undefined> = (metadata?.controlPoints as any) || [];
   const hasCurveCtrl = lineType === 'quadratic' || lineType === 'cubic' || lineType === 'arc' || lineType === 'smooth';
-  const effectiveCtrl = hasCurveCtrl && ctrl.length === 0
-    ? defaultControlPoints(pts[0], pts[1], lineType)
-    : ctrl;
+  // Heal any holes left by a prior buggy session (idx=1 written before idx=0)
+  // by filling missing slots with the auto-defaults — otherwise the .map
+  // calls below would crash on the undefined entry.
+  const defaults = hasCurveCtrl ? defaultControlPoints(pts[0], pts[1], lineType) : [];
+  const ctrl: Array<{ x: number; y: number }> = hasCurveCtrl
+    ? defaults.map((d, i) => ctrlRaw[i] ?? d)
+    : (ctrlRaw.filter(Boolean) as Array<{ x: number; y: number }>);
+  const effectiveCtrl = ctrl;
 
   const stepRadius = (metadata?.stepRadius as number) || 20;
   const pathD = buildPath(pts[0], pts[1], lineType, effectiveCtrl, { stepRadius });
@@ -485,15 +509,21 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
           style={{ pointerEvents: 'stroke', cursor: element.locked ? 'default' : 'pointer' }}
           onPointerDown={(e) => {
             e.stopPropagation();
-            // Select
-            const shiftKey = e.shiftKey;
+            // Select: Shift or Cmd/Ctrl toggles membership in the existing
+            // selection (file-manager semantics); plain click collapses to
+            // just this node. Plain click on an already-selected multi-
+            // member is deferred to pointerup — if no drag happened, remove
+            // only this member, otherwise the multi-drag did its job.
+            const additive = e.shiftKey || e.metaKey || e.ctrlKey;
             const sel = useUIStore.getState().selectedIds;
-            if (shiftKey) {
-              if (sel.includes(elementId)) useUIStore.getState().removeFromSelection(elementId);
+            const wasSelected = sel.includes(elementId);
+            if (additive) {
+              if (wasSelected) useUIStore.getState().removeFromSelection(elementId);
               else useUIStore.getState().addToSelection(elementId);
-            } else if (!sel.includes(elementId)) {
+            } else if (!wasSelected) {
               useUIStore.getState().setSelectedIds([elementId]);
             }
+            const deferredRemove = !additive && wasSelected && sel.length >= 2;
 
             // Drag support
             if (element.locked) return;
@@ -527,6 +557,8 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
                   updateElement(elementId, { metadata: meta });
                 }
                 pushHistory('Move');
+              } else if (deferredRemove) {
+                useUIStore.getState().removeFromSelection(elementId);
               }
             };
             document.addEventListener('pointermove', onMove);

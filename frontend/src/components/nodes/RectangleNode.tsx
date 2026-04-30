@@ -124,12 +124,18 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
             const handleSelect = (e: React.PointerEvent) => {
               e.stopPropagation();
               const sel = useUIStore.getState().selectedIds;
-              if (e.shiftKey) {
-                if (sel.includes(elementId)) useUIStore.getState().removeFromSelection(elementId);
+              const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+              const wasSelected = sel.includes(elementId);
+              if (additive) {
+                if (wasSelected) useUIStore.getState().removeFromSelection(elementId);
                 else useUIStore.getState().addToSelection(elementId);
-              } else if (!sel.includes(elementId)) {
+              } else if (!wasSelected) {
                 useUIStore.getState().setSelectedIds([elementId]);
               }
+              // Plain click on an already-selected multi-member → remove only
+              // this element if the click ends without a drag (pointerup
+              // branch below). Modifier held or single-selection → no-op.
+              const deferredRemove = !additive && wasSelected && sel.length >= 2;
               // Drag support
               if (element.locked) return;
               const startX = e.clientX;
@@ -153,6 +159,7 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
                 document.removeEventListener('pointermove', onMove);
                 document.removeEventListener('pointerup', onUp);
                 if (moved) pushHistory('Move');
+                else if (deferredRemove) useUIStore.getState().removeFromSelection(elementId);
               };
               document.addEventListener('pointermove', onMove);
               document.addEventListener('pointerup', onUp);

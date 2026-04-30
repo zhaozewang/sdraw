@@ -197,6 +197,9 @@ function buildImageElement(el: BoardElement, ox: number, oy: number): HTMLElemen
     opacity: ${style.opacity ?? 1};
     z-index: ${el.z_index};
   `;
+  if (el.rotation) {
+    wrapper.style.transform = `rotate(${el.rotation}deg)`;
+  }
 
   const path = el.source?.path;
   if (path) {
@@ -245,6 +248,9 @@ function buildPlotElement(el: BoardElement, ox: number, oy: number): HTMLElement
     opacity: ${style.opacity ?? 1};
     z-index: ${el.z_index};
   `;
+  if (el.rotation) {
+    wrapper.style.transform = `rotate(${el.rotation}deg)`;
+  }
 
   const lastOutput = meta.lastOutput as string | undefined;
   if (lastOutput) {
@@ -278,6 +284,9 @@ function buildRectangleElement(el: BoardElement, ox: number, oy: number): HTMLEl
     width: ${el.width}px; height: ${el.height}px;
     z-index: ${el.z_index};
   `;
+  if (el.rotation && !isGroup) {
+    wrapper.style.transform = `rotate(${el.rotation}deg)`;
+  }
 
   if (isGroup) {
     // Groups are invisible in export (no dashed border)
@@ -406,16 +415,20 @@ function buildArrowOverlay(
     const pts = el.points!;
 
     const lineType = (meta.lineType as string) || 'straight';
-    const ctrl: Pt[] = (meta.controlPoints as Pt[]) || [];
+    const ctrlRaw: Array<Pt | undefined> = (meta.controlPoints as Array<Pt | undefined>) || [];
     const headSize = (meta.arrowHeadSize as number) || 1;
     const startMarker = (meta.startMarker as string) || 'none';
     let endMarker = (meta.endMarker as string) ?? (meta.arrowHead !== false ? 'arrow' : 'none');
     if ('endMarker' in meta) endMarker = meta.endMarker as string;
 
     const hasCurve = ['quadratic', 'cubic', 'arc', 'smooth'].includes(lineType);
-    const effectiveCtrl = hasCurve && ctrl.length === 0
-      ? defaultControlPoints(pts[0], pts[1], lineType)
-      : ctrl;
+    // Heal holes from a prior buggy save (idx=1 written before idx=0) by
+    // filling missing slots with the auto-defaults — otherwise the .map
+    // below would crash on the undefined entry.
+    const ctrlDefaults = hasCurve ? defaultControlPoints(pts[0], pts[1], lineType) : [];
+    const effectiveCtrl: Pt[] = hasCurve
+      ? ctrlDefaults.map((d, i) => ctrlRaw[i] ?? d)
+      : (ctrlRaw.filter(Boolean) as Pt[]);
 
     // Convert to absolute coordinates relative to container
     const absP0 = { x: el.x - ox + pts[0].x, y: el.y - oy + pts[0].y };

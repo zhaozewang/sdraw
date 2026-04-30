@@ -15,6 +15,7 @@ import type { ThemeMode } from '@/store/uiStore';
 // ---------------------------------------------------------------------------
 
 const RECENT_BOARDS_KEY = 'sdraw_recent_boards';
+const HIDDEN_BOARDS_KEY = 'sdraw_hidden_boards';
 const THEME_KEY = 'sdraw_theme';
 const PYTHON_ENV_KEY = 'sdraw_python_env';
 const RECENT_COLORS_KEY = 'sdraw_recent_colors';
@@ -119,6 +120,34 @@ export function addRecentBoard(name: string, path: string): void {
 export function removeRecentBoard(path: string): void {
   const boards = getRecentBoards().filter((b) => b.path !== path);
   safeSetRaw(RECENT_BOARDS_KEY, JSON.stringify(boards));
+}
+
+// ---------------------------------------------------------------------------
+// Hidden workspace boards — paths the user asked to hide from the welcome
+// screen without deleting the underlying file. Workspace boards reappear on
+// every directory scan, so MRU removal alone can't hide them.
+// ---------------------------------------------------------------------------
+
+export function getHiddenBoardPaths(): string[] {
+  const raw = safeGetRaw(HIDDEN_BOARDS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isStringArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addHiddenBoardPath(path: string): void {
+  const set = new Set(getHiddenBoardPaths());
+  set.add(path);
+  safeSetRaw(HIDDEN_BOARDS_KEY, JSON.stringify([...set]));
+}
+
+export function removeHiddenBoardPath(path: string): void {
+  const list = getHiddenBoardPaths().filter((p) => p !== path);
+  safeSetRaw(HIDDEN_BOARDS_KEY, JSON.stringify(list));
 }
 
 // ---------------------------------------------------------------------------

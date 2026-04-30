@@ -53,7 +53,28 @@ export function PythonEnvPicker() {
   const [discoveredEnvs, setDiscoveredEnvs] = useState<DiscoveredEnv[]>([]);
   const [scanning, setScanning] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [panelPos, setPanelPos] = useState<{ top: number; right: number } | null>(null);
+
+  // Anchor the fixed-position panel to the trigger's bounding rect so it
+  // escapes the toolbar's overflow-hidden and canvas overlay z-index (9999).
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const el = triggerRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setPanelPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [open]);
 
   const isCustom = !!pythonEnvPath;
 
@@ -118,13 +139,16 @@ export function PythonEnvPicker() {
     setInputPath(pythonEnvPath || '');
   }, [pythonEnvPath]);
 
-  // Close on outside click
+  // Close on outside click — check both trigger and floating panel,
+  // since the panel is fixed-positioned and not a DOM descendant.
+  const floatingPanelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      if (panelRef.current?.contains(target)) return;
+      if (floatingPanelRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -183,6 +207,7 @@ export function PythonEnvPicker() {
     <div className="relative" ref={panelRef}>
       {/* Toolbar trigger */}
       <button
+        ref={triggerRef}
         onClick={() => setOpen(!open)}
         title={pythonEnvPath || 'Python: Default (built-in)'}
         className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs transition-colors truncate max-w-[160px] ${
@@ -196,9 +221,13 @@ export function PythonEnvPicker() {
         <ChevronDown size={10} className="shrink-0 opacity-50" />
       </button>
 
-      {/* Dropdown panel */}
-      {open && (
-        <div className="absolute top-full mt-1 right-0 w-[420px] bg-surface-primary border border-border rounded-lg shadow-xl z-50 overflow-hidden text-xs">
+      {/* Dropdown panel — fixed position so it escapes the toolbar's
+          overflow-hidden and stacks above canvas overlays (zIndex 9999). */}
+      {open && panelPos && (
+        <div
+          ref={floatingPanelRef}
+          className="fixed w-[420px] bg-surface-primary border border-border rounded-lg shadow-xl overflow-hidden text-xs"
+          style={{ top: panelPos.top, right: panelPos.right, zIndex: 10000 }}>
           {/* Header */}
           <div className="px-2 py-1 border-b border-border bg-inspector-section flex items-center justify-between">
             <span className="font-semibold text-on-surface-muted uppercase tracking-wider text-2xs">Interpreter</span>
