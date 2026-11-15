@@ -287,42 +287,36 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   },
 
   updateElement: (id: string, updates: Partial<BoardElement>) => {
-    const { board } = get();
-    if (!board) return;
-
-    const target = board.elements.find(el => el.id === id);
-
-    // If moving a group, move all children by the same delta
-    let childUpdates: Map<string, { x: number; y: number }> | null = null;
-    if (target?.type === 'group' && target.children && (updates.x !== undefined || updates.y !== undefined)) {
-      const dx = (updates.x ?? target.x) - target.x;
-      const dy = (updates.y ?? target.y) - target.y;
-      if (dx !== 0 || dy !== 0) {
-        childUpdates = new Map();
-        for (const childId of target.children) {
-          const child = board.elements.find(el => el.id === childId);
-          if (child) {
-            childUpdates.set(childId, { x: child.x + dx, y: child.y + dy });
-          }
-        }
-      }
-    }
-
-    const newElements = board.elements.map(el => {
-      if (el.id === id) return { ...el, ...updates };
-      if (childUpdates?.has(el.id)) {
-        const pos = childUpdates.get(el.id)!;
-        return { ...el, x: pos.x, y: pos.y };
-      }
-      return el;
-    });
-    set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().updateElements([{ id, changes: updates }]);
   },
 
-  updateElements: (updates: Array<{ id: string; changes: Partial<BoardElement> }>) => {
+  updateElements: updates => {
     const { board } = get();
     if (!board) return;
     const updateMap = new Map(updates.map(u => [u.id, u.changes]));
+    const elements = new Map(board.elements.map(el => [el.id, el]));
+
+    // Positions are absolute, even for members of nested groups.
+    for (const { id, changes } of updates) {
+      const group = elements.get(id);
+      if (group?.type !== 'group') continue;
+      const dx = (changes.x ?? group.x) - group.x;
+      const dy = (changes.y ?? group.y) - group.y;
+      if (!dx && !dy) continue;
+
+      const pending = [...(group.children ?? [])];
+      const seen = new Set([id]);
+      while (pending.length) {
+        const childId = pending.pop()!;
+        if (seen.has(childId)) continue;
+        seen.add(childId);
+        const child = elements.get(childId);
+        if (!child) continue;
+        const explicit = updateMap.get(childId);
+        updateMap.set(childId, { x: child.x + dx, y: child.y + dy, ...explicit });
+        if (child.children) pending.push(...child.children);
+      }
+    }
     const newElements = board.elements.map(el => {
       const changes = updateMap.get(el.id);
       return changes ? { ...el, ...changes } : el;

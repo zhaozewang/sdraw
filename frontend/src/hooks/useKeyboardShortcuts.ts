@@ -112,26 +112,6 @@ export function useKeyboardShortcuts() {
       return;
     }
 
-    // Arrow key nudge
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-      if (selectedIds.length > 0) {
-        e.preventDefault();
-        const amount = e.shiftKey ? 10 : 1;
-        const dx = e.key === 'ArrowLeft' ? -amount : e.key === 'ArrowRight' ? amount : 0;
-        const dy = e.key === 'ArrowUp' ? -amount : e.key === 'ArrowDown' ? amount : 0;
-        store.updateElements(
-          selectedIds.map(id => ({
-            id,
-            changes: {
-              x: (store.board?.elements.find(el => el.id === id)?.x || 0) + dx,
-              y: (store.board?.elements.find(el => el.id === id)?.y || 0) + dy,
-            },
-          }))
-        );
-      }
-      return;
-    }
-
     // Select all
     if (mod && e.key === 'a') {
       e.preventDefault();
@@ -150,7 +130,29 @@ export function useKeyboardShortcuts() {
   }, [board]);
 
   useEffect(() => {
+    // Handle nudges before React Flow can move the same selection a second time.
+    function nudge(event: KeyboardEvent) {
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      const target = event.target as HTMLElement;
+      if (target.closest('input, textarea, select, [contenteditable=true]')) return;
+      const { selectedIds } = useUIStore.getState();
+      const store = useBoardStore.getState();
+      const selected = store.board?.elements.filter(el => selectedIds.includes(el.id) && !el.locked);
+      if (!selected?.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const step = event.shiftKey ? 10 : 1;
+      const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+      const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+      store.updateElements(selected.map(el => ({ id: el.id, changes: { x: el.x + dx, y: el.y + dy } })));
+      store.pushHistory('Move');
+    }
+
+    window.addEventListener('keydown', nudge, true);
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', nudge, true);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [handleKeyDown]);
 }

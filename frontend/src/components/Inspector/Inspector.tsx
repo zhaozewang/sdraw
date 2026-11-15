@@ -1,3 +1,4 @@
+import { groupResizeUpdates } from '@/utils/groupResize';
 import { useCallback, useState } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
@@ -491,6 +492,22 @@ function ElementInspector({ element }: { element: BoardElement }) {
     updateElement(element.id, changes);
   }, [element.id, updateElement]);
 
+  function resizeDimension(axis: 'width' | 'height', value: number) {
+    if (element.type === 'group' || element.type === 'image') {
+      const factor = value / element[axis];
+      const rect = { x: element.x, y: element.y, width: element.width * factor, height: element.height * factor };
+      const store = useBoardStore.getState();
+      if (element.type === 'group' && store.board) {
+        store.updateElements(groupResizeUpdates(element, store.board.elements, rect));
+      } else {
+        update(rect);
+      }
+    } else {
+      update({ [axis]: value });
+    }
+    pushHistory('Resize');
+  }
+
   const updateStyle = useCallback((styleChanges: Partial<ElementStyle>) => {
     update({ style: { ...element.style, ...styleChanges } });
   }, [element.style, update]);
@@ -598,10 +615,10 @@ function ElementInspector({ element }: { element: BoardElement }) {
               <NumberInput value={element.y} onChange={v => { pushHistory('Move'); update({ y: v }); }} />
             </CompactField>
             <CompactField label="W">
-              <NumberInput value={element.width} onChange={v => { pushHistory('Resize'); update({ width: v }); }} min={10} />
+              <NumberInput value={element.width} onChange={v => resizeDimension('width', v)} min={10} />
             </CompactField>
             <CompactField label="H">
-              <NumberInput value={element.height} onChange={v => { pushHistory('Resize'); update({ height: v }); }} min={10} />
+              <NumberInput value={element.height} onChange={v => resizeDimension('height', v)} min={10} />
             </CompactField>
           </div>
           <Field label="Z-Index">

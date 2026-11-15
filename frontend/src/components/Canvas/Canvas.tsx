@@ -27,6 +27,18 @@ import {
 } from '@/utils/alignmentGuides';
 import { findSnapTarget, computeConnectionPoint } from '@/utils/snapToShape';
 
+function outermostGroup(element: BoardElement, elements: BoardElement[]): BoardElement {
+  const visited = new Set<string>();
+  let current = element;
+  while (current.metadata?.groupId && !visited.has(current.id)) {
+    visited.add(current.id);
+    const parent = elements.find(el => el.id === current.metadata.groupId);
+    if (parent?.type !== 'group') break;
+    current = parent;
+  }
+  return current;
+}
+
 function elementToNode(element: BoardElement): Node {
   return {
     id: element.id,
@@ -371,41 +383,30 @@ export function Canvas() {
 
     for (const change of changes) {
       if (change.type === 'position' && change.position && change.id) {
-        let el = board.elements.find(e => e.id === change.id);
-        // If this element belongs to a group, move the group instead
-        const groupId = el?.metadata?.groupId as string | undefined;
-        if (groupId) {
-          const groupEl = board.elements.find(e => e.id === groupId);
-          if (groupEl) {
-            const dx = change.position.x - (el?.x ?? 0);
-            const dy = change.position.y - (el?.y ?? 0);
-            if (!groupEl.locked && (dx !== 0 || dy !== 0)) {
-              updateElement(groupId, { x: groupEl.x + dx, y: groupEl.y + dy });
-            }
-            continue;
-          }
-        }
-        if (el && !el.locked) {
-          if (change.dragging && !dragStartRef.current.has(change.id)) {
-            dragStartRef.current.set(change.id, { x: el.x, y: el.y });
+        const dragged = board.elements.find(e => e.id === change.id);
+        if (!dragged) continue;
+        const el = outermostGroup(dragged, board.elements);
+        if (!el.locked) {
+          if (change.dragging && !dragStartRef.current.has(el.id)) {
+            dragStartRef.current.set(el.id, { x: el.x, y: el.y });
           }
 
-          let x = change.position.x;
-          let y = change.position.y;
+          let x = change.position.x + (el.x - dragged.x);
+          let y = change.position.y + (el.y - dragged.y);
 
           if (change.dragging) {
             isDragging = true;
 
             // Compute alignment guides
             const draggingRect: Rect = {
-              id: change.id,
+              id: el.id,
               x,
               y,
               width: el.width,
               height: el.height,
             };
             const otherRects: Rect[] = board.elements
-              .filter(e => e.id !== change.id && e.visible)
+              .filter(e => e.visible && e.id !== el.id && (el.type !== 'group' || outermostGroup(e, board.elements).id !== el.id))
               .map(e => ({ id: e.id, x: e.x, y: e.y, width: e.width, height: e.height }));
 
             const result = computeAlignmentGuides(draggingRect, otherRects);
@@ -430,11 +431,11 @@ export function Canvas() {
             setSpacing(result.spacing);
           }
 
-          updateElement(change.id, { x, y });
+          updateElement(el.id, { x, y });
 
           // Auto-update connected arrow endpoints when a shape moves
           if (change.dragging) {
-            const movedId = change.id;
+            const movedId = el.id;
             for (const arrow of board.elements) {
               if (arrow.type !== 'arrow') continue;
               const startConn = arrow.metadata?.startConnection as string | undefined;
@@ -474,9 +475,9 @@ export function Canvas() {
             }
           }
 
-          if (!change.dragging && dragStartRef.current.has(change.id)) {
+          if (!change.dragging && dragStartRef.current.has(el.id)) {
             pushHistory('Move');
-            dragStartRef.current.delete(change.id);
+            dragStartRef.current.delete(el.id);
             alignedRef.current = false;
             setGuides([]);
             setSpacing([]);
@@ -484,7 +485,8 @@ export function Canvas() {
         }
       }
 
-      if (change.type === 'dimensions' && change.id && change.dimensions) {
+      // ResizeObserver reports rounded DOM measurements. Persist only explicit resizes.
+      if (change.type === 'dimensions' && change.setAttributes && change.dimensions) {
         const el = board.elements.find(e => e.id === change.id);
         if (el && !el.locked) {
           updateElement(change.id, {
@@ -501,10 +503,7 @@ export function Canvas() {
     // If a child of a group is selected, select the group instead
     const ids = selectedNodes.map(n => {
       const el = board.elements.find(e => e.id === n.id);
-      if (el?.metadata?.groupId) {
-        return el.metadata.groupId as string;
-      }
-      return n.id;
+      return el ? outermostGroup(el, board.elements).id : n.id;
     });
     // Deduplicate
     setSelectedIds([...new Set(ids)]);

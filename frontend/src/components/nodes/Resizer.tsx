@@ -1,5 +1,7 @@
 import { memo, useCallback, useRef } from 'react';
 import { useReactFlow } from '@xyflow/react';
+import { groupResizeUpdates, type ElementRect } from '@/utils/groupResize';
+import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 
 interface ResizerProps {
@@ -30,6 +32,17 @@ const handleFracs: Record<HandlePosition, [number, number]> = {
   w: [0, 0.5],              e: [1, 0.5],
   sw: [0, 1], s: [0.5, 1], se: [1, 1],
 };
+
+function proportionalRect(pos: HandlePosition, rect: ElementRect, dx: number, dy: number, minW: number, minH: number): ElementRect {
+  const [fx, fy] = handleFracs[pos];
+  const vx = (2 * fx - 1) * rect.width;
+  const vy = (2 * fy - 1) * rect.height;
+  // Project the pointer onto the handle's axis and keep the opposite handle fixed.
+  const factor = Math.max(minW / rect.width, minH / rect.height, 1 + (dx * vx + dy * vy) / (vx * vx + vy * vy));
+  const width = rect.width * factor;
+  const height = rect.height * factor;
+  return { x: rect.x + (1 - fx) * (rect.width - width), y: rect.y + (1 - fy) * (rect.height - height), width, height };
+}
 
 function computeRect(
   pos: HandlePosition,
@@ -93,6 +106,11 @@ function ResizerComponent({
     const startY = e.clientY;
     const origRect = getRectRef.current();
 
+    const elements = useBoardStore.getState().board?.elements ?? [];
+    const element = elements.find(el => el.id === nodeIdRef.current);
+    const group = element?.type === 'group' ? element : undefined;
+    const proportional = !!group || element?.type === 'image';
+
     // Suppress Canvas board→node sync so it doesn't fight our updates
     useUIStore.getState().setSuppressPositionSync(true);
 
@@ -101,22 +119,23 @@ function ResizerComponent({
     const onMove = (ev: PointerEvent) => {
       const totalDx = (ev.clientX - startX) / scale;
       const totalDy = (ev.clientY - startY) / scale;
-      lastRect = computeRect(pos, origRect, totalDx, totalDy, minWidth, minHeight);
+      lastRect = (proportional ? proportionalRect : computeRect)(pos, origRect, totalDx, totalDy, minWidth, minHeight);
 
       // Update React Flow directly — this is the fastest path, no store roundtrip
-      const nid = nodeIdRef.current;
-      const r = lastRect;
-      setNodesRef.current(nds => nds.map(n =>
-        n.id === nid
-          ? {
-              ...n,
-              position: { x: r.x, y: r.y },
-              width: r.width,
-              height: r.height,
-              style: { ...n.style, width: r.width, height: r.height },
-            }
-          : n
-      ));
+      const rects = new Map<string, ElementRect>(group
+        ? groupResizeUpdates(group, elements, lastRect).map(({ id, changes }) => [id, changes])
+        : [[nodeIdRef.current, lastRect]]);
+      setNodesRef.current(nodes => nodes.map(node => {
+        const rect = rects.get(node.id);
+        if (!rect) return node;
+        return {
+          ...node,
+          position: { x: rect.x, y: rect.y },
+          width: rect.width,
+          height: rect.height,
+          style: { ...node.style, width: rect.width, height: rect.height },
+        };
+      }));
     };
 
     const onPointerUp = () => {
@@ -126,7 +145,11 @@ function ResizerComponent({
       document.body.style.userSelect = '';
 
       // Commit final rect to the board store
-      onResizeRef.current(lastRect.x, lastRect.y, lastRect.width, lastRect.height);
+      if (group) {
+        useBoardStore.getState().updateElements(groupResizeUpdates(group, elements, lastRect));
+      } else {
+        onResizeRef.current(lastRect.x, lastRect.y, lastRect.width, lastRect.height);
+      }
 
       // Re-enable sync
       useUIStore.getState().setSuppressPositionSync(false);
@@ -158,7 +181,7 @@ function ResizerComponent({
           <div
             key={pos}
             onPointerDown={handlePointerDown(pos)}
-            className="absolute"
+            className="absolute nodrag"
             style={{
               width: handleSize,
               height: handleSize,
