@@ -384,3 +384,26 @@ describe('arrow + multi-select copy/paste integrity', () => {
     expect(pastedArrow.metadata?.endConnection).toBe(pastedR2.id);
   });
 });
+
+describe('nested group transforms', () => {
+  beforeEach(reset);
+
+  it('scales nested images and arrow points while keeping the label font size', () => {
+    const store = useBoardStore.getState();
+    const image = store.addElement('image', { x: 10, y: 20, width: 20, height: 10 });
+    const label = store.addElement('text', { x: 40, y: 20, style: { fontSize: 12 } });
+    const inner = store.groupElements([image.id, label.id]);
+    const arrow = store.addElement('arrow', { x: 60, y: 30, points: [{ x: 0, y: 0 }, { x: 10, y: 8 }] });
+    const outer = store.groupElements([inner, arrow.id]);
+    const get = (id: string) => useBoardStore.getState().board!.elements.find(el => el.id === id)!;
+    const group = get(outer);
+    store.updateElement(outer, { x: 100, y: 200, width: group.width * 2, height: group.height * 2 });
+    expect(get(image.id)).toMatchObject({ x: 100, y: 200, width: 40, height: 20 });
+    expect(get(label.id)).toMatchObject({ x: 160, y: 200, style: { fontSize: 12 } });
+    expect(get(arrow.id).points).toEqual([{ x: 0, y: 0 }, { x: 20, y: 16 }]);
+
+    store.updateElements([{ id: outer, changes: { x: 105 } }, { id: inner, changes: { x: 112 } }]);
+    expect(get(image.id).x).toBe(112);
+    expect(get(label.id).x).toBe(172);
+  });
+});

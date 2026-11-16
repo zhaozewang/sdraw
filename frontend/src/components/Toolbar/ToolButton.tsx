@@ -24,4 +24,3 @@ export const ToolButton = ({ onClick, icon: Icon, title, active, disabled, class
       <Icon size={16} />
     </button>
   );
-

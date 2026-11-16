@@ -15,7 +15,7 @@ class SvgSourceTests(unittest.TestCase):
     def test_vector_export_opens_original_board_and_save_preserves_svg(self):
         app=FastAPI();app.include_router(router)
         with tempfile.TemporaryDirectory() as folder, patch('services.board_cache.CACHE_ROOT',Path(folder)/'cache'):
-            p=Path(folder);board=fixture();board['autoExport']={'format':'svg','sizeMode':'canvas','sourceBoard':'figure.sdraw'}
+            p=Path(folder).resolve();board=fixture();board['autoExport']={'format':'svg','sizeMode':'canvas','sourceBoard':'figure.sdraw'}
             write_board(p/'figure.sdraw',board)
             with patch('cairosvg.svg2png',side_effect=AssertionError('SVG must not rasterize')):
                 render_board(board,str(p/'figure.svg'))

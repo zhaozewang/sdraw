@@ -263,56 +263,6 @@ export function useKeyboardShortcuts() {
       return;
     }
 
-    // Arrow key nudge
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-      if (selectedIds.length > 0) {
-        e.preventDefault();
-        const amount = e.shiftKey ? 10 : 1;
-        const dx = e.key === 'ArrowLeft' ? -amount : e.key === 'ArrowRight' ? amount : 0;
-        const dy = e.key === 'ArrowUp' ? -amount : e.key === 'ArrowDown' ? amount : 0;
-
-        // Mirror the mouse-drag arrow-following: arrows that are themselves in
-        // the selection translate as a unit with the rest, so updateConnectedArrows
-        // must skip them — otherwise their endpoints would snap back onto a
-        // moved shape and undo the translation.
-        const b = store.board;
-        const selectedArrowIds = new Set<string>();
-        if (b) {
-          for (const id of selectedIds) {
-            const el = b.elements.find(e => e.id === id);
-            if (el && el.type === 'arrow' && !el.locked) selectedArrowIds.add(id);
-          }
-        }
-        const skip = selectedArrowIds.size > 0 ? selectedArrowIds : undefined;
-
-        store.updateElements(
-          selectedIds.map(id => ({
-            id,
-            changes: {
-              x: (store.board?.elements.find(el => el.id === id)?.x || 0) + dx,
-              y: (store.board?.elements.find(el => el.id === id)?.y || 0) + dy,
-            },
-          }))
-        );
-
-        // Re-anchor arrows whose endpoint connects to a moved (non-arrow)
-        // element. Matches the mouse-drag handler so keyboard-nudged shapes
-        // don't leave their connected arrows pinned in place.
-        for (const id of selectedIds) {
-          const el = b?.elements.find(e => e.id === id);
-          if (!el || el.type === 'arrow') continue;
-          store.updateConnectedArrows(id, skip);
-        }
-
-        // Debounce history push — group rapid arrow presses into one undo entry
-        if (nudgeTimerRef.current) clearTimeout(nudgeTimerRef.current);
-        nudgeTimerRef.current = window.setTimeout(() => {
-          useBoardStore.getState().pushHistory('Nudge');
-        }, 500);
-      }
-      return;
-    }
-
     // Select all — skip hidden (ghosted) elements so they stay as reference-only.
     if (mod && e.key === 'a') {
       e.preventDefault();
@@ -333,7 +283,34 @@ export function useKeyboardShortcuts() {
   }, [board]);
 
   useEffect(() => {
+    // Handle nudges before React Flow can move the same selection a second time.
+    function nudge(event: KeyboardEvent) {
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      const target = event.target as HTMLElement;
+      if (target.closest('input, textarea, select, [contenteditable=true]')) return;
+      const { selectedIds } = useUIStore.getState();
+      const store = useBoardStore.getState();
+      const selected = store.board?.elements.filter(el => selectedIds.includes(el.id) && !el.locked);
+      if (!selected?.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const step = event.shiftKey ? 10 : 1;
+      const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+      const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+      store.updateElements(selected.map(el => ({ id: el.id, changes: { x: el.x + dx, y: el.y + dy } })));
+      const selectedArrows = new Set(selected.filter(el => el.type === 'arrow').map(el => el.id));
+      for (const el of selected) {
+        if (el.type !== 'arrow') store.updateConnectedArrows(el.id, selectedArrows);
+      }
+      window.clearTimeout(nudgeTimerRef.current);
+      nudgeTimerRef.current = window.setTimeout(() => useBoardStore.getState().pushHistory('Nudge'), 500);
+    }
+
+    window.addEventListener('keydown', nudge, true);
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', nudge, true);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [handleKeyDown]);
 }

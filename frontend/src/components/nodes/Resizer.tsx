@@ -1,5 +1,6 @@
 import { memo, useCallback, useRef } from 'react';
 import { useReactFlow } from '@xyflow/react';
+import { groupResizeUpdates, type ElementRect } from '@/utils/groupResize';
 import { useUIStore } from '@/store/uiStore';
 import { useBoardStore } from '@/store/boardStore';
 import { computeAlignmentGuides, type Rect } from '@/utils/alignmentGuides';
@@ -234,6 +235,10 @@ function ResizerComponent({
       ? origRect.width / origRect.height
       : undefined;
 
+    const elements = useBoardStore.getState().board?.elements ?? [];
+    const element = elements.find(el => el.id === nodeIdRef.current);
+    const group = element?.type === 'group' ? element : undefined;
+
     // Suppress Canvas board→node sync so it doesn't fight our updates
     useUIStore.getState().setSuppressPositionSync(true);
 
@@ -265,19 +270,20 @@ function ResizerComponent({
       onResizeMoveRef.current?.(lastRect.x, lastRect.y, lastRect.width, lastRect.height);
 
       // Update React Flow directly — this is the fastest path, no store roundtrip
-      const nid = nodeIdRef.current;
-      const r = lastRect;
-      setNodesRef.current(nds => nds.map(n =>
-        n.id === nid
-          ? {
-              ...n,
-              position: { x: r.x, y: r.y },
-              width: r.width,
-              height: r.height,
-              style: { ...n.style, width: r.width, height: r.height },
-            }
-          : n
-      ));
+      const rects = new Map<string, ElementRect>(group
+        ? groupResizeUpdates(group, elements, lastRect).map(({ id, changes }) => [id, changes])
+        : [[nodeIdRef.current, lastRect]]);
+      setNodesRef.current(nodes => nodes.map(node => {
+        const rect = rects.get(node.id);
+        if (!rect) return node;
+        return {
+          ...node,
+          position: { x: rect.x, y: rect.y },
+          width: rect.width,
+          height: rect.height,
+          style: { ...node.style, width: rect.width, height: rect.height },
+        };
+      }));
     };
 
     const onPointerUp = () => {
@@ -320,7 +326,7 @@ function ResizerComponent({
           <div
             key={pos}
             onPointerDown={handlePointerDown(pos)}
-            className="absolute"
+            className="absolute nodrag"
             style={{
               width: handleSize,
               height: handleSize,

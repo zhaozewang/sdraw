@@ -1,3 +1,4 @@
+import { groupResizeUpdates } from '@/utils/groupResize';
 import { layoutChanges } from '@/utils/contentPolicy';
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
@@ -1636,109 +1637,32 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   },
 
   updateElement: (id: string, updates: Partial<BoardElement>) => {
-    const { board } = get();
-    if (!board) return;
-
-    const target = board.elements.find(el => el.id === id);
-
-    // When a group's geometry changes, propagate to its children:
-    //   - Moving (x/y): translate every child by the same delta.
-    //   - Resizing (width/height): scale every child's position and size
-    //     proportionally. Text children only reposition (font/box stays
-    //     put); arrow/pen `points` scale with the same factors since they
-    //     are stored in element-local space.
-    // This runs for all `updateElement` callers, so Inspector numeric
-    // edits and the Resizer drag handle behave identically.
-    let childUpdates: Map<string, Partial<BoardElement>> | null = null;
-    if (target?.type === 'group' && target.children && target.children.length > 0) {
-      const newX = updates.x ?? target.x;
-      const newY = updates.y ?? target.y;
-      const newW = updates.width ?? target.width;
-      const newH = updates.height ?? target.height;
-      const scaleX = (updates.width !== undefined && target.width > 0) ? newW / target.width : 1;
-      const scaleY = (updates.height !== undefined && target.height > 0) ? newH / target.height : 1;
-      const scaling = scaleX !== 1 || scaleY !== 1;
-      const moving = newX !== target.x || newY !== target.y;
-
-      if (scaling || moving) {
-        childUpdates = new Map();
-        for (const childId of target.children) {
-          const child = board.elements.find(el => el.id === childId);
-          if (!child) continue;
-          const ch: Partial<BoardElement> = {
-            x: newX + (child.x - target.x) * scaleX,
-            y: newY + (child.y - target.y) * scaleY,
-          };
-          if (scaling && child.type !== 'text') {
-            ch.width = child.width * scaleX;
-            ch.height = child.height * scaleY;
-            if (child.points && child.points.length > 0) {
-              ch.points = child.points.map(p => ({ x: p.x * scaleX, y: p.y * scaleY }));
-            }
-          }
-          childUpdates.set(childId, ch);
-        }
-      }
-    }
-
-    const newElements = board.elements.map(el => {
-      if (el.id === id) return { ...el, ...layoutChanges(el, updates) };
-      const chChanges = childUpdates?.get(el.id);
-      if (chChanges) return { ...el, ...layoutChanges(el, chChanges) };
-      return el;
-    });
-    set({ board: { ...board, elements: newElements }, isDirty: true });
+    get().updateElements([{ id, changes: updates }]);
   },
 
-  updateElements: (updates: Array<{ id: string; changes: Partial<BoardElement> }>) => {
+  updateElements: updates => {
     const { board } = get();
     if (!board) return;
 
-    // Merge caller-supplied updates first. These always win — if the user
-    // selected a group *and* one of its children, the direct update on the
-    // child takes precedence over any group-propagated delta.
-    const updateMap = new Map<string, Partial<BoardElement>>();
-    for (const u of updates) {
-      updateMap.set(u.id, { ...(updateMap.get(u.id) || {}), ...u.changes });
+    const direct = new Map<string, Partial<BoardElement>>();
+    for (const { id, changes } of updates) {
+      direct.set(id, { ...direct.get(id), ...changes });
     }
-
-    // Expand every group in the batch with scaled/translated child changes,
-    // matching the behavior of `updateElement` for single writes. This makes
-    // arrow-key nudge, multi-select Position/Size broadcasts, and any other
-    // bulk caller move grouped children along with their container.
-    for (const u of updates) {
-      const target = board.elements.find(el => el.id === u.id);
-      if (!target || target.type !== 'group' || !target.children || target.children.length === 0) continue;
-
-      const newX = u.changes.x ?? target.x;
-      const newY = u.changes.y ?? target.y;
-      const newW = u.changes.width ?? target.width;
-      const newH = u.changes.height ?? target.height;
-      const scaleX = (u.changes.width !== undefined && target.width > 0) ? newW / target.width : 1;
-      const scaleY = (u.changes.height !== undefined && target.height > 0) ? newH / target.height : 1;
-      const scaling = scaleX !== 1 || scaleY !== 1;
-      const moving = newX !== target.x || newY !== target.y;
-      if (!scaling && !moving) continue;
-
-      for (const childId of target.children) {
-        if (updateMap.has(childId)) continue; // direct update wins
-        const child = board.elements.find(el => el.id === childId);
-        if (!child) continue;
-        const ch: Partial<BoardElement> = {
-          x: newX + (child.x - target.x) * scaleX,
-          y: newY + (child.y - target.y) * scaleY,
-        };
-        if (scaling && child.type !== 'text') {
-          ch.width = child.width * scaleX;
-          ch.height = child.height * scaleY;
-          if (child.points && child.points.length > 0) {
-            ch.points = child.points.map(p => ({ x: p.x * scaleX, y: p.y * scaleY }));
-          }
-        }
-        updateMap.set(childId, ch);
+    const updateMap = new Map(direct);
+    const inherited = new Set<string>();
+    for (const group of board.elements) {
+      const changes = direct.get(group.id);
+      if (group.type !== 'group' || !changes || inherited.has(group.id)) continue;
+      const rect = {
+        x: changes.x ?? group.x, y: changes.y ?? group.y,
+        width: changes.width ?? group.width, height: changes.height ?? group.height,
+      };
+      if (rect.x === group.x && rect.y === group.y && rect.width === group.width && rect.height === group.height) continue;
+      for (const child of groupResizeUpdates(group, board.elements, rect, direct).slice(1)) {
+        inherited.add(child.id);
+        updateMap.set(child.id, child.changes);
       }
     }
-
     const newElements = board.elements.map(el => {
       const changes = updateMap.get(el.id);
       return changes ? { ...el, ...layoutChanges(el, changes) } : el;

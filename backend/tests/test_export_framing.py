@@ -50,4 +50,4 @@ class ExportFramingTests(unittest.TestCase):
                 saved = read_board(path)
                 render_board(saved, str(svg))
                 self.assertEqual(saved['autoExport'], board['autoExport'])
-                self.assertEqual(resolve_svg_source(svg), (path, board['id']))
+                self.assertEqual(resolve_svg_source(svg), (path.resolve(), board['id']))

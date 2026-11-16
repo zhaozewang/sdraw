@@ -561,6 +561,18 @@ function ElementInspector({ element }: { element: BoardElement }) {
     historyTimer.current = window.setTimeout(() => pushHistory(desc), 500);
   }, [pushHistory]);
 
+  function resizeDimension(axis: 'width' | 'height', value: number) {
+    const locked = element.type === 'group' || !!element.metadata?.lockAspectRatio ||
+      ((element.type === 'image' || element.type === 'plot') && element.metadata?.lockAspectRatio !== false);
+    if (locked && element[axis] > 0) {
+      const scale = value / element[axis];
+      update({ width: element.width * scale, height: element.height * scale });
+    } else {
+      update({ [axis]: value });
+    }
+    debouncedHistory('Resize');
+  }
+
   const updateStyle = useCallback((styleChanges: Partial<ElementStyle>) => {
     update({ style: { ...element.style, ...styleChanges } });
     debouncedHistory('Style change');
@@ -693,28 +705,10 @@ function ElementInspector({ element }: { element: BoardElement }) {
               <NumberInput value={element.y} onChange={v => { update({ y: v }); debouncedHistory('Move'); }} />
             </CompactField>
             <CompactField label="W">
-              <NumberInput value={element.width} onChange={v => {
-                const locked = ((element.type === 'image' || element.type === 'plot') && element.metadata?.lockAspectRatio !== false) || !!element.metadata?.lockAspectRatio;
-                if (locked && element.width > 0) {
-                  const ratio = element.height / element.width;
-                  update({ width: v, height: Math.round(v * ratio) });
-                } else {
-                  update({ width: v });
-                }
-                debouncedHistory('Resize');
-              }} min={10} />
+              <NumberInput value={element.width} onChange={v => resizeDimension('width', v)} min={10} />
             </CompactField>
             <CompactField label="H">
-              <NumberInput value={element.height} onChange={v => {
-                const locked = ((element.type === 'image' || element.type === 'plot') && element.metadata?.lockAspectRatio !== false) || !!element.metadata?.lockAspectRatio;
-                if (locked && element.height > 0) {
-                  const ratio = element.width / element.height;
-                  update({ height: v, width: Math.round(v * ratio) });
-                } else {
-                  update({ height: v });
-                }
-                debouncedHistory('Resize');
-              }} min={10} />
+              <NumberInput value={element.height} onChange={v => resizeDimension('height', v)} min={10} />
             </CompactField>
           </div>
           {(
