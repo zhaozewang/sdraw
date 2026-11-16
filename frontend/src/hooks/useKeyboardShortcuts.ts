@@ -270,6 +270,21 @@ export function useKeyboardShortcuts() {
         const amount = e.shiftKey ? 10 : 1;
         const dx = e.key === 'ArrowLeft' ? -amount : e.key === 'ArrowRight' ? amount : 0;
         const dy = e.key === 'ArrowUp' ? -amount : e.key === 'ArrowDown' ? amount : 0;
+
+        // Mirror the mouse-drag arrow-following: arrows that are themselves in
+        // the selection translate as a unit with the rest, so updateConnectedArrows
+        // must skip them — otherwise their endpoints would snap back onto a
+        // moved shape and undo the translation.
+        const b = store.board;
+        const selectedArrowIds = new Set<string>();
+        if (b) {
+          for (const id of selectedIds) {
+            const el = b.elements.find(e => e.id === id);
+            if (el && el.type === 'arrow' && !el.locked) selectedArrowIds.add(id);
+          }
+        }
+        const skip = selectedArrowIds.size > 0 ? selectedArrowIds : undefined;
+
         store.updateElements(
           selectedIds.map(id => ({
             id,
@@ -279,6 +294,16 @@ export function useKeyboardShortcuts() {
             },
           }))
         );
+
+        // Re-anchor arrows whose endpoint connects to a moved (non-arrow)
+        // element. Matches the mouse-drag handler so keyboard-nudged shapes
+        // don't leave their connected arrows pinned in place.
+        for (const id of selectedIds) {
+          const el = b?.elements.find(e => e.id === id);
+          if (!el || el.type === 'arrow') continue;
+          store.updateConnectedArrows(id, skip);
+        }
+
         // Debounce history push — group rapid arrow presses into one undo entry
         if (nudgeTimerRef.current) clearTimeout(nudgeTimerRef.current);
         nudgeTimerRef.current = window.setTimeout(() => {

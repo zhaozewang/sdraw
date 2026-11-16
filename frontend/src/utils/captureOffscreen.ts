@@ -1,18 +1,44 @@
 /**
- * Off-screen DOM rendering for pixel-perfect board export.
+ * Off-screen export rendering.
  *
- * Creates a hidden DOM tree mirroring each node component's visual output.
- * Non-text elements (images, shapes, plots) are captured with html2canvas.
- * Text elements are pre-rasterized via SVG foreignObject (data URI), which
- * uses the browser's own rendering engine — giving pixel-perfect text with
- * KaTeX math, line breaks, and all CSS properties. The two layers are
- * composited into the final export.
+ * The canonical approach: mount the SAME node components React Flow uses
+ * (TextNode, ImageNode, PlotNode, RectangleNode) into a hidden container,
+ * scoped to a board snapshot via `BoardSnapshotProvider`. Since the export
+ * uses the live render path, there is no "second renderer" that can drift
+ * out of sync with the canvas.
  *
- * The board snapshot is rendered in an isolated container, so there is no
- * cross-board contamination regardless of which board is currently visible.
+ * Arrows and pen strokes are rendered as a single unified SVG overlay
+ * because html2canvas ignores `overflow: visible` on per-node SVGs and
+ * would clip arrowhead markers extending past their bounding box. The
+ * overlay's geometry is built from the SAME shared functions
+ * (`utils/arrowGeometry.ts`) the live ArrowNode uses, so the overlay can't
+ * drift either.
+ *
+ * Text elements are pre-rasterized via SVG foreignObject so KaTeX subscripts
+ * /superscripts that overflow the element bounds aren't clipped, and so
+ * html2canvas isn't responsible for re-rendering text from CSS (which it
+ * does imperfectly). The text DOM consumed by the foreignObject is the
+ * exact tree the live TextNode produced.
+ *
+ * The board snapshot stays inside an isolated React tree, so cross-board
+ * contamination is impossible regardless of which board is currently
+ * visible in the live UI.
  */
 
+import { createElement, type ReactNode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { ReactFlowProvider } from '@xyflow/react';
+
 import type { Board, BoardElement } from '@/types/board';
+import { BoardSnapshotProvider } from '@/store/exportContext';
+import { TextNode, ImageNode, PlotNode, RectangleNode } from '@/components/nodes';
+import {
+  defaultControlPoints,
+  buildPath,
+  markerSpec,
+  type LineType,
+  type MarkerType,
+} from '@/utils/arrowGeometry';
 
 export interface OffscreenCaptureOptions {
   scale: number;
@@ -22,87 +48,11 @@ export interface OffscreenCaptureOptions {
   fixedH?: number;
 }
 
-// -----------------------------------------------------------------------
-//  Arrow path building — identical to ArrowNode.tsx
-// -----------------------------------------------------------------------
-
-type Pt = { x: number; y: number };
-
-function defaultControlPoints(p0: Pt, p1: Pt, lineType: string): Pt[] {
-  const mx = (p0.x + p1.x) / 2;
-  const my = (p0.y + p1.y) / 2;
-  const dx = p1.x - p0.x;
-  const dy = p1.y - p0.y;
-  const len = Math.sqrt(dx * dx + dy * dy) || 1;
-  const offX = (-dy / len) * len * 0.3;
-  const offY = (dx / len) * len * 0.3;
-  switch (lineType) {
-    case 'quadratic':
-    case 'arc':
-      return [{ x: mx + offX, y: my + offY }];
-    case 'smooth':
-      return [{ x: mx + offX * 0.4, y: my + offY * 0.4 }];
-    case 'cubic':
-      return [
-        { x: p0.x + dx * 0.25 + offX, y: p0.y + dy * 0.25 + offY },
-        { x: p0.x + dx * 0.75 - offX, y: p0.y + dy * 0.75 - offY },
-      ];
-    default:
-      return [];
-  }
-}
-
-function buildPath(p0: Pt, p1: Pt, lineType: string, ctrl: Pt[], stepRadius = 20): string {
-  switch (lineType) {
-    case 'quadratic':
-    case 'arc': {
-      const c = ctrl[0] || { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
-      return `M ${p0.x},${p0.y} Q ${c.x},${c.y} ${p1.x},${p1.y}`;
-    }
-    case 'smooth': {
-      if (ctrl.length > 0) {
-        const c = ctrl[0];
-        return `M ${p0.x},${p0.y} Q ${c.x},${c.y} ${p1.x},${p1.y}`;
-      }
-      const dx = p1.x - p0.x;
-      const dy = p1.y - p0.y;
-      const tension = Math.min(Math.abs(dx), Math.abs(dy)) * 0.5 + Math.abs(dx) * 0.25;
-      return `M ${p0.x},${p0.y} C ${p0.x + tension},${p0.y} ${p1.x - tension},${p1.y} ${p1.x},${p1.y}`;
-    }
-    case 'cubic': {
-      const c1 = ctrl[0] || { x: p0.x + (p1.x - p0.x) * 0.25, y: p0.y };
-      const c2 = ctrl[1] || { x: p0.x + (p1.x - p0.x) * 0.75, y: p1.y };
-      return `M ${p0.x},${p0.y} C ${c1.x},${c1.y} ${c2.x},${c2.y} ${p1.x},${p1.y}`;
-    }
-    case 'step': {
-      const mx = (p0.x + p1.x) / 2;
-      return `M ${p0.x},${p0.y} L ${mx},${p0.y} L ${mx},${p1.y} L ${p1.x},${p1.y}`;
-    }
-    case 'step-rounded': {
-      const mx = (p0.x + p1.x) / 2;
-      const dy = p1.y - p0.y;
-      const maxR = Math.min(Math.abs(mx - p0.x), Math.abs(dy) / 2, stepRadius);
-      const r = Math.max(maxR, 0);
-      if (r < 1) return `M ${p0.x},${p0.y} L ${mx},${p0.y} L ${mx},${p1.y} L ${p1.x},${p1.y}`;
-      const sy = dy > 0 ? 1 : -1;
-      return [
-        `M ${p0.x},${p0.y}`, `L ${mx - r},${p0.y}`,
-        `Q ${mx},${p0.y} ${mx},${p0.y + r * sy}`,
-        `L ${mx},${p1.y - r * sy}`,
-        `Q ${mx},${p1.y} ${mx + r * (p1.x > p0.x ? 1 : -1)},${p1.y}`,
-        `L ${p1.x},${p1.y}`,
-      ].join(' ');
-    }
-    default:
-      return `M ${p0.x},${p0.y} L ${p1.x},${p1.y}`;
-  }
-}
-
-// -----------------------------------------------------------------------
-//  SVG marker builder — identical to ArrowNode.tsx MarkerDefs
-// -----------------------------------------------------------------------
-
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// -----------------------------------------------------------------------
+//  Arrow + pen overlay (built from shared geometry helpers)
+// -----------------------------------------------------------------------
 
 function createSvgElement(tag: string, attrs: Record<string, string | number>): SVGElement {
   const el = document.createElementNS(SVG_NS, tag);
@@ -112,234 +62,110 @@ function createSvgElement(tag: string, attrs: Record<string, string | number>): 
   return el;
 }
 
-function buildMarkerDefs(
-  id: string, startMarker: string, endMarker: string,
-  color: string, headSize: number,
-): SVGDefsElement | null {
-  const defs = document.createElementNS(SVG_NS, 'defs');
-  let hasMarkers = false;
-
-  const addMarker = (type: string, suffix: string, isStart: boolean) => {
-    if (type === 'none') return;
-    hasMarkers = true;
-    const s = headSize;
-    const markerId = `${id}-${suffix}`;
-
-    if (type === 'arrow' || type === 'arrow-open') {
-      const w = 10 * s, h = 8 * s, mid = 4 * s;
-      const marker = createSvgElement('marker', {
-        id: markerId, markerWidth: w, markerHeight: h,
-        refX: isStart ? 0 : w, refY: mid,
-        orient: 'auto', markerUnits: 'strokeWidth',
-      });
-      const pts = isStart ? `${w} 0, 0 ${mid}, ${w} ${h}` : `0 0, ${w} ${mid}, 0 ${h}`;
-      if (type === 'arrow') {
-        marker.appendChild(createSvgElement('polygon', { points: pts, fill: color }));
-      } else {
-        marker.appendChild(createSvgElement('polyline', {
-          points: pts, fill: 'none', stroke: color, 'stroke-width': 1.5 * s,
-        }));
-      }
-      defs.appendChild(marker);
-    } else if (type === 'dot') {
-      const d = 6 * s, c = 3 * s, r = 2.5 * s;
-      const marker = createSvgElement('marker', {
-        id: markerId, markerWidth: d, markerHeight: d,
-        refX: c, refY: c, orient: 'auto', markerUnits: 'strokeWidth',
-      });
-      marker.appendChild(createSvgElement('circle', { cx: c, cy: c, r, fill: color }));
-      defs.appendChild(marker);
-    } else if (type === 'diamond') {
-      const d = 8 * s, mid = 4 * s;
-      const marker = createSvgElement('marker', {
-        id: markerId, markerWidth: d, markerHeight: d,
-        refX: mid, refY: mid, orient: 'auto', markerUnits: 'strokeWidth',
-      });
-      marker.appendChild(createSvgElement('polygon', {
-        points: `${mid} 0, ${d} ${mid}, ${mid} ${d}, 0 ${mid}`, fill: color,
+function appendMarker(
+  defs: SVGDefsElement,
+  id: string,
+  type: MarkerType,
+  isStart: boolean,
+  color: string,
+  headSize: number,
+): boolean {
+  const spec = markerSpec(type, isStart, color, headSize);
+  if (!spec) return false;
+  const marker = createSvgElement('marker', {
+    id,
+    markerWidth: spec.width,
+    markerHeight: spec.height,
+    refX: spec.refX,
+    refY: spec.refY,
+    orient: 'auto',
+    markerUnits: 'strokeWidth',
+  });
+  const sh = spec.shape;
+  switch (sh.kind) {
+    case 'polygon':
+      marker.appendChild(createSvgElement('polygon', { points: sh.points, fill: sh.fill }));
+      break;
+    case 'polyline':
+      marker.appendChild(createSvgElement('polyline', {
+        points: sh.points, fill: 'none', stroke: sh.stroke, 'stroke-width': sh.strokeWidth,
       }));
-      defs.appendChild(marker);
-    } else if (type === 'bar') {
-      const w = 2 * s, h = 8 * s, cx = 1 * s;
-      const marker = createSvgElement('marker', {
-        id: markerId, markerWidth: w, markerHeight: h,
-        refX: cx, refY: h / 2, orient: 'auto', markerUnits: 'strokeWidth',
-      });
+      break;
+    case 'circle':
+      marker.appendChild(createSvgElement('circle', { cx: sh.cx, cy: sh.cy, r: sh.r, fill: sh.fill }));
+      break;
+    case 'line':
       marker.appendChild(createSvgElement('line', {
-        x1: cx, y1: 0, x2: cx, y2: h, stroke: color, 'stroke-width': 2 * s,
+        x1: sh.x1, y1: sh.y1, x2: sh.x2, y2: sh.y2, stroke: sh.stroke, 'stroke-width': sh.strokeWidth,
       }));
-      defs.appendChild(marker);
-    }
-  };
-
-  addMarker(startMarker, 'start', true);
-  addMarker(endMarker, 'end', false);
-  return hasMarkers ? defs : null;
+      break;
+  }
+  defs.appendChild(marker);
+  return true;
 }
 
-// -----------------------------------------------------------------------
-//  Build DOM element for each board element type
-// -----------------------------------------------------------------------
+function buildArrowOverlay(
+  arrows: BoardElement[], ox: number, oy: number, w: number, h: number,
+): SVGSVGElement | null {
+  const valid = arrows.filter(el => (el.points?.length ?? 0) >= 2);
+  if (valid.length === 0) return null;
 
-function buildImageElement(el: BoardElement, ox: number, oy: number): HTMLElement {
-  const style = el.style || {};
-  const wrapper = document.createElement('div');
-  wrapper.style.cssText = `
-    position: absolute;
-    left: ${el.x - ox}px; top: ${el.y - oy}px;
-    width: ${el.width}px; height: ${el.height}px;
-    overflow: hidden;
-    border-color: ${style.borderColor || '#d0d0d0'};
-    border-width: ${style.borderWidth ?? 0}px;
-    border-style: ${(style.borderWidth ?? 0) > 0 ? 'solid' : 'none'};
-    border-radius: ${style.borderRadius ?? 0}px;
-    background-color: ${style.background || 'transparent'};
-    opacity: ${style.opacity ?? 1};
-    z-index: ${el.z_index};
-  `;
-  if (el.rotation) {
-    wrapper.style.transform = `rotate(${el.rotation}deg)`;
-  }
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.style.cssText = `position:absolute;left:0;top:0;width:${w}px;height:${h}px;pointer-events:none;z-index:999999;`;
+  const defs = document.createElementNS(SVG_NS, 'defs');
+  svg.appendChild(defs);
 
-  const path = el.source?.path;
-  if (path) {
-    const img = document.createElement('img');
-    img.crossOrigin = 'anonymous';
-    // Prefer the embedded base64 copy when the board carries one —
-    // avoids a redundant /api/image round-trip during every auto-export
-    // (which can otherwise fire multi-MB fetches per linked image each
-    // time the fingerprint changes).
-    const embedded = el.source?.embeddedData;
-    const mime = el.source?.embeddedMime || 'image/png';
-    img.src = embedded
-      ? `data:${mime};base64,${embedded}`
-      : `/api/image?path=${encodeURIComponent(path)}`;
-    img.style.cssText = 'width: 100%; height: 100%; object-fit: fill; display: block;';
-    img.draggable = false;
-    wrapper.appendChild(img);
-  }
-  return wrapper;
-}
+  for (const el of valid) {
+    const style = el.style || {};
+    const meta = el.metadata || {};
+    const pts = el.points!;
+    const lineType = (meta.lineType as LineType) || 'straight';
+    const ctrlRaw: Array<{ x: number; y: number } | undefined> =
+      (meta.controlPoints as Array<{ x: number; y: number }>) || [];
+    const headSize = (meta.arrowHeadSize as number) || 1;
+    const startMarker = (meta.startMarker as MarkerType) || 'none';
+    const endMarker: MarkerType = (meta.endMarker as MarkerType)
+      ?? (meta.arrowHead === false ? 'none' : 'arrow');
+    const finalEndMarker: MarkerType = ('endMarker' in meta) ? (meta.endMarker as MarkerType) : endMarker;
 
-function buildPlotElement(el: BoardElement, ox: number, oy: number): HTMLElement {
-  const style = el.style || {};
-  const meta = el.metadata || {};
-  const wrapper = document.createElement('div');
-  // Background: the live PlotNode renders `style.background || 'transparent'`,
-  // but html2canvas treats `background: transparent` on an inner element as
-  // black when compositing against the offscreen container. Fall back to
-  // white when the element has no explicit background so transparent plots
-  // don't get a black frame in the export (the visible bug was that a plot
-  // with transparent bg rendered with a huge black rectangle around it,
-  // because the image only filled its natural size — see below).
-  const plotBg = (style.background && style.background !== 'transparent')
-    ? style.background
-    : '#ffffff';
-  wrapper.style.cssText = `
-    position: absolute;
-    left: ${el.x - ox}px; top: ${el.y - oy}px;
-    width: ${el.width}px; height: ${el.height}px;
-    overflow: hidden;
-    border-color: ${style.borderColor || '#d0d0d0'};
-    border-width: ${style.borderWidth ?? 0}px;
-    border-style: ${(style.borderWidth ?? 0) > 0 ? 'solid' : 'none'};
-    border-radius: ${style.borderRadius ?? 0}px;
-    background-color: ${plotBg};
-    opacity: ${style.opacity ?? 1};
-    z-index: ${el.z_index};
-  `;
-  if (el.rotation) {
-    wrapper.style.transform = `rotate(${el.rotation}deg)`;
-  }
+    const hasCurve = ['quadratic', 'cubic', 'arc', 'smooth'].includes(lineType);
+    const ctrlDefaults = hasCurve ? defaultControlPoints(pts[0], pts[1], lineType) : [];
+    const effectiveCtrl = hasCurve
+      ? ctrlDefaults.map((d, i) => ctrlRaw[i] ?? d)
+      : (ctrlRaw.filter(Boolean) as Array<{ x: number; y: number }>);
 
-  const lastOutput = meta.lastOutput as string | undefined;
-  if (lastOutput) {
-    // The live PlotNode uses `object-fit: fill` — the cached image is
-    // stretched to exactly match the element's width/height box. The
-    // export must match: `max-width:100%; max-height:100%` was a
-    // simulated object-contain that only CAPPED the image, so a cached
-    // image smaller than the element rendered at its natural size and
-    // left a visible margin around it (which then showed the plot
-    // wrapper's background — black for transparent, white otherwise —
-    // making identically-sized panels look completely different).
-    const img = document.createElement('img');
-    img.src = `data:image/png;base64,${lastOutput}`;
-    img.style.cssText = 'width: 100%; height: 100%; object-fit: fill; display: block;';
-    img.draggable = false;
-    wrapper.appendChild(img);
-  }
-  return wrapper;
-}
+    // Translate to absolute capture-region coordinates so the overlay can
+    // span the full container and arrowheads aren't clipped.
+    const absP0 = { x: el.x - ox + pts[0].x, y: el.y - oy + pts[0].y };
+    const absP1 = { x: el.x - ox + pts[1].x, y: el.y - oy + pts[1].y };
+    const absCtrl = effectiveCtrl.map(c => ({ x: el.x - ox + c.x, y: el.y - oy + c.y }));
+    const pathD = buildPath(absP0, absP1, lineType, absCtrl, { stepRadius: (meta.stepRadius as number) || 20 });
 
-function buildRectangleElement(el: BoardElement, ox: number, oy: number): HTMLElement {
-  const style = el.style || {};
-  const meta = el.metadata || {};
-  const shape = (meta.shape as string) || 'rect';
-  const isGroup = el.type === 'group';
+    const strokeColor = style.strokeColor || '#333333';
+    const strokeWidth = style.strokeWidth ?? 2;
+    const dashArray = style.strokeStyle === 'dashed' ? '8,4'
+      : style.strokeStyle === 'dotted' ? '2,4' : '';
 
-  const wrapper = document.createElement('div');
-  wrapper.style.cssText = `
-    position: absolute;
-    left: ${el.x - ox}px; top: ${el.y - oy}px;
-    width: ${el.width}px; height: ${el.height}px;
-    z-index: ${el.z_index};
-  `;
-  if (el.rotation && !isGroup) {
-    wrapper.style.transform = `rotate(${el.rotation}deg)`;
-  }
+    const startId = `export-${el.id}-start`;
+    const endId = `export-${el.id}-end`;
+    const hasStart = startMarker !== 'none' && appendMarker(defs, startId, startMarker, true, strokeColor, headSize);
+    const hasEnd = finalEndMarker !== 'none' && appendMarker(defs, endId, finalEndMarker, false, strokeColor, headSize);
 
-  if (isGroup) {
-    // Groups are invisible in export (no dashed border)
-    return wrapper;
-  }
-
-  if (shape && shape !== 'rect') {
-    const svg = document.createElementNS(SVG_NS, 'svg');
-    svg.setAttribute('viewBox', '0 0 100 100');
-    svg.setAttribute('preserveAspectRatio', 'none');
-    svg.style.cssText = 'position: absolute; inset: 0; width: 100%; height: 100%;';
-
-    const sw = (meta.shaftWidth as number) ?? 0.5;
-    const hl = (meta.headLength as number) ?? 0.4;
-    const polyPoints = getExportShapePoints(shape, sw, hl);
-    const polygon = createSvgElement('polygon', {
-      points: polyPoints,
-      fill: style.fill || 'transparent',
-      stroke: style.strokeColor || '#333333',
-      'stroke-width': (style.strokeWidth ?? 2) * 2,
-      'vector-effect': 'non-scaling-stroke',
+    const g = document.createElementNS(SVG_NS, 'g');
+    g.style.opacity = String(style.opacity ?? 1);
+    const path = createSvgElement('path', {
+      d: pathD, fill: 'none', stroke: strokeColor, 'stroke-width': strokeWidth,
     });
-    if (style.strokeStyle === 'dashed') {
-      polygon.setAttribute('stroke-dasharray', '8,4');
-    } else if (style.strokeStyle === 'dotted') {
-      polygon.setAttribute('stroke-dasharray', '2,4');
-    }
-    polygon.style.opacity = String(style.opacity ?? 1);
-    svg.appendChild(polygon);
-    wrapper.appendChild(svg);
-  } else {
-    // Regular rectangle — CSS div, matches RectangleNode.tsx
-    const div = document.createElement('div');
-    div.style.cssText = `
-      width: 100%; height: 100%;
-      background-color: ${style.fill || 'transparent'};
-      border-color: ${style.strokeColor || '#333333'};
-      border-width: ${style.strokeWidth ?? 2}px;
-      border-style: ${style.strokeStyle || 'solid'};
-      border-radius: ${style.borderRadius ?? 0}px;
-      opacity: ${style.opacity ?? 1};
-      box-sizing: border-box;
-    `;
-    wrapper.appendChild(div);
+    if (dashArray) path.setAttribute('stroke-dasharray', dashArray);
+    if (hasStart) path.setAttribute('marker-start', `url(#${startId})`);
+    if (hasEnd) path.setAttribute('marker-end', `url(#${endId})`);
+    g.appendChild(path);
+    svg.appendChild(g);
   }
-  return wrapper;
+
+  return svg;
 }
 
-/**
- * Build a single SVG overlay containing ALL arrow elements.
- * Uses absolute coordinates so that arrows are not clipped by small bounding
- * boxes (html2canvas ignores overflow:visible on SVG elements).
- */
 function buildPenOverlay(
   strokes: BoardElement[], ox: number, oy: number, w: number, h: number,
 ): SVGSVGElement | null {
@@ -347,20 +173,15 @@ function buildPenOverlay(
   if (valid.length === 0) return null;
 
   const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.style.cssText = `
-    position: absolute;
-    left: 0; top: 0;
-    width: ${w}px; height: ${h}px;
-    pointer-events: none;
-    z-index: 999998;
-  `;
+  svg.style.cssText = `position:absolute;left:0;top:0;width:${w}px;height:${h}px;pointer-events:none;z-index:999998;`;
 
   for (const el of valid) {
     const style = el.style || {};
     const pts = el.points!;
     const strokeColor = style.strokeColor || '#333333';
     const strokeWidth = style.strokeWidth ?? 2;
-    const dashArray = style.strokeStyle === 'dashed' ? '8,4' : style.strokeStyle === 'dotted' ? '2,4' : '';
+    const dashArray = style.strokeStyle === 'dashed' ? '8,4'
+      : style.strokeStyle === 'dotted' ? '2,4' : '';
 
     let d = `M ${el.x - ox + pts[0].x},${el.y - oy + pts[0].y}`;
     for (let i = 1; i < pts.length; i++) {
@@ -374,14 +195,9 @@ function buildPenOverlay(
       const cy = el.y - oy + el.height / 2;
       g.setAttribute('transform', `rotate(${el.rotation} ${cx} ${cy})`);
     }
-
     const path = createSvgElement('path', {
-      d,
-      fill: 'none',
-      stroke: strokeColor,
-      'stroke-width': strokeWidth,
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
+      d, fill: 'none', stroke: strokeColor, 'stroke-width': strokeWidth,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
     });
     if (dashArray) path.setAttribute('stroke-dasharray', dashArray);
     g.appendChild(path);
@@ -391,194 +207,53 @@ function buildPenOverlay(
   return svg;
 }
 
-function buildArrowOverlay(
-  arrows: BoardElement[], ox: number, oy: number, w: number, h: number,
-): SVGSVGElement | null {
-  const valid = arrows.filter(el => (el.points?.length ?? 0) >= 2);
-  if (valid.length === 0) return null;
+// -----------------------------------------------------------------------
+//  Live React component mount — text/image/plot/rectangle/group
+// -----------------------------------------------------------------------
 
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.style.cssText = `
-    position: absolute;
-    left: 0; top: 0;
-    width: ${w}px; height: ${h}px;
-    pointer-events: none;
-    z-index: 999999;
-  `;
+const COMPONENT_FOR_TYPE: Record<string, React.ComponentType<any>> = {
+  text: TextNode,
+  image: ImageNode,
+  plot: PlotNode,
+  rectangle: RectangleNode,
+  group: RectangleNode,
+};
 
-  const defs = document.createElementNS(SVG_NS, 'defs');
-  svg.appendChild(defs);
+function ElementWrapper({ el, ox, oy }: { el: BoardElement; ox: number; oy: number }) {
+  const Comp = COMPONENT_FOR_TYPE[el.type];
+  if (!Comp) return null;
 
-  for (const el of valid) {
-    const style = el.style || {};
-    const meta = el.metadata || {};
-    const pts = el.points!;
-
-    const lineType = (meta.lineType as string) || 'straight';
-    const ctrlRaw: Array<Pt | undefined> = (meta.controlPoints as Array<Pt | undefined>) || [];
-    const headSize = (meta.arrowHeadSize as number) || 1;
-    const startMarker = (meta.startMarker as string) || 'none';
-    let endMarker = (meta.endMarker as string) ?? (meta.arrowHead !== false ? 'arrow' : 'none');
-    if ('endMarker' in meta) endMarker = meta.endMarker as string;
-
-    const hasCurve = ['quadratic', 'cubic', 'arc', 'smooth'].includes(lineType);
-    // Heal holes from a prior buggy save (idx=1 written before idx=0) by
-    // filling missing slots with the auto-defaults — otherwise the .map
-    // below would crash on the undefined entry.
-    const ctrlDefaults = hasCurve ? defaultControlPoints(pts[0], pts[1], lineType) : [];
-    const effectiveCtrl: Pt[] = hasCurve
-      ? ctrlDefaults.map((d, i) => ctrlRaw[i] ?? d)
-      : (ctrlRaw.filter(Boolean) as Pt[]);
-
-    // Convert to absolute coordinates relative to container
-    const absP0 = { x: el.x - ox + pts[0].x, y: el.y - oy + pts[0].y };
-    const absP1 = { x: el.x - ox + pts[1].x, y: el.y - oy + pts[1].y };
-    const absCtrl = effectiveCtrl.map(c => ({ x: el.x - ox + c.x, y: el.y - oy + c.y }));
-
-    const pathD = buildPath(absP0, absP1, lineType, absCtrl, (meta.stepRadius as number) || 20);
-
-    const strokeColor = style.strokeColor || '#333333';
-    const strokeWidth = style.strokeWidth ?? 2;
-    const dashArray = style.strokeStyle === 'dashed' ? '8,4' : style.strokeStyle === 'dotted' ? '2,4' : '';
-
-    // Marker defs for this arrow
-    const markerId = `export-${el.id}`;
-    const markerDefs = buildMarkerDefs(markerId, startMarker, endMarker, strokeColor, headSize);
-    if (markerDefs) {
-      while (markerDefs.firstChild) defs.appendChild(markerDefs.firstChild);
-    }
-
-    // Path
-    const g = document.createElementNS(SVG_NS, 'g');
-    g.style.opacity = String(style.opacity ?? 1);
-
-    const path = createSvgElement('path', {
-      d: pathD,
-      fill: 'none',
-      stroke: strokeColor,
-      'stroke-width': strokeWidth,
-    });
-    if (dashArray) path.setAttribute('stroke-dasharray', dashArray);
-    if (startMarker !== 'none') path.setAttribute('marker-start', `url(#${markerId}-start)`);
-    if (endMarker !== 'none') path.setAttribute('marker-end', `url(#${markerId}-end)`);
-    g.appendChild(path);
-    svg.appendChild(g);
-  }
-
-  return svg;
-}
-
-function buildTextElement(el: BoardElement, ox: number, oy: number, katexModule?: any): HTMLElement {
-  const style = el.style || {};
-  const text = el.text || '';
-  const fontFamily = style.fontFamily || 'Inter, sans-serif';
-  const padding = style.padding ?? 4;
-
-  // On the live canvas TextNode renders:
-  //   outer div: w-full h-full, background, padding, border: 1px solid transparent
-  //   inner div: w-full h-full, text styles
-  // The 1px transparent border exists only to prevent layout shift on selection
-  // and must NOT be in the export — it causes html2canvas to offset text by ~1px.
-  // Instead we account for the border space by adding 1px to the padding.
-  const wrapper = document.createElement('div');
-  wrapper.setAttribute('data-text-element', 'true');
-  wrapper.style.cssText = `
-    position: absolute;
-    left: ${el.x - ox}px; top: ${el.y - oy}px;
-    width: ${el.width}px; height: ${el.height}px;
-    z-index: ${el.z_index};
-    box-sizing: border-box;
-    background-color: ${(style.background && style.background !== 'transparent') ? style.background : 'transparent'};
-    padding: ${padding + 1}px;
-    opacity: ${style.opacity ?? 1};
-  `;
-  if (el.rotation) {
-    wrapper.style.transform = `rotate(${el.rotation}deg)`;
-  }
-
-  const textDiv = document.createElement('div');
-  textDiv.style.cssText = `
-    width: 100%; height: 100%;
-    box-sizing: border-box;
-    font-size: ${style.fontSize ?? 14}px;
-    font-weight: ${style.fontWeight ?? 400};
-    font-family: ${fontFamily};
-    color: ${style.color || '#111111'};
-    text-align: ${style.textAlign || 'left'};
-    line-height: ${style.lineHeight ?? 1.4};
-    font-style: ${style.italic ? 'italic' : 'normal'};
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow: visible;
-  `;
-
-  // Render KaTeX math if text contains $ delimiters
-  const hasMath = /\$/.test(text);
-  if (hasMath && katexModule) {
-    try {
-      const html = renderMathHtml(text, katexModule);
-      textDiv.innerHTML = html;
-    } catch {
-      textDiv.textContent = text;
-    }
-  } else {
-    textDiv.textContent = text;
-  }
-
-  wrapper.appendChild(textDiv);
-  return wrapper;
-}
-
-function renderMathHtml(text: string, katex: any): string {
-  let html = '';
-  const regex = /(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g;
-  let lastIndex = 0;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      html += escapeHtml(text.slice(lastIndex, match.index));
-    }
-    const mathStr = match[0];
-    const isDisplay = mathStr.startsWith('$$');
-    const tex = isDisplay ? mathStr.slice(2, -2) : mathStr.slice(1, -1);
-    html += katex.renderToString(tex, {
-      displayMode: isDisplay, throwOnError: false, output: 'html',
-    });
-    lastIndex = match.index + mathStr.length;
-  }
-  if (lastIndex < text.length) {
-    html += escapeHtml(text.slice(lastIndex));
-  }
-  return html;
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/** Compute polygon points for export shapes (same logic as RectangleNode) */
-function getExportShapePoints(shape: string, sw: number, hl: number): string {
-  const s = Math.max(0.05, Math.min(0.95, sw));
-  const h = Math.max(0.05, Math.min(0.95, hl));
-  const top = 50 - s * 50, bot = 50 + s * 50, neck = 100 - h * 100;
-  switch (shape) {
-    case 'arrow-right': return `0,${top} ${neck},${top} ${neck},0 100,50 ${neck},100 ${neck},${bot} 0,${bot}`;
-    case 'arrow-left': return `0,50 ${h*100},0 ${h*100},${top} 100,${top} 100,${bot} ${h*100},${bot} ${h*100},100`;
-    case 'arrow-up': return `50,0 100,${h*100} ${bot},${h*100} ${bot},100 ${top},100 ${top},${h*100} 0,${h*100}`;
-    case 'arrow-down': return `${top},0 ${bot},0 ${bot},${neck} 100,${neck} 50,100 0,${neck} ${top},${neck}`;
-    case 'arrow-double': return `0,50 ${h*50},0 ${h*50},${top} ${100-h*50},${top} ${100-h*50},0 100,50 ${100-h*50},100 ${100-h*50},${bot} ${h*50},${bot} ${h*50},100`;
-    case 'chevron': { const indent = h*100; return `0,0 ${100-indent},0 100,50 ${100-indent},100 0,100 ${indent},50`; }
-    case 'diamond': return '50,0 100,50 50,100 0,50';
-    case 'triangle': return '50,0 100,100 0,100';
-    default: return '50,0 100,100 0,100';
-  }
+  return createElement(
+    'div',
+    {
+      'data-export-element-id': el.id,
+      'data-export-element-type': el.type,
+      'data-export-text': el.type === 'text' ? 'true' : undefined,
+      style: {
+        position: 'absolute',
+        left: `${el.x - ox}px`,
+        top: `${el.y - oy}px`,
+        width: `${el.width}px`,
+        height: `${el.height}px`,
+        zIndex: el.z_index,
+      },
+    },
+    createElement(Comp, {
+      id: el.id,
+      data: { elementId: el.id },
+      type: el.type,
+      selected: false,
+      // Minimum NodeProps — supplied so React Flow types are happy at compile.
+      // None of these are read by our components, but TypeScript wants them.
+      xPos: 0, yPos: 0, dragging: false, isConnectable: false, zIndex: el.z_index,
+    } as any),
+  );
 }
 
 // -----------------------------------------------------------------------
-//  foreignObject text rendering helpers
+//  Pre-rasterize text via SVG foreignObject
 // -----------------------------------------------------------------------
 
-/** Recursively inline all computed styles from original onto clone. */
 function inlineAllStyles(original: Element, clone: Element) {
   if (original instanceof HTMLElement && clone instanceof HTMLElement) {
     const computed = getComputedStyle(original);
@@ -595,7 +270,6 @@ function inlineAllStyles(original: Element, clone: Element) {
   }
 }
 
-/** Collect used font families from a set of DOM nodes. */
 function getUsedFontFamilies(nodes: HTMLElement[]): Set<string> {
   const families = new Set<string>();
   function walk(el: Element) {
@@ -609,7 +283,6 @@ function getUsedFontFamilies(nodes: HTMLElement[]): Set<string> {
   return families;
 }
 
-/** Embed only the @font-face rules whose families are in `usedFamilies`. */
 async function embedUsedFonts(usedFamilies: Set<string>): Promise<string> {
   const rules: string[] = [];
   for (const sheet of Array.from(document.styleSheets)) {
@@ -626,7 +299,7 @@ async function embedUsedFonts(usedFamilies: Set<string>): Promise<string> {
         const replacements: [string, string][] = [];
         while ((match = urlRegex.exec(cssText)) !== null) {
           const url = match[1];
-          if (url.startsWith('data:')) continue; // already embedded
+          if (url.startsWith('data:')) continue;
           try {
             const resp = await fetch(url);
             if (!resp.ok) continue;
@@ -647,6 +320,89 @@ async function embedUsedFonts(usedFamilies: Set<string>): Promise<string> {
     } catch { /* cross-origin */ }
   }
   return rules.join('\n');
+}
+
+async function rasterizeTextElement(
+  wrapper: HTMLElement, fontCSS: string, scale: number,
+): Promise<void> {
+  const w = wrapper.offsetWidth;
+  const h = wrapper.offsetHeight;
+  if (w === 0 || h === 0) return;
+
+  // Clone the rendered DOM and inline all computed styles so the clone is
+  // visually identical without depending on external CSS.
+  const clone = wrapper.cloneNode(true) as HTMLElement;
+  inlineAllStyles(wrapper, clone);
+  // Strip positioning that came from the wrapper — inside the foreignObject
+  // we want the content laid out from (0,0).
+  clone.style.position = 'static';
+  clone.style.left = '0';
+  clone.style.top = '0';
+  clone.style.transform = 'none';
+  clone.style.margin = '0';
+  clone.removeAttribute('data-export-text');
+
+  // Pad the SVG so KaTeX subscripts/superscripts that overflow element
+  // bounds are not clipped.
+  const pad = 20;
+  const svgW = w + pad * 2;
+  const svgH = h + pad * 2;
+
+  const xhtmlWrapper = document.createElement('div');
+  xhtmlWrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+  xhtmlWrapper.style.cssText = `width:${w}px;height:${h}px;overflow:visible;margin:${pad}px;`;
+  xhtmlWrapper.appendChild(clone);
+
+  const xhtml = new XMLSerializer().serializeToString(xhtmlWrapper);
+  const svgStr = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}">`,
+    `<defs><style type="text/css">${fontCSS.replace(/</g, '&lt;')}</style></defs>`,
+    `<foreignObject x="0" y="0" width="${svgW}" height="${svgH}">`,
+    xhtml,
+    `</foreignObject></svg>`,
+  ].join('');
+  const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+
+  const svgImg = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = (e) => reject(new Error(`SVG load failed: ${e}`));
+    img.src = dataUri;
+  });
+
+  const textCanvas = document.createElement('canvas');
+  textCanvas.width = Math.ceil(svgW * scale);
+  textCanvas.height = Math.ceil(svgH * scale);
+  const tctx = textCanvas.getContext('2d')!;
+  tctx.scale(scale, scale);
+  tctx.drawImage(svgImg, 0, 0, svgW, svgH);
+
+  const imgDataUrl = textCanvas.toDataURL('image/png');
+
+  // Position the rasterized image so its content aligns with the wrapper's
+  // bounds (the wrapper is the layout box; the image is wrapper + pad on
+  // each side so the offset is -pad).
+  const origLeft = parseFloat(wrapper.style.left) || 0;
+  const origTop = parseFloat(wrapper.style.top) || 0;
+  const replacement = document.createElement('img');
+  replacement.src = imgDataUrl;
+  replacement.style.position = wrapper.style.position;
+  replacement.style.left = `${origLeft - pad}px`;
+  replacement.style.top = `${origTop - pad}px`;
+  replacement.style.width = `${svgW}px`;
+  replacement.style.height = `${svgH}px`;
+  replacement.style.zIndex = wrapper.style.zIndex;
+  if (wrapper.style.transform && wrapper.style.transform !== 'none') {
+    replacement.style.transform = wrapper.style.transform;
+  }
+  wrapper.replaceWith(replacement);
+
+  if (!replacement.complete) {
+    await new Promise<void>(resolve => {
+      replacement.onload = () => resolve();
+      replacement.onerror = () => resolve();
+    });
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -684,11 +440,15 @@ export async function captureOffscreen(
     captureH = contentH;
   }
 
-  // Offset for positioning elements: in 'canvas' mode, origin is (0,0)
+  // Offset for positioning elements: in 'canvas' mode origin is (0,0)
   const ox = opts.mode === 'canvas' ? 0 : minX;
   const oy = opts.mode === 'canvas' ? 0 : minY;
 
-  // Create hidden container
+  // Hidden offscreen container. Two layers: an outer wrapper that holds
+  // the stylesheet copies and the arrow/pen SVG overlays, and an inner
+  // mount point that is owned by the React root. createRoot wipes the
+  // children of its container on first render, so React must NOT manage
+  // the same node we append style/overlay nodes to.
   const container = document.createElement('div');
   container.style.cssText = `
     position: fixed;
@@ -701,16 +461,22 @@ export async function captureOffscreen(
   `;
   document.body.appendChild(container);
 
-  try {
-    // Import KaTeX for math rendering in text elements
-    let katexModule: any = null;
-    try {
-      katexModule = (await import('katex')).default;
-    } catch { /* KaTeX not available — math will render as raw text */ }
+  const reactMount = document.createElement('div');
+  reactMount.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;';
+  container.appendChild(reactMount);
 
-    // Inject ALL page stylesheets into the off-screen container so
-    // html2canvas renders text with the same CSS as the live page
-    // (Tailwind preflight, KaTeX fonts, font-face rules, etc.)
+  // Mount the live components into a fresh React root, scoped to the
+  // board snapshot. ReactFlowProvider is wrapped in so the Resizer's
+  // useReactFlow() call doesn't crash even though Resizer never renders
+  // (selected=false in export mode).
+  const root = createRoot(reactMount);
+
+  try {
+    // Inject ALL page stylesheets so the offscreen render uses the same CSS
+    // as the live page (Tailwind, KaTeX, fonts, the .katex-override rule
+    // that keeps math sized to its surrounding text, etc.). These go on the
+    // outer container — putting them on `reactMount` would risk React
+    // wiping them on first render.
     for (const sheet of Array.from(document.styleSheets)) {
       try {
         if (!sheet.cssRules) continue;
@@ -722,44 +488,44 @@ export async function captureOffscreen(
       }
     }
 
-    // Build DOM elements for each board element
-    for (const el of sorted) {
-      let domEl: HTMLElement | null = null;
+    // Mount live components for image / plot / text / rectangle / group.
+    // Arrows and pen strokes are handled separately as a unified SVG
+    // overlay (html2canvas clips overflow:visible on per-node SVGs).
+    const mountable = sorted.filter(e =>
+      e.type === 'image' || e.type === 'plot' || e.type === 'text'
+      || e.type === 'rectangle' || e.type === 'group'
+    );
 
-      switch (el.type) {
-        case 'image':
-          domEl = buildImageElement(el, ox, oy);
-          break;
-        case 'plot':
-          domEl = buildPlotElement(el, ox, oy);
-          break;
-        case 'rectangle':
-        case 'group':
-          domEl = buildRectangleElement(el, ox, oy);
-          break;
-        case 'text':
-          domEl = buildTextElement(el, ox, oy, katexModule);
-          break;
-        // arrows and pen strokes handled below as SVG overlays
-      }
+    const wrapperNodes: ReactNode[] = mountable.map(el =>
+      createElement(ElementWrapper, { key: el.id, el, ox, oy })
+    );
+    const tree: ReactNode = createElement(
+      ReactFlowProvider,
+      { children: createElement(
+        BoardSnapshotProvider,
+        { board, children: wrapperNodes },
+      ) } as any,
+    );
+    root.render(tree);
 
-      if (domEl) container.appendChild(domEl);
-    }
+    // Wait for React to commit + browser to paint + layout to settle.
+    // Two animation frames + a microtask is the canonical "post-mount" wait.
+    await new Promise<void>(r => requestAnimationFrame(() => r()));
+    await new Promise<void>(r => requestAnimationFrame(() => r()));
 
-    // Build arrow overlay: one SVG covering the full container so arrows
-    // (and their markers) are never clipped by small bounding boxes.
+    // Now append the arrow + pen SVG overlays (after React has mounted, so
+    // they sit at the end and html2canvas captures them on top).
     const arrows = sorted.filter(e => e.type === 'arrow');
     const arrowSvg = buildArrowOverlay(arrows, ox, oy, captureW, captureH);
     if (arrowSvg) container.appendChild(arrowSvg);
 
-    // Build pen stroke overlay
     const penStrokes = sorted.filter(e => e.type === 'pen');
     const penSvg = buildPenOverlay(penStrokes, ox, oy, captureW, captureH);
     if (penSvg) container.appendChild(penSvg);
 
-    // Wait for fonts + images before capturing
+    // Wait for fonts and any <img> elements (image nodes, plot output, the
+    // image inside ImageNode's loading branch, etc.) to finish loading.
     await document.fonts.ready;
-
     const images = container.querySelectorAll('img');
     if (images.length > 0) {
       await Promise.all(Array.from(images).map(img =>
@@ -771,109 +537,29 @@ export async function captureOffscreen(
             })
       ));
     }
+    // ImageNode flips its `loading` state on <img> onLoad, which schedules a
+    // React re-render. Wait one more frame so any post-load re-renders
+    // commit BEFORE we start manually rewriting the DOM in the foreignObject
+    // step — otherwise React might reconcile our hand-built <img>
+    // replacements away.
+    await new Promise<void>(r => requestAnimationFrame(() => r()));
 
-    // Pre-rasterize text elements via manual SVG foreignObject.
-    // The browser's own renderer draws the foreignObject content — giving
-    // pixel-perfect text, KaTeX math subscripts, and line breaks.
-    // We inline all computed styles and embed fonts as base64 so the SVG
-    // is fully self-contained when loaded as a data URI.
-
-    // Step 1: Embed only fonts used by text elements (not ALL page fonts)
-    const allTextNodes = Array.from(container.querySelectorAll<HTMLElement>('[data-text-element]'));
-    const usedFamilies = getUsedFontFamilies(allTextNodes);
+    // Pre-rasterize text via foreignObject. The DOM consumed here is what
+    // the live TextNode rendered, which is exactly what we want.
+    const textWrappers = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-export-text="true"]')
+    );
+    const usedFamilies = getUsedFontFamilies(textWrappers);
     const fontCSS = await embedUsedFonts(usedFamilies);
-
-    // Step 2: For each text element, render via foreignObject → data URI → img
-    // Rasterize each text element via SVG foreignObject → data URI → Image.
-    // The browser's own renderer draws the foreignObject content, giving
-    // pixel-perfect text with KaTeX math and proper line breaks.
-    const textNodes = Array.from(container.querySelectorAll<HTMLElement>('[data-text-element]'));
-    for (const textNode of textNodes) {
-      const w = textNode.offsetWidth;
-      const h = textNode.offsetHeight;
-      if (w === 0 || h === 0) continue;
-
+    for (const wrapper of textWrappers) {
       try {
-        // Clone and inline all computed styles
-        const clone = textNode.cloneNode(true) as HTMLElement;
-        inlineAllStyles(textNode, clone);
-        clone.style.position = 'static';
-        clone.style.left = '0';
-        clone.style.top = '0';
-        clone.style.transform = 'none';
-        clone.style.margin = '0';
-        clone.removeAttribute('data-text-element');
-
-        // Add padding around the SVG so KaTeX subscripts/superscripts
-        // that overflow the element bounds don't get clipped
-        const pad = 20;
-        const svgW = w + pad * 2;
-        const svgH = h + pad * 2;
-
-        const wrapper = document.createElement('div');
-        wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
-        wrapper.style.cssText = `width:${w}px;height:${h}px;overflow:visible;margin:${pad}px;`;
-        wrapper.appendChild(clone);
-
-        const xhtml = new XMLSerializer().serializeToString(wrapper);
-
-        const svgStr = [
-          `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}">`,
-          `<defs><style type="text/css">${fontCSS.replace(/</g, '&lt;')}</style></defs>`,
-          `<foreignObject x="0" y="0" width="${svgW}" height="${svgH}">`,
-          xhtml,
-          `</foreignObject></svg>`,
-        ].join('');
-
-        // Use data URI (not blob URL) to avoid canvas taint from foreignObject
-        const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
-
-        const svgImg = await new Promise<HTMLImageElement>((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = (e) => reject(new Error(`SVG load failed: ${e}`));
-          img.src = dataUri;
-        });
-
-        // Rasterize at requested scale (full padded SVG)
-        const textCanvas = document.createElement('canvas');
-        textCanvas.width = Math.ceil(svgW * opts.scale);
-        textCanvas.height = Math.ceil(svgH * opts.scale);
-        const tctx = textCanvas.getContext('2d')!;
-        tctx.scale(opts.scale, opts.scale);
-        tctx.drawImage(svgImg, 0, 0, svgW, svgH);
-
-        const imgDataUrl = textCanvas.toDataURL('image/png');
-
-        // Position the padded image so the content aligns with original bounds
-        const origLeft = parseFloat(textNode.style.left) || 0;
-        const origTop = parseFloat(textNode.style.top) || 0;
-        const img = document.createElement('img');
-        img.src = imgDataUrl;
-        img.style.position = textNode.style.position;
-        img.style.left = `${origLeft - pad}px`;
-        img.style.top = `${origTop - pad}px`;
-        img.style.width = `${svgW}px`;
-        img.style.height = `${svgH}px`;
-        img.style.zIndex = textNode.style.zIndex;
-        if (textNode.style.transform && textNode.style.transform !== 'none') {
-          img.style.transform = textNode.style.transform;
-        }
-        textNode.replaceWith(img);
-
-        if (!img.complete) {
-          await new Promise<void>(resolve => {
-            img.onload = () => resolve();
-            img.onerror = () => resolve();
-          });
-        }
+        await rasterizeTextElement(wrapper, fontCSS, opts.scale);
       } catch (e) {
-        // On failure, leave text node for html2canvas fallback
-        console.warn('[export] foreignObject text failed:', e);
+        console.warn('[export] text foreignObject rasterization failed:', e);
       }
     }
 
-    // Final capture: html2canvas for images/shapes/arrows + pre-rasterized text
+    // Final composite via html2canvas
     const { default: html2canvas } = await import('html2canvas');
     const canvas = await html2canvas(container, {
       scale: opts.scale,
@@ -887,6 +573,7 @@ export async function captureOffscreen(
 
     return canvas;
   } finally {
+    try { root.unmount(); } catch { /* already unmounted */ }
     document.body.removeChild(container);
   }
 }

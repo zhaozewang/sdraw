@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { useBoardElement, useIsExporting } from '@/store/exportContext';
 import { Resizer } from './Resizer';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
@@ -59,14 +60,16 @@ function renderMathText(text: string, color: string, fontSize: number): React.Re
 
 function TextNodeComponent({ id, data, selected }: NodeProps) {
   const elementId = (data as TextNodeData).elementId;
-  const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
+  const element = useBoardElement(elementId);
+  const isExporting = useIsExporting();
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const [editing, setEditing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasAutoEdited = useRef(false);
   const selectAllOnEdit = useRef(false);
-  const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStoreLive = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStore = isExporting ? false : isSelectedInStoreLive;
 
   // Auto-enter edit mode for newly created text boxes
   useEffect(() => {
@@ -196,7 +199,13 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
         style={{
           backgroundColor: style!.background || 'transparent',
           opacity: style!.opacity ?? 1,
-          border: (selected || isSelectedInStore)
+          // The 1px transparent border reserves space so selecting a text
+          // node doesn't shift its layout. In export mode there's no
+          // selection ever — render with no border to avoid the 1px
+          // sub-pixel offset html2canvas gives an invisible border.
+          border: isExporting
+            ? 'none'
+            : (selected || isSelectedInStore)
             ? '1px dashed #3b82f6'
             : '1px solid transparent',
           overflow: 'hidden',
@@ -223,7 +232,14 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
               onKeyDown={handleKeyDown}
               onInput={autosizeTextarea}
               rows={1}
-              className="w-full outline-none resize-none border-none bg-transparent p-0 m-0 block"
+              // `nodrag` tells React Flow to skip its node-drag handler on
+              // pointerdowns inside this element, so a click-and-drag here
+              // selects text natively (the textarea's own selection range)
+              // instead of moving the surrounding text node. The global
+              // keyboard shortcut hook already early-returns when target is
+              // a TEXTAREA, so Cmd/Ctrl+A falls through to the browser's
+              // native "select all text in textarea" default.
+              className="w-full outline-none resize-none border-none bg-transparent p-0 m-0 block nodrag"
               style={{
                 ...textStyles,
                 cursor: 'text',

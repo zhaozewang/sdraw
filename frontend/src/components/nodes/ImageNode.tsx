@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useMemo } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { useBoardElement, useIsExporting } from '@/store/exportContext';
 import { api } from '@/api/client';
 import { RefreshCw, AlertTriangle, Lock } from 'lucide-react';
 import { Resizer } from './Resizer';
@@ -13,7 +14,8 @@ interface ImageNodeData {
 
 function ImageNodeComponent({ id, data, selected }: NodeProps) {
   const elementId = (data as ImageNodeData).elementId;
-  const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
+  const element = useBoardElement(elementId);
+  const isExporting = useIsExporting();
   const sourcePath = element?.source?.path || '';
 
   // Separate selector that only depends on the path string, not the element reference
@@ -67,7 +69,10 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
   // nothing to wait for — the bytes are already in memory. Suppressing
   // the loading state here is what prevents the `bg-white/50` spinner
   // overlay from ghosting every image on the canvas after open.
-  const usingEmbedded = !!source?.embeddedData && imageVersion === 0;
+  // In export, always prefer the embedded copy if present — fetching
+  // /api/image during export forces an extra round trip that can blow
+  // the SSH-tunnel budget on every auto-export.
+  const usingEmbedded = !!source?.embeddedData && (isExporting || imageVersion === 0);
 
   return (
     <div style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
@@ -169,13 +174,14 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
           </div>
         )}
 
-        {loading && !usingEmbedded && imgUrl && !imgError && (
+        {loading && !usingEmbedded && imgUrl && !imgError && !isExporting && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/50">
             <RefreshCw size={16} className="animate-spin text-gray-400" />
           </div>
         )}
 
-        {/* Status indicators — scale-invariant */}
+        {/* Status indicators — scale-invariant. Hidden in export. */}
+        {!isExporting && (
         <div className="absolute flex items-center" style={{ top: 4 * invZoom, right: 4 * invZoom, gap: 3 * invZoom }}>
           {/* Link status dot */}
           {source?.linkStatus === 'unlinked' && (
@@ -203,9 +209,10 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
             <RefreshCw size={10 * invZoom} className="text-gray-500" />
           </button>
         </div>
+        )}
 
         {/* File path indicator on hover — zoom invariant */}
-        {selected && source?.path && (
+        {selected && !isExporting && source?.path && (
           <div className="absolute left-0 right-0 bg-black/60 text-white truncate"
             style={{ bottom: 0, fontSize: 10 * invZoom, padding: `${2 * invZoom}px ${4 * invZoom}px`, transformOrigin: 'bottom left' }}>
             {source.path.split('/').pop()}
