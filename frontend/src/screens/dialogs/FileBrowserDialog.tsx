@@ -99,7 +99,7 @@ export function FileBrowserDialog({
   const dirs = entries.filter(e => e.is_dir);
   const jsonFiles = compact
     ? entries.filter(e => !e.is_dir)  // show all files in compact mode
-    : entries.filter(e => !e.is_dir && e.name.endsWith('.sdraw'));
+    : entries.filter(e => !e.is_dir && /\.(sdraw|json|html|htm)$/i.test(e.name));
 
   return (
     <div className={compact ? 'space-y-1' : 'space-y-2'}>
@@ -183,7 +183,7 @@ export function FileBrowserDialog({
           <div className={`px-3 ${compact ? 'py-2' : 'py-4'} text-xs text-gray-400 dark:text-on-surface-muted text-center`}>Loading...</div>
         ) : dirs.length === 0 && jsonFiles.length === 0 ? (
           <div className={`px-3 ${compact ? 'py-2' : 'py-4'} text-xs text-gray-400 dark:text-on-surface-muted text-center`}>
-            {mode === 'open' ? 'No folders or .sdraw board files here' : 'Empty folder'}
+            {mode === 'open' ? 'No folders or HTML / JSON boards here' : 'Empty folder'}
           </div>
         ) : (
           <>

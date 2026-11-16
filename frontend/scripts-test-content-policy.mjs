@@ -1,0 +1,12 @@
+import { readFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { transform } from 'esbuild';
+const {code}=await transform(readFileSync(new URL('./src/utils/contentPolicy.ts',import.meta.url),'utf8'),{loader:'ts',format:'esm'});
+const {layoutChanges}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const asset={width:400,height:200,metadata:{contentPolicy:'layout-only'}};
+assert.deepEqual(layoutChanges(asset,{x:25,y:30,width:200,height:900,source:{path:'fake.svg'},style:{opacity:.1},metadata:{},rotation:45}),{x:25,y:30,width:200,height:100});
+assert.deepEqual(layoutChanges(asset,{height:50}),{height:50,width:100});
+assert.deepEqual(layoutChanges(asset,{width:0,style:{crop:{x:1}}}),{});
+const editable={width:400,height:200,metadata:{}};const changes={text:'Editable label',style:{color:'red'}};
+assert.equal(layoutChanges(editable,changes),changes);
+console.log('Layout-only assets preserve content and proportions; editable labels remain editable: PASS');

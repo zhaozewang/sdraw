@@ -3,6 +3,7 @@ import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { Resizer } from './Resizer';
+import { roundedJunctionPath } from '@/utils/arrowGeometry';
 
 /** Compute polygon points (in 0-100 viewBox) for a shape with adjustable params.
  *  sw = shaft width (0-1), hl = head length (0-1) */
@@ -15,6 +16,8 @@ function getShapePoints(shape: string, sw: number, hl: number): string {
   const neck = 100 - h * 100; // where head meets shaft (main axis)
 
   switch (shape) {
+    case 'encoder': return '0,0 100,18 100,82 0,100';
+    case 'decoder': return '0,18 100,0 100,100 0,82';
     case 'arrow-right':
       return `0,${top} ${neck},${top} ${neck},0 100,50 ${neck},100 ${neck},${bot} 0,${bot}`;
     case 'arrow-left':
@@ -107,7 +110,8 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
       ) : (
         <>
           {shape && shape !== 'rectangle' ? (() => {
-            const isFilled = !!style.fill && style.fill !== 'transparent';
+            const isJunction = shape === 'rounded-junction';
+            const isFilled = !isJunction && !!style.fill && style.fill !== 'transparent';
             // Adjustable parameters (0-1): shaftWidth = fraction of cross-axis,
             // headLength = fraction of main axis for the arrowhead
             const sw = (metadata?.shaftWidth as number) ?? 0.5;
@@ -117,6 +121,9 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
             const rawPoints = getShapePoints(shape, sw, hl);
             const w = element.width || 100;
             const h = element.height || 100;
+            const ShapeTag = isJunction ? 'path' : 'polygon';
+            const junctionPath = isJunction ? roundedJunctionPath(w, h, style.borderRadius ?? 0,
+              (metadata?.junctionDirection as string) || 'down') : undefined;
             const polyPoints = rawPoints.split(' ').map(pair => {
               const [px, py] = pair.split(',').map(Number);
               return `${(px / 100) * w},${(py / 100) * h}`;
@@ -169,8 +176,8 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
                 style={{ pointerEvents: 'none' }}>
                 {/* Invisible thick stroke for easier clicking on unfilled shapes */}
                 {!isFilled && (
-                  <polygon
-                    points={polyPoints}
+                  <ShapeTag
+                    {...(isJunction ? { d: junctionPath } : { points: polyPoints })}
                     fill="none"
                     stroke="transparent"
                     strokeWidth={Math.max(14, (style.strokeWidth ?? 2) * 4)}
@@ -178,9 +185,9 @@ function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
                     onPointerDown={handleSelect}
                   />
                 )}
-                <polygon
-                  points={polyPoints}
-                  fill={style.fill || 'transparent'}
+                <ShapeTag
+                  {...(isJunction ? { d: junctionPath } : { points: polyPoints })}
+                  fill={isJunction ? 'none' : style.fill || 'transparent'}
                   stroke={style.strokeColor || '#333333'}
                   strokeWidth={style.strokeWidth ?? 2}
                   strokeDasharray={style.strokeStyle === 'dashed' ? '8,4' : style.strokeStyle === 'dotted' ? '2,4' : undefined}

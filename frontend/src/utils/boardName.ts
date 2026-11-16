@@ -9,6 +9,6 @@
 export function deriveBoardName(path: string | null | undefined): string {
   if (!path) return 'Untitled';
   const base = path.split('/').pop() || '';
-  const stem = base.replace(/\.sdraw$/i, '');
+  const stem = base.replace(/\.(sdraw|json|html|htm)$/i, '');
   return stem || 'Untitled';
 }

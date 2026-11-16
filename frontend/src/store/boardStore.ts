@@ -1,3 +1,4 @@
+import { layoutChanges } from '@/utils/contentPolicy';
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
 import type { Board, BoardElement, CanvasSettings, ElementType, AutoExportSettings, PlotCodeEntry } from '@/types/board';
@@ -1438,7 +1439,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!sanitized) throw new Error('Filename cannot be empty');
     const lastSlash = boardFilePath.lastIndexOf('/');
     const dir = lastSlash >= 0 ? boardFilePath.slice(0, lastSlash) : '';
-    const newPath = dir ? `${dir}/${sanitized}.sdraw` : `${sanitized}.sdraw`;
+    const extension = boardFilePath.match(/\.(sdraw|json|html|htm)$/i)?.[0] ?? ".html";
+    const newPath = dir ? `${dir}/${sanitized}${extension}` : `${sanitized}${extension}`;
     if (newPath === boardFilePath) return { newPath };
     const result = await api.renameBoardFile(boardFilePath, newPath);
     // Point the MRU entry at the new filename so the welcome screen picks it up.
@@ -1516,44 +1518,57 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     // is enough; the progress bar is reserved for manual user actions.
 
     try {
-      // Off-screen DOM rendering: build a hidden container with DOM elements
-      // that mirror the React component visual output, then capture with
-      // html2canvas.  The board snapshot is rendered in isolation, so there
-      // is no cross-board contamination regardless of which board is visible.
-      // NOTE: SVG foreignObject would give pixel-perfect text but the canvas
-      // becomes "tainted" (security restriction), so we use html2canvas.
-      const { captureOffscreen } = await import('@/utils/captureOffscreen');
-
-      if (signal?.aborted || get().board?.id !== exportBoardId) {
-        useUIStore.getState().setExportStatus('idle');
-        return;
-      }
-
       const ae = board.autoExport;
-      const canvas = await captureOffscreen(board, {
-        scale: ae.dpi || 2,
-        transparent: ae.transparent && ae.format === 'png',
-        mode: ae.sizeMode || 'fit',
-        fixedW: ae.fixedWidth,
-        fixedH: ae.fixedHeight,
-      });
+      let res: Response;
+      if (ae.format === 'svg') {
+        // Preserve vector elements and editable-source metadata. A raster
+        // capture written with an .svg suffix cannot be reopened as a figure.
+        res = await fetch(new URL('api/export/render', document.baseURI).pathname, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal,
+          body: JSON.stringify({ board }),
+        });
+      } else {
+        // Off-screen DOM rendering: build a hidden container with DOM elements
+        // that mirror the React component visual output, then capture with
+        // html2canvas.  The board snapshot is rendered in isolation, so there
+        // is no cross-board contamination regardless of which board is visible.
+        // NOTE: SVG foreignObject would give pixel-perfect text but the canvas
+        // becomes "tainted" (security restriction), so we use html2canvas.
+        const { captureOffscreen } = await import('@/utils/captureOffscreen');
 
-      if (signal?.aborted || get().board?.id !== exportBoardId) {
-        useUIStore.getState().setExportStatus('idle');
-        return;
+        if (signal?.aborted || get().board?.id !== exportBoardId) {
+          useUIStore.getState().setExportStatus('idle');
+          return;
+        }
+
+        const canvas = await captureOffscreen(board, {
+          scale: ae.dpi || 2,
+          transparent: ae.transparent && ae.format === 'png',
+          mode: ae.sizeMode || 'fit',
+          fixedW: ae.fixedWidth,
+          fixedH: ae.fixedHeight,
+        });
+
+        if (signal?.aborted || get().board?.id !== exportBoardId) {
+          useUIStore.getState().setExportStatus('idle');
+          return;
+        }
+
+        const mimeType = ae.format === 'jpg' ? 'image/jpeg' : 'image/png';
+        const dataUrl = canvas.toDataURL(mimeType, 0.95);
+        res = await fetch(new URL('api/export/save', document.baseURI).pathname, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: signal,
+          body: JSON.stringify({
+            path: ae.outputPath,
+            data_url: dataUrl,
+          }),
+        });
+
       }
-
-      const mimeType = ae.format === 'jpg' ? 'image/jpeg' : 'image/png';
-      const dataUrl = canvas.toDataURL(mimeType, 0.95);
-      const res = await fetch('/api/export/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: signal,
-        body: JSON.stringify({
-          path: ae.outputPath,
-          data_url: dataUrl,
-        }),
-      });
 
       if (signal?.aborted || get().board?.id !== exportBoardId) {
         useUIStore.getState().setExportStatus('idle');
@@ -1667,9 +1682,9 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
 
     const newElements = board.elements.map(el => {
-      if (el.id === id) return { ...el, ...updates };
+      if (el.id === id) return { ...el, ...layoutChanges(el, updates) };
       const chChanges = childUpdates?.get(el.id);
-      if (chChanges) return { ...el, ...chChanges };
+      if (chChanges) return { ...el, ...layoutChanges(el, chChanges) };
       return el;
     });
     set({ board: { ...board, elements: newElements }, isDirty: true });
@@ -1726,7 +1741,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
     const newElements = board.elements.map(el => {
       const changes = updateMap.get(el.id);
-      return changes ? { ...el, ...changes } : el;
+      return changes ? { ...el, ...layoutChanges(el, changes) } : el;
     });
     set({ board: { ...board, elements: newElements }, isDirty: true });
   },

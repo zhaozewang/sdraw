@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
+import { QuickFigureToolbar } from '@/components/QuickFigureToolbar';
 import { Toolbar } from '@/components/Toolbar/Toolbar';
 import { Canvas } from '@/components/Canvas/Canvas';
 import { Inspector } from '@/components/Inspector/Inspector';
@@ -15,6 +16,7 @@ import { useUIStore } from '@/store/uiStore';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useAutoSave } from '@/hooks/useAutoSave';
+import { useConsoleBridge } from '@/hooks/useConsoleBridge';
 import { useVSCodeBridge } from '@/hooks/useVSCodeBridge';
 import { api } from '@/api/client';
 import { getLastDirectoryOrHome } from '@/utils/helpers';
@@ -476,19 +478,21 @@ class ErrorBoundary extends React.Component<
 // steal visual priority from whatever the user is actually working on.
 
 function Editor() {
+  const [figureGrid, setFigureGrid] = useState(true);
+  const quick = new URLSearchParams(window.location.search).get('mode') === 'figure';
   useWebSocket();
   useKeyboardShortcuts();
   useAutoSave();
 
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-canvas-bg text-gray-800 dark:text-on-surface-primary relative">
-      <Toolbar />
+      {quick ? <QuickFigureToolbar grid={figureGrid} setGrid={setFigureGrid} /> : <Toolbar />}
       <div className="flex flex-1 min-h-0">
-        <InsertPanel />
-        <Canvas />
+        {!quick && <InsertPanel />}
+        <Canvas gridVisible={quick ? figureGrid : undefined} />
         <Inspector />
       </div>
-      <StatusBar />
+      {!quick && <StatusBar />}
       <ExportDialog />
       <Settings />
       <PlotEditor />
@@ -523,6 +527,7 @@ function AppContent() {
 
   // VS Code webview bridge (no-op when not in VS Code)
   useVSCodeBridge();
+  useConsoleBridge();
 
   // Best-effort kernel shutdown on tab close. The backend's shutdown_all
   // hook is the real safety net; this just avoids orphaned kernels in the
@@ -532,7 +537,7 @@ function AppContent() {
       const b = useBoardStore.getState().board;
       if (!b) return;
       try {
-        const url = '/api/plot/kernel/shutdown';
+        const url = new URL('api/plot/kernel/shutdown', document.baseURI).pathname;
         const payload = JSON.stringify({ board_id: b.id });
         navigator.sendBeacon?.(url, new Blob([payload], { type: 'application/json' }));
       } catch {

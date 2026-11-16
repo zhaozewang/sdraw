@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from services.export_renderer import render_board
+from services.export_renderer import render_board, text_layout
 
 logger = logging.getLogger(__name__)
 
@@ -65,3 +65,16 @@ async def render_export(body: RenderExportRequest):
     except Exception as exc:
         logger.error("Render export failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+class TextPreviewRequest(BaseModel):
+    text: str
+    width: float
+    height: float
+    style: dict = {}
+
+
+@router.post("/text-layout")
+def preview_text(body: TextPreviewRequest):
+    """Read-only typesetting; identical geometry to saved SVG text."""
+    return text_layout(body.model_dump())

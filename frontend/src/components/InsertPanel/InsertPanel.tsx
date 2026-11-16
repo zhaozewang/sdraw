@@ -462,6 +462,10 @@ export function InsertPanel() {
           <InsertButton icon={ChevronsRight} label="Chevron" onClick={() => startDraw('rectangle', { metadata: { shape: 'chevron' } })} />
         </InsertGroup>
         <InsertGroup label="Lines">
+          <InsertButton icon={CornerDownRight} label="Rounded junction" onClick={() => startDraw('rectangle', {
+            metadata: { shape: 'rounded-junction', junctionDirection: 'down' },
+            style: { fill: 'transparent', strokeColor: '#83959e', strokeWidth: 2, borderRadius: 8 },
+          })} />
           <InsertButton icon={Minus} label="Line" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'none', lineType: 'straight' } })} />
           <InsertButton icon={ArrowRight} label="Arrow" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'straight' } })} />
           <InsertButton icon={Spline} label="Smooth" onClick={() => startDraw('arrow', { metadata: { startMarker: 'none', endMarker: 'arrow', lineType: 'smooth' } })} />

@@ -252,7 +252,7 @@ export function WelcomeScreen() {
       <div className="max-w-[960px] w-full mx-auto px-6 py-12 flex flex-col flex-1">
         {/* Header */}
         <div className="flex flex-col items-center mb-8">
-          <img src="/logo_title.png" alt="sDraw" className="h-32 object-contain mb-3" />
+          <img src="./logo_title.png" alt="sDraw" className="h-32 object-contain mb-3" />
           <p className="text-sm text-gray-500 dark:text-on-surface-muted">Arrange and compose scientific figure panels</p>
         </div>
 

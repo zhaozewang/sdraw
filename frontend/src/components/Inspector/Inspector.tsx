@@ -92,6 +92,10 @@ const MARKER_TYPES: Array<{ value: string; label: string }> = [
 /** Line type options with SVG path builders for thumbnails */
 const LINE_TYPES: Array<{ value: string; label: string; path: (w: number, h: number) => string }> = [
   {
+    value: 'return', label: 'Return curve',
+    path: (w,h) => `M${w-2},2 L${w-2},${h-6} Q${w-2},${h-2} ${w-6},${h-2} L6,${h-2} Q2,${h-2} 2,${h-6} L2,2`,
+  },
+  {
     value: 'straight', label: 'Straight',
     path: (w, h) => `M2,${h / 2} L${w - 2},${h / 2}`,
   },
@@ -562,6 +566,19 @@ function ElementInspector({ element }: { element: BoardElement }) {
     debouncedHistory('Style change');
   }, [element.style, update, debouncedHistory]);
 
+  if (element.metadata?.contentPolicy === 'layout-only') return <>
+    <Section title="Figure · Layout only">
+      <p className="text-2xs text-gray-500 leading-relaxed">This figure is generated from source data. Its contents are fixed; only position and proportional size can be changed.</p>
+    </Section>
+    <Section title="Position & Size">
+      <Field label="X"><NumberInput value={element.x} onChange={v => { update({x:v}); debouncedHistory('Move figure'); }} /></Field>
+      <Field label="Y"><NumberInput value={element.y} onChange={v => { update({y:v}); debouncedHistory('Move figure'); }} /></Field>
+      <Field label="Width"><NumberInput value={element.width} min={1} onChange={v => { update({width:v}); debouncedHistory('Resize figure'); }} /></Field>
+      <Field label="Height"><NumberInput value={element.height} min={1} onChange={v => { update({height:v}); debouncedHistory('Resize figure'); }} /></Field>
+      <div className="text-2xs text-gray-500 mt-2">Aspect ratio locked</div>
+    </Section>
+  </>;
+
   return (
     <>
       <Section title={`${element.type.charAt(0).toUpperCase() + element.type.slice(1)}`}>
@@ -897,10 +914,21 @@ function ElementInspector({ element }: { element: BoardElement }) {
       {/* Rectangle-specific */}
       {element.type === 'rectangle' && (
         <Section title="Shape Style">
-          <ColorPalette onApply={(fill, border) => { pushHistory('Apply preset'); updateStyle({ fill, strokeColor: border }); }} />
-          <Field label="Fill">
+          {element.metadata?.shape === 'rounded-junction' ? (
+            <Field label="Direction">
+              <SelectInput value={(element.metadata.junctionDirection as string) || 'down'}
+                options={['down', 'up', 'right', 'left'].map(value => ({ value, label: value }))}
+                onChange={value => {
+                  pushHistory('Change junction direction');
+                  update({ metadata: { ...element.metadata, junctionDirection: value } });
+                }} />
+            </Field>
+          ) : <>
+            <ColorPalette onApply={(fill, border) => { pushHistory('Apply preset'); updateStyle({ fill, strokeColor: border }); }} />
+            <Field label="Fill">
             <ColorInput value={element.style.fill || 'transparent'} onChange={v => updateStyle({ fill: v })} />
-          </Field>
+            </Field>
+          </>}
           <Field label="Stroke">
             <ColorInput value={element.style.strokeColor || '#333333'} onChange={v => updateStyle({ strokeColor: v })} />
           </Field>
@@ -922,15 +950,80 @@ function ElementInspector({ element }: { element: BoardElement }) {
       {/* Arrow-specific */}
       {element.type === 'arrow' && (
         <Section title="Arrow Style">
+          <Field label="Body">
+            <SelectInput value={(element.metadata?.arrowBody as string) || 'line'}
+              options={[{value:'line',label:'Line'},{value:'filled',label:'Filled'}]}
+              onChange={value => {
+                pushHistory('Change arrow body');
+                const current = (element.metadata?.lineType as string) || 'straight';
+                update({metadata:{...element.metadata,arrowBody:value,
+                  lineType:value === 'filled' && !['straight','step'].includes(current) ? 'step' : current}});
+              }} />
+          </Field>
           <Field label="Type">
-            <LineTypeSelect
+            {element.metadata?.arrowBody === 'filled' ? <SelectInput
+              value={(element.metadata.lineType as string) || 'straight'}
+              options={[{value:'straight',label:'Straight'},{value:'step',label:'Elbow'}]}
+              onChange={value => {
+                pushHistory('Change filled arrow route');
+                update({metadata:{...element.metadata,lineType:value,controlPoints:undefined}});
+              }} /> : <LineTypeSelect
               value={(element.metadata?.lineType as string) || 'straight'}
               onChange={v => {
                 pushHistory('Change line type');
                 update({ metadata: { ...element.metadata, lineType: v, controlPoints: undefined } });
               }}
-            />
+            />}
           </Field>
+          {element.metadata?.arrowBody === 'filled' && <>
+            <Field label="Fill"><ColorInput value={element.style.fill || '#dce9ef'}
+              onChange={value => updateStyle({fill:value})} /></Field>
+            {([
+              ['bodyWidth','Body Width',10], ['blockHeadWidth','Head Width',22],
+              ['blockHeadLength','Head Length',14],
+            ] as const).map(([key,label,fallback]) => <Field key={key} label={label}>
+              <NumberInput value={(element.metadata?.[key] as number) ?? fallback} min={1} max={200}
+                onChange={value => {
+                  update({metadata:{...element.metadata,[key]:value}});
+                  debouncedHistory('Filled arrow dimensions');
+                }} />
+            </Field>)}
+            {element.metadata.lineType === 'step' && <>
+              <Field label="Corner Radius"><NumberInput value={(element.metadata.stepRadius as number) ?? 0}
+                min={0} max={200} onChange={value => {
+                  update({metadata:{...element.metadata,stepRadius:value}});
+                  debouncedHistory('Change filled arrow corner radius');
+                }} /></Field>
+              <Field label="Bend Axis"><SelectInput value={(element.metadata.bendAxis as string) || 'horizontal'}
+                options={[{value:'horizontal',label:'Horizontal'},{value:'vertical',label:'Vertical'}]}
+                onChange={value => {
+                  pushHistory('Change bend axis');
+                  update({metadata:{...element.metadata,bendAxis:value}});
+                }} /></Field>
+              <Field label="Bend Position"><NumberInput value={(element.metadata.bendPosition as number) ?? .5}
+                min={.1} max={.9} step={.05} onChange={value => {
+                  update({metadata:{...element.metadata,bendPosition:value}});
+                  debouncedHistory('Change bend position');
+                }} /></Field>
+            </>}
+          </>}
+          {element.metadata?.lineType === 'return' && (
+            <Field label="Direction">
+              <SelectInput value={(element.metadata.returnDirection as string) || 'down'}
+                options={['down','up','right','left'].map(value => ({value,label:value}))}
+                onChange={value => {
+                  const pts = element.points || [{x:0,y:0},{x:element.width,y:element.height}];
+                  const a=pts[0], b=pts[1];
+                  const horizontal=value==='left'||value==='right';
+                  const negative=value==='left'||value==='up';
+                  const axis=horizontal?'x':'y';
+                  const rail=(negative?Math.min(a[axis],b[axis])-50:Math.max(a[axis],b[axis])+50);
+                  const control=horizontal?{x:rail,y:(a.y+b.y)/2}:{x:(a.x+b.x)/2,y:rail};
+                  pushHistory('Change return direction');
+                  update({metadata:{...element.metadata,returnDirection:value,controlPoints:[control]}});
+                }} />
+            </Field>
+          )}
           {(element.metadata?.lineType as string) === 'step-rounded' && (
             <Field label="Radius">
               <NumberInput
@@ -944,7 +1037,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
               />
             </Field>
           )}
-          <Field label="Start">
+          {element.metadata?.arrowBody !== 'filled' && <><Field label="Start">
             <MarkerSelect
               value={(element.metadata?.startMarker as string) || 'none'}
               side="start"
@@ -973,6 +1066,7 @@ function ElementInspector({ element }: { element: BoardElement }) {
               step={0.25}
             />
           </Field>
+          </>}
           <Field label="Color">
             <ColorInput value={element.style.strokeColor || '#333333'} onChange={v => updateStyle({ strokeColor: v })} />
           </Field>

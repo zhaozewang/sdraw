@@ -118,6 +118,10 @@ export function nearestBoundaryPoint(p: Point, el: BoardElement): Point {
   if (el.type === 'rectangle' || el.type === 'group') {
     const shape = metadata?.shape as string | undefined;
 
+    if (shape === 'rounded-junction') {
+      const ports = [{x:x+w/2,y}, {x:x+w/2,y:y+h}, {x,y:y+h/2}, {x:x+w,y:y+h/2}];
+      return ports.reduce((best, port) => dist(p, port) < dist(p, best) ? port : best);
+    }
     if (shape === 'diamond') {
       return nearestOnPolygon(p, [
         { x: x + w / 2, y },

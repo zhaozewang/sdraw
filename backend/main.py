@@ -233,10 +233,12 @@ if _static_dir:
     @app.get("/{full_path:path}", tags=["spa"])
     async def serve_spa(full_path: str):
         """SPA catch-all: serve the file if it exists, otherwise index.html."""
-        file_path = os.path.join(_static_dir, full_path)
-        if full_path and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        return FileResponse(os.path.join(_static_dir, "index.html"))
+        file_path = os.path.realpath(os.path.join(_static_dir, full_path))
+        inside = os.path.commonpath([_static_dir, file_path]) == _static_dir
+        if inside and full_path and os.path.isfile(file_path):
+            headers = {'Cache-Control': 'no-store'} if file_path.endswith('.html') else {}
+            return FileResponse(file_path, headers=headers)
+        return FileResponse(os.path.join(_static_dir, "index.html"), headers={'Cache-Control': 'no-store'})
 
     logger.info("Serving frontend from %s", _static_dir)
 

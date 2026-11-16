@@ -1,3 +1,4 @@
+import { ToolButton } from './ToolButton';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
@@ -365,31 +366,6 @@ export function Toolbar() {
 
   if (!board) return null;
 
-  const ToolButton = ({ onClick, icon: Icon, title, active, disabled, className: extraClass }: {
-    onClick: () => void;
-    icon: any;
-    title: string;
-    active?: boolean;
-    disabled?: boolean;
-    className?: string;
-  }) => (
-    <button
-      onClick={onClick}
-      title={title}
-      disabled={disabled}
-      className={`p-1.5 rounded transition-colors ${
-        active
-          ? 'bg-accent/10 text-accent'
-          : disabled
-          ? 'text-gray-300 dark:text-on-surface-disabled cursor-not-allowed'
-          : 'text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover hover:text-gray-900 dark:hover:text-on-surface-primary'
-      } ${extraClass || ''}`}
-
-    >
-      <Icon size={16} />
-    </button>
-  );
-
   const Separator = () => <div className="w-px h-5 bg-toolbar-border mx-0.5" />;
 
   return (
@@ -402,7 +378,7 @@ export function Toolbar() {
           className="p-1 rounded text-gray-600 dark:text-on-surface-secondary hover:bg-toolbar-hover transition-colors shrink-0"
     
         >
-          <img src="/logo_title_zoomed_in.png" alt="sDraw" style={{ height: 50, paddingTop: 8, paddingBottom: 14 }} className="object-contain" />
+          <img src="./logo_title_zoomed_in.png" alt="sDraw" style={{ height: 50, paddingTop: 8, paddingBottom: 14 }} className="object-contain" />
         </button>
 
 
@@ -427,9 +403,9 @@ export function Toolbar() {
                 ? 'border-red-400'
                 : 'border-gray-200 dark:border-border'
             }`}
-            title={renameError ? renameError : `Editing the name renames the file on disk. Current: ${currentFileBase}.sdraw`}
+            title={renameError ? renameError : `Editing the name renames the file on disk. Current: ${currentFileBase}`}
           />
-          <span className="text-2xs text-gray-400 dark:text-on-surface-muted shrink-0 ml-0.5">.sdraw</span>
+          <span className="text-2xs text-gray-400 dark:text-on-surface-muted shrink-0 ml-0.5">{boardFilePath?.match(/\.[^.]+$/)?.[0] ?? '.html'}</span>
           {renameBusy && (
             <Loader2 size={12} className="animate-spin text-gray-400 dark:text-on-surface-muted shrink-0 ml-1" />
           )}
@@ -442,7 +418,7 @@ export function Toolbar() {
           {nameBuffer !== null && nameBuffer.trim() !== currentFileBase && !renameBusy && !renameError && (
             <div className="absolute top-full left-0 mt-1 z-50 px-2 py-1 bg-amber-50 border border-amber-200 rounded text-2xs text-amber-700 whitespace-nowrap shadow-sm flex items-center gap-1">
               <AlertTriangle size={10} className="shrink-0" />
-              <span>This will rename the .sdraw file on disk. Press Enter to confirm, Esc to cancel.</span>
+              <span>This will rename the board file on disk. Press Enter to confirm, Esc to cancel.</span>
             </div>
           )}
         </div>

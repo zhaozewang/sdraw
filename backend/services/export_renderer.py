@@ -13,12 +13,152 @@ import html as html_mod
 import io
 import logging
 import math
+import re
+import subprocess
+from functools import lru_cache
+from threading import RLock
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image
+from PIL import Image, ImageFont
+from .filled_arrow import filled_arrow_path
+from .arrow_geometry import ARROW_LENGTH, ARROW_HALF_WIDTH, marker_inset, trim_arrow_path, rounded_junction_path, return_arrow_path
 
 logger = logging.getLogger(__name__)
+_MATH_LOCK = RLock()
+
+
+@lru_cache(maxsize=1024)
+def _math_svg(text, size, color):
+    """Typeset standalone editable LaTeX labels in vector exports."""
+    import xml.etree.ElementTree as ET
+    from matplotlib import mathtext, rc_context
+    from matplotlib.font_manager import FontProperties
+
+    expression = text.strip()
+    if not (expression.startswith('$') and expression.endswith('$')):
+        return None
+    if expression.startswith('$$'):
+        expression = '$' + expression[2:-2] + '$'
+    buffer = io.BytesIO()
+    with _MATH_LOCK, rc_context({'mathtext.fontset': 'cm', 'svg.fonttype': 'path'}):
+        mathtext.math_to_image(expression, buffer, prop=FontProperties(size=size),
+                              format='svg', color=color)
+    root = ET.fromstring(buffer.getvalue())
+    for parent in root.iter():
+        for child in list(parent):
+            if child.get('id') == 'patch_1':
+                parent.remove(child)
+    width = float(root.get('width').removesuffix('pt'))
+    height = float(root.get('height').removesuffix('pt'))
+    return width, height, base64.b64encode(ET.tostring(root)).decode()
+
+
+@lru_cache(maxsize=128)
+def _text_font(family, weight, italic):
+    """Resolve the installed font stack once; measure at high resolution."""
+    bold = str(weight).lower() in ('bold', 'bolder', '600', '700', '800', '900')
+    families = ','.join(name.strip().strip('"\'') for name in family.split(','))
+    pattern = families + (':weight=bold' if bold else ':weight=regular')
+    pattern += ':slant=italic' if italic else ':slant=roman'
+    try:
+        path = subprocess.check_output(['fc-match', '-f', '%{file}', pattern],
+                                       text=True, timeout=3).strip()
+    except (OSError, subprocess.SubprocessError):
+        from matplotlib.font_manager import FontProperties, findfont
+        prop = FontProperties(family=['sans-serif'], weight='bold' if bold else 'normal',
+                              style='italic' if italic else 'normal')
+        path = findfont(prop)
+    return ImageFont.truetype(path, 256)
+
+
+def _wrap_text(text, width, style):
+    """Soft-wrap display lines only; retain explicit newlines in the source."""
+    size = style.get('fontSize', 14)
+    font = _text_font(style.get('fontFamily', 'Inter, sans-serif'),
+                      str(style.get('fontWeight', 400)), bool(style.get('italic')))
+    available = max(1, width)
+    measure = lambda value: font.getlength(value) * size / 256
+    lines = []
+    for paragraph in text.split('\n'):
+        line = ''
+        for word in re.findall(r'\s+|\S+', paragraph):
+            if line and measure(line + word) > available:
+                lines.append(line.rstrip())
+                line = ''
+                if word.isspace():
+                    continue
+            # Long unspaced strings (including CJK) may break inside a token.
+            for char in word:
+                if line and measure(line + char) > available:
+                    lines.append(line.rstrip())
+                    line = ''
+                line += char
+        lines.append(line.rstrip())
+    return lines
+
+
+def text_layout(el):
+    """One layout contract for the editable preview and SVG export, in local units."""
+    style = el.get('style', {})
+    size = style.get('fontSize', 14)
+    padding = style.get('padding', 4)
+    width, height = el['width'], el['height']
+    align = style.get('textAlign', 'left')
+    anchor = {'center': 'middle', 'right': 'end'}.get(align, 'start')
+    x = width / 2 if align == 'center' else width - padding if align == 'right' else padding
+    color = style.get('color', '#111111')
+    txt = el.get('text', '')
+    try:
+        formula = _math_svg(txt, size, color)
+    except (ValueError, RuntimeError):
+        formula = None  # Unsupported formula stays editable as literal source.
+    lines = [] if formula else _wrap_text(txt, width - 2 * padding, style)
+    line_height = size * style.get('lineHeight', 1.4)
+    content_height = formula[1] if formula else len(lines) * line_height
+    y = padding
+    if style.get('verticalAlign') == 'center':
+        y = (height - content_height) / 2
+    elif style.get('verticalAlign') == 'bottom':
+        y = height - padding - content_height
+    result = dict(fontSize=size, fontFamily=style.get('fontFamily', 'Inter, sans-serif'),
+                  fontWeight=style.get('fontWeight', 400), color=color,
+                  italic=bool(style.get('italic')), anchor=anchor, lines=[])
+    if formula:
+        fw, fh, encoded = formula
+        fx = x - fw / 2 if anchor == 'middle' else x - fw if anchor == 'end' else x
+        result['formula'] = dict(x=fx, y=y, width=fw, height=fh,
+                                 href='data:image/svg+xml;base64,' + encoded)
+    else:
+        result['lines'] = [dict(x=x, y=y + size * .85 + i * line_height, text=line)
+                           for i, line in enumerate(lines)]
+    return result
+
+
+def _text_svg(el):
+    layout = text_layout(el)
+    esc = lambda value: html_mod.escape(str(value), quote=True)
+    style = el.get('style', {})
+    x, y, width, height = (el[key] for key in ('x', 'y', 'width', 'height'))
+    rotation = el.get('rotation', 0)
+    transform = f'translate({x} {y}) rotate({rotation} {width/2} {height/2})'
+    parts = [f'<g transform="{transform}" opacity="{style.get("opacity", 1)}">']
+    bg = style.get('background', 'transparent')
+    if bg != 'transparent':
+        parts.append(f'<rect width="{width}" height="{height}" fill="{esc(bg)}"/>')
+    if 'formula' in layout:
+        f = layout['formula']
+        parts.append(f'<image x="{f["x"]}" y="{f["y"]}" width="{f["width"]}" '
+                     f'height="{f["height"]}" href="{f["href"]}"/>')
+    else:
+        spans = ''.join(f'<tspan x="{line["x"]}" y="{line["y"]}">{esc(line["text"])}</tspan>'
+                        for line in layout['lines'])
+        parts.append(f'<text font-family="{esc(layout["fontFamily"])}" '
+                     f'font-size="{layout["fontSize"]}" font-weight="{esc(layout["fontWeight"])}" '
+                     f'font-style="{"italic" if layout["italic"] else "normal"}" '
+                     f'fill="{esc(layout["color"])}" text-anchor="{layout["anchor"]}" '
+                     f'xml:space="preserve">{spans}</text>')
+    return ''.join(parts) + '</g>'
 
 
 # -----------------------------------------------------------------------
@@ -33,6 +173,8 @@ def _default_ctrl(p0, p1, lt):
     ln = math.sqrt(dx * dx + dy * dy) or 1
     ox = (-dy / ln) * ln * 0.3
     oy = (dx / ln) * ln * 0.3
+    if lt == 'return':
+        return [(mx, max(p0[1],p1[1])+50)]
     if lt in ('quadratic', 'arc'):
         return [(mx + ox, my + oy)]
     if lt == 'smooth':
@@ -45,7 +187,9 @@ def _default_ctrl(p0, p1, lt):
     return []
 
 
-def _build_path(p0, p1, lt, ctrl):
+def _build_path(p0, p1, lt, ctrl, return_direction='down'):
+    if lt == 'return':
+        return return_arrow_path(p0,p1,ctrl[0] if ctrl else None,return_direction)
     if lt in ('quadratic', 'arc'):
         c = ctrl[0] if ctrl else ((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2)
         return f"M {p0[0]},{p0[1]} Q {c[0]},{c[1]} {p1[0]},{p1[1]}"
@@ -87,8 +231,10 @@ def _build_path(p0, p1, lt, ctrl):
 #  markers, so we draw arrowheads as manually rotated polygons.
 # -----------------------------------------------------------------------
 
-def _path_tangent_at_end(p0, p1, lt, ctrl):
+def _path_tangent_at_end(p0, p1, lt, ctrl, return_direction='down'):
     """Return (dx, dy) tangent direction at the END of the path (p1)."""
+    if lt == 'return':
+        return {'right':(-1,0),'left':(1,0),'up':(0,1)}.get(return_direction,(0,-1))
     if lt in ('quadratic', 'arc', 'smooth') and ctrl:
         # Tangent at end of Q curve = direction from control point to p1
         return (p1[0] - ctrl[0][0], p1[1] - ctrl[0][1])
@@ -96,17 +242,22 @@ def _path_tangent_at_end(p0, p1, lt, ctrl):
         return (p1[0] - ctrl[1][0], p1[1] - ctrl[1][1])
     if lt == 'cubic' and len(ctrl) == 1:
         return (p1[0] - ctrl[0][0], p1[1] - ctrl[0][1])
-    # straight / step: tangent is last segment direction
+    if lt in ('step', 'step-rounded'):
+        return (p1[0] - p0[0], 0) if p1[0] != p0[0] else (0, p1[1] - p0[1])
     return (p1[0] - p0[0], p1[1] - p0[1])
 
 
-def _path_tangent_at_start(p0, p1, lt, ctrl):
+def _path_tangent_at_start(p0, p1, lt, ctrl, return_direction='down'):
     """Return (dx, dy) tangent direction at the START of the path (p0).
     Direction points INTO the path (away from p0)."""
+    if lt == 'return':
+        return {'right':(1,0),'left':(-1,0),'up':(0,-1)}.get(return_direction,(0,1))
     if lt in ('quadratic', 'arc', 'smooth') and ctrl:
         return (ctrl[0][0] - p0[0], ctrl[0][1] - p0[1])
     if lt == 'cubic' and len(ctrl) >= 1:
         return (ctrl[0][0] - p0[0], ctrl[0][1] - p0[1])
+    if lt in ('step', 'step-rounded'):
+        return (p1[0] - p0[0], 0) if p1[0] != p0[0] else (0, p1[1] - p0[1])
     return (p1[0] - p0[0], p1[1] - p0[1])
 
 
@@ -122,13 +273,9 @@ def _arrowhead_svg(tip, tangent_dx, tangent_dy, mtype, color, stroke_width, head
     tx, ty = tip
 
     if mtype in ('arrow', 'arrow-open'):
-        # Triangle: tip at (0,0), base at (-length, ±half_width)
-        # SVG spec: with markerUnits="strokeWidth", marker content coordinates
-        # are in a coordinate system where 1 unit = strokeWidth user units.
-        # So the polygon (0,0)→(10*s, 4*s)→(0, 8*s) becomes
-        # (0,0)→(10*s*sw, 4*s*sw)→(0, 8*s*sw) in user units.
-        length = 10 * s * sw
-        half_w = 4 * s * sw
+        # Match the browser marker geometry; the shaft is inset separately.
+        length = ARROW_LENGTH * s * sw
+        half_w = ARROW_HALF_WIDTH * s * sw
         if mtype == 'arrow':
             return (f'<polygon points="0,0 {-length},{-half_w} {-length},{half_w}" '
                     f'fill="{color}" '
@@ -214,7 +361,33 @@ def _board_to_svg(board_data: dict, transparent: bool, dpi: int) -> str:
             br = style.get('borderRadius', 0)
             x, y, w, h = el['x'], el['y'], el['width'], el['height']
 
-            if shape == 'triangle':
+            if shape == 'rounded-junction':
+                path = rounded_junction_path(w, h, br, meta.get('junctionDirection', 'down'))
+                dash = {'dashed': '8,4', 'dotted': '2,4'}.get(style.get('strokeStyle'), '')
+                body_parts.append(
+                    f'<path d="{path}" fill="none" stroke="{stroke}" stroke-width="{sw}" '
+                    f'stroke-dasharray="{dash}" opacity="{opacity}" '
+                    f'transform="translate({x} {y}) rotate({el.get("rotation", 0)} {w/2} {h/2})"/>')
+            elif shape in ('arrow-right', 'arrow-left', 'arrow-up', 'arrow-down'):
+                shaft = max(.05, min(.95, meta.get('shaftWidth', .5)))
+                head = max(.05, min(.95, meta.get('headLength', .4)))
+                top, bottom, neck = (1-shaft)/2, (1+shaft)/2, 1-head
+                coords = [(0,top),(neck,top),(neck,0),(1,.5),(neck,1),(neck,bottom),(0,bottom)]
+                if shape == 'arrow-left': coords = [(1-a,b) for a,b in coords]
+                elif shape == 'arrow-down': coords = [(b,a) for a,b in coords]
+                elif shape == 'arrow-up': coords = [(b,1-a) for a,b in coords]
+                pts = ' '.join(f'{x+a*w},{y+b*h}' for a,b in coords)
+                rotate = el.get('rotation', 0)
+                body_parts.append(f'<polygon points="{pts}" fill="{fill}" stroke="{stroke}" '
+                                  f'stroke-width="{sw}" opacity="{opacity}" '
+                                  f'transform="rotate({rotate} {x+w/2} {y+h/2})"/>')
+            elif shape in ('encoder', 'decoder'):
+                left, right = (0, .18) if shape == 'encoder' else (.18, 0)
+                pts = f"{x},{y+left*h} {x+w},{y+right*h} {x+w},{y+(1-right)*h} {x},{y+(1-left)*h}"
+                body_parts.append(
+                    f'<polygon points="{pts}" fill="{fill}" stroke="{stroke}" '
+                    f'stroke-width="{sw}" opacity="{opacity}"/>')
+            elif shape == 'triangle':
                 pts = f"{x + w / 2},{y} {x + w},{y + h} {x},{y + h}"
                 body_parts.append(
                     f'<polygon points="{pts}" fill="{fill}" stroke="{stroke}" '
@@ -244,7 +417,16 @@ def _board_to_svg(board_data: dict, transparent: bool, dpi: int) -> str:
 
             p0 = (el['x'] + pts[0]['x'], el['y'] + pts[0]['y'])
             p1 = (el['x'] + pts[1]['x'], el['y'] + pts[1]['y'])
-            has_curve = lt in ('quadratic', 'cubic', 'arc', 'smooth')
+            if meta.get('arrowBody') == 'filled' and lt in ('straight', 'step'):
+                path = filled_arrow_path(p0, p1, meta)
+                dash = {'dashed': '8,4', 'dotted': '2,4'}.get(style.get('strokeStyle'), '')
+                body_parts.append(
+                    f'<path d="{path}" fill="{style.get("fill") or "#dce9ef"}" '
+                    f'stroke="{style.get("strokeColor") or "#333333"}" '
+                    f'stroke-width="{style.get("strokeWidth", 2)}" '
+                    f'stroke-dasharray="{dash}" opacity="{opacity}"/>')
+                continue
+            has_curve = lt in ('quadratic', 'cubic', 'arc', 'smooth', 'return')
             if has_curve and not ctrl_raw:
                 ectrl = [
                     (el['x'] + c[0], el['y'] + c[1])
@@ -255,57 +437,31 @@ def _board_to_svg(board_data: dict, transparent: bool, dpi: int) -> str:
             else:
                 ectrl = [(el['x'] + c['x'], el['y'] + c['y']) for c in ctrl_raw]
 
-            path_d = _build_path(p0, p1, lt, ectrl)
+            return_direction = meta.get('returnDirection', 'down')
+            path_d = _build_path(p0, p1, lt, ectrl, return_direction)
             sc = style.get('strokeColor', '#333333')
             sw = style.get('strokeWidth', 2)
             da = 'stroke-dasharray="8,4" ' if style.get('strokeStyle') == 'dashed' else (
                  'stroke-dasharray="2,4" ' if style.get('strokeStyle') == 'dotted' else '')
 
-            # Draw the path (no markers — cairosvg breaks orient="auto")
+            path_d = trim_arrow_path(path_d, marker_inset(sm, sw, hs), marker_inset(em, sw, hs))
+            # Draw the shaft independently; marker tips stay at the original endpoints.
             body_parts.append(
                 f'<path d="{path_d}" fill="none" stroke="{sc}" stroke-width="{sw}" '
                 f'{da}opacity="{opacity}"/>')
 
             # Draw arrowheads as manually rotated polygons
             if sm != 'none':
-                tdx, tdy = _path_tangent_at_start(p0, p1, lt, ectrl)
+                tdx, tdy = _path_tangent_at_start(p0, p1, lt, ectrl, return_direction)
                 body_parts.append(
                     _arrowhead_svg(p0, tdx, tdy, sm, sc, sw, hs, True))
             if em != 'none':
-                tdx, tdy = _path_tangent_at_end(p0, p1, lt, ectrl)
+                tdx, tdy = _path_tangent_at_end(p0, p1, lt, ectrl, return_direction)
                 body_parts.append(
                     _arrowhead_svg(p1, tdx, tdy, em, sc, sw, hs, False))
 
         elif el_type == 'text':
-            txt = el.get('text', '')
-            if not txt:
-                continue
-            fs = style.get('fontSize', 14)
-            color = style.get('color', '#111111')
-            bg = style.get('background', 'transparent')
-            padding = style.get('padding', 4)
-            ta = style.get('textAlign', 'left')
-            anchor = 'middle' if ta == 'center' else 'end' if ta == 'right' else 'start'
-            tx = (el['x'] + el['width'] / 2 if ta == 'center'
-                  else el['x'] + el['width'] - padding if ta == 'right'
-                  else el['x'] + padding)
-
-            if bg and bg != 'transparent':
-                body_parts.append(
-                    f'<rect x="{el["x"]}" y="{el["y"]}" width="{el["width"]}" '
-                    f'height="{el["height"]}" fill="{bg}"/>')
-
-            lines = txt.split('\n')
-            tspans = ''.join(
-                f'<tspan x="{tx}" dy="{0 if i == 0 else "1.2em"}">'
-                f'{html_mod.escape(l)}</tspan>'
-                for i, l in enumerate(lines)
-            )
-            body_parts.append(
-                f'<text x="{tx}" y="{el["y"] + padding + fs * 0.85}" '
-                f'font-family="system-ui,-apple-system,sans-serif" font-size="{fs}" '
-                f'fill="{color}" text-anchor="{anchor}" opacity="{opacity}">'
-                f'{tspans}</text>')
+            body_parts.append(_text_svg(el))
 
         elif el_type == 'image':
             source = el.get('source', {})
@@ -321,10 +477,13 @@ def _board_to_svg(board_data: dict, transparent: bool, dpi: int) -> str:
                     'gif': 'image/gif', 'webp': 'image/webp', 'svg': 'image/svg+xml'
                     }.get(suffix.lstrip('.'), 'image/png')
             b64 = base64.b64encode(raw).decode()
+            aspect = {'contain': 'xMidYMid meet', 'cover': 'xMidYMid slice'}.get(style.get('fitMode'), 'none')
+            rotation = el.get('rotation', 0)
+            transform = f'rotate({rotation} {el["x"] + el["width"]/2} {el["y"] + el["height"]/2})'
             body_parts.append(
                 f'<image x="{el["x"]}" y="{el["y"]}" width="{el["width"]}" '
                 f'height="{el["height"]}" href="data:{mime};base64,{b64}" '
-                f'preserveAspectRatio="none" opacity="{opacity}"/>')
+                f'preserveAspectRatio="{aspect}" transform="{transform}" opacity="{opacity}"/>')
 
         elif el_type == 'plot':
             last_output = meta.get('lastOutput')
@@ -373,19 +532,18 @@ def render_board(board_data: dict, output_path: str) -> dict:
     if not svg_str:
         return {"path": output_path, "size": 0, "content_hash": "", "skipped": True}
 
-    # Rasterise SVG → PNG via cairosvg
-    png_bytes = cairosvg.svg2png(bytestring=svg_str.encode('utf-8'))
-
-    # Convert format if needed
-    if fmt == 'jpg':
-        img = Image.open(io.BytesIO(png_bytes)).convert('RGB')
-        buf = io.BytesIO()
-        img.save(buf, 'JPEG', quality=95)
-        raw = buf.getvalue()
+    if fmt == 'svg':
+        from services.svg_source import attach_svg_source
+        raw = attach_svg_source(svg_str, output_path, board_data).encode('utf-8')
     elif fmt == 'pdf':
         raw = cairosvg.svg2pdf(bytestring=svg_str.encode('utf-8'))
     else:
-        raw = png_bytes
+        raw = cairosvg.svg2png(bytestring=svg_str.encode('utf-8'))
+        if fmt == 'jpg':
+            img = Image.open(io.BytesIO(raw)).convert('RGB')
+            buf = io.BytesIO()
+            img.save(buf, 'JPEG', quality=95)
+            raw = buf.getvalue()
 
     p = Path(output_path).resolve()
     p.parent.mkdir(parents=True, exist_ok=True)

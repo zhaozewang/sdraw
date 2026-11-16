@@ -1,7 +1,7 @@
 import type { Board, BoardSummary, FileInfo, DirEntry } from '@/types/board';
 
 // In packaged mode the backend runs on a dynamic port passed via query param or same origin
-const API_BASE = '/api';
+const API_BASE = new URL('api', document.baseURI).pathname;
 
 async function request<T>(url: string, options?: RequestInit, timeoutMs = 5000): Promise<T> {
   const controller = new AbortController();
@@ -87,7 +87,18 @@ export interface WorkspaceBoardSummary {
   thumbnail?: string | null;
 }
 
+export type TextLayout = {
+  fontSize: number; fontFamily: string; fontWeight: string | number;
+  color: string; italic: boolean; anchor: 'start' | 'middle' | 'end';
+  lines: {x: number; y: number; text: string}[];
+  formula?: {x: number; y: number; width: number; height: number; href: string};
+};
+
+
 export const api = {
+  textLayout: (element: unknown) => request<TextLayout>('/export/text-layout', {
+    method: 'POST', body: JSON.stringify(element),
+  }, 30000),
   // Workspace boards (from workspace/boards/)
   listWorkspaceBoards: () =>
     request<WorkspaceBoardSummary[]>('/boards/'),

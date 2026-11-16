@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from models.board import Board
+from services.board_format import read_board, write_board
 
 router = APIRouter(prefix="/api/boards", tags=["boards"])
 
@@ -194,6 +195,8 @@ async def save_board_to_file(body: SaveBoardToFileRequest):
     try:
         p = Path(body.path).resolve()
         p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and p.suffix.lower() in {'.html', '.htm'}:
+            read_board(p)  # Never replace an unrelated HTML page with a board.
 
         # Write cache (plotlyJson only — thumbnail now lives in .sdraw)
         save_cache(body.board)
@@ -202,9 +205,7 @@ async def save_board_to_file(body: SaveBoardToFileRequest):
         # _manual preamble at the top so any coding agent opening the
         # file has the invariants in its context window.
         clean_board = _with_manual(strip_cached_fields(body.board))
-        payload = json.dumps(clean_board, indent=2)
-        p.write_text(payload)
-        size = len(payload.encode("utf-8"))
+        size = write_board(p, clean_board)
         mtime = p.stat().st_mtime
 
         # Clean up legacy .blobs companion file if it exists
@@ -226,7 +227,7 @@ async def save_board_to_file(body: SaveBoardToFileRequest):
             "oversized": size > SDRAW_SOFT_SIZE_LIMIT,
             "soft_limit": SDRAW_SOFT_SIZE_LIMIT,
         }
-    except OSError as exc:
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -266,8 +267,8 @@ async def save_board_delta(body: SaveDeltaRequest):
         raise HTTPException(status_code=409, detail="File not found; use full save")
 
     try:
-        existing = json.loads(p.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
+        existing = read_board(p)
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=f"Cannot read board file: {exc}")
 
     # Verify board id matches to prevent accidental cross-board writes
@@ -319,9 +320,7 @@ async def save_board_delta(body: SaveDeltaRequest):
     # Even if the existing file already has one, we regenerate it so the
     # wording stays current as invariants evolve.
     clean = _with_manual(strip_cached_fields(existing))
-    payload = json.dumps(clean, indent=2)
-    p.write_text(payload)
-    size = len(payload.encode("utf-8"))
+    size = write_board(p, clean)
     mtime = p.stat().st_mtime
 
     return {"path": str(p), "size": size, "mtime": mtime}
@@ -340,8 +339,14 @@ async def open_board_from_file(body: OpenBoardFromFileRequest):
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Board file not found")
     try:
+        expected_id = None
+        if p.suffix.lower() == '.svg':
+            from services.svg_source import resolve_svg_source
+            p, expected_id = resolve_svg_source(p)
         mtime = p.stat().st_mtime
-        data = json.loads(p.read_text())
+        data = read_board(p)
+        if expected_id is not None and data.get('id') != expected_id:
+            raise ValueError('SVG and source board IDs do not match')
         # _manual is a file-only preamble for coding agents — it's not
         # part of the runtime Board shape. Drop it before handing the
         # board to the frontend so Board type stays clean.
@@ -351,7 +356,7 @@ async def open_board_from_file(body: OpenBoardFromFileRequest):
         # Merge cached data (plotlyJson, thumbnail) from ~/.sdraw/cache/
         data = merge_cache_into_board(data)
         return {"path": str(p), "board": data, "mtime": mtime}
-    except (json.JSONDecodeError, OSError) as exc:
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -389,7 +394,7 @@ async def board_summary(body: SummaryRequest):
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Board file not found")
     try:
-        data = json.loads(p.read_text())
+        data = read_board(p)
         elements = data.get("elements", [])
         image_count = sum(1 for e in elements if e.get("type") == "image")
         # Thumbnail may be in the cache
@@ -411,7 +416,7 @@ async def board_summary(body: SummaryRequest):
             "canvas": data.get("canvas", {}),
             "thumbnail": thumbnail,
         }
-    except (json.JSONDecodeError, OSError) as exc:
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -428,7 +433,7 @@ async def delete_board_file(body: DeleteBoardFileRequest):
     try:
         p.unlink()
         return {"deleted": str(p)}
-    except OSError as exc:
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -464,7 +469,7 @@ async def rename_board_file(body: RenameBoardFileRequest):
             except OSError:
                 pass
         return {"path": str(new_p), "mtime": new_p.stat().st_mtime}
-    except OSError as exc:
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -488,7 +493,7 @@ async def save_checkpoint(body: CheckpointRequest):
     try:
         cp.write_text(json.dumps(body.board))
         return {"path": str(cp)}
-    except OSError as exc:
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -525,7 +530,7 @@ async def load_checkpoint(body: CheckpointCheckRequest):
     try:
         data = json.loads(cp.read_text())
         return {"path": body.path, "board": data}
-    except (json.JSONDecodeError, OSError) as exc:
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -560,8 +565,8 @@ async def board_code_digest(body: DigestRequest):
         raise HTTPException(status_code=404, detail="Board file not found")
     try:
         mtime = p.stat().st_mtime
-        data = json.loads(p.read_text())
+        data = read_board(p)
         data = migrate_board_schema(data)
         return {"digest": _code_digest(data), "mtime": mtime}
-    except (json.JSONDecodeError, OSError) as exc:
+    except (ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))

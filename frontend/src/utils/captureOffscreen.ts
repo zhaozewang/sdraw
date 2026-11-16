@@ -1,3 +1,4 @@
+import { ARROW_LENGTH, ARROW_HALF_WIDTH, markerInset, trimArrowPath, returnArrowPath } from './arrowGeometry';
 /**
  * Off-screen DOM rendering for pixel-perfect board export.
  *
@@ -12,6 +13,7 @@
  * cross-board contamination regardless of which board is currently visible.
  */
 
+import { api } from '@/api/client';
 import type { Board, BoardElement } from '@/types/board';
 
 export interface OffscreenCaptureOptions {
@@ -37,6 +39,7 @@ function defaultControlPoints(p0: Pt, p1: Pt, lineType: string): Pt[] {
   const offX = (-dy / len) * len * 0.3;
   const offY = (dx / len) * len * 0.3;
   switch (lineType) {
+    case 'return': return [{ x: mx, y: Math.max(p0.y, p1.y) + 50 }];
     case 'quadratic':
     case 'arc':
       return [{ x: mx + offX, y: my + offY }];
@@ -52,8 +55,11 @@ function defaultControlPoints(p0: Pt, p1: Pt, lineType: string): Pt[] {
   }
 }
 
-function buildPath(p0: Pt, p1: Pt, lineType: string, ctrl: Pt[], stepRadius = 20): string {
+function buildPath(p0: Pt, p1: Pt, lineType: string, ctrl: Pt[], stepRadius = 20, returnDirection = 'down'): string {
   switch (lineType) {
+    case 'return': {
+      return returnArrowPath(p0,p1,ctrl[0],returnDirection);
+    }
     case 'quadratic':
     case 'arc': {
       const c = ctrl[0] || { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
@@ -114,7 +120,7 @@ function createSvgElement(tag: string, attrs: Record<string, string | number>): 
 
 function buildMarkerDefs(
   id: string, startMarker: string, endMarker: string,
-  color: string, headSize: number,
+  color: string, headSize: number, strokeWidth: number,
 ): SVGDefsElement | null {
   const defs = document.createElementNS(SVG_NS, 'defs');
   let hasMarkers = false;
@@ -122,15 +128,15 @@ function buildMarkerDefs(
   const addMarker = (type: string, suffix: string, isStart: boolean) => {
     if (type === 'none') return;
     hasMarkers = true;
-    const s = headSize;
+    const s = headSize * strokeWidth;
     const markerId = `${id}-${suffix}`;
 
     if (type === 'arrow' || type === 'arrow-open') {
-      const w = 10 * s, h = 8 * s, mid = 4 * s;
+      const w = ARROW_LENGTH * s, h = 2 * ARROW_HALF_WIDTH * s, mid = ARROW_HALF_WIDTH * s;
       const marker = createSvgElement('marker', {
         id: markerId, markerWidth: w, markerHeight: h,
         refX: isStart ? 0 : w, refY: mid,
-        orient: 'auto', markerUnits: 'strokeWidth',
+        orient: 'auto', markerUnits: 'userSpaceOnUse',
       });
       const pts = isStart ? `${w} 0, 0 ${mid}, ${w} ${h}` : `0 0, ${w} ${mid}, 0 ${h}`;
       if (type === 'arrow') {
@@ -145,7 +151,7 @@ function buildMarkerDefs(
       const d = 6 * s, c = 3 * s, r = 2.5 * s;
       const marker = createSvgElement('marker', {
         id: markerId, markerWidth: d, markerHeight: d,
-        refX: c, refY: c, orient: 'auto', markerUnits: 'strokeWidth',
+        refX: c, refY: c, orient: 'auto', markerUnits: 'userSpaceOnUse',
       });
       marker.appendChild(createSvgElement('circle', { cx: c, cy: c, r, fill: color }));
       defs.appendChild(marker);
@@ -153,7 +159,7 @@ function buildMarkerDefs(
       const d = 8 * s, mid = 4 * s;
       const marker = createSvgElement('marker', {
         id: markerId, markerWidth: d, markerHeight: d,
-        refX: mid, refY: mid, orient: 'auto', markerUnits: 'strokeWidth',
+        refX: mid, refY: mid, orient: 'auto', markerUnits: 'userSpaceOnUse',
       });
       marker.appendChild(createSvgElement('polygon', {
         points: `${mid} 0, ${d} ${mid}, ${mid} ${d}, 0 ${mid}`, fill: color,
@@ -163,7 +169,7 @@ function buildMarkerDefs(
       const w = 2 * s, h = 8 * s, cx = 1 * s;
       const marker = createSvgElement('marker', {
         id: markerId, markerWidth: w, markerHeight: h,
-        refX: cx, refY: h / 2, orient: 'auto', markerUnits: 'strokeWidth',
+        refX: cx, refY: h / 2, orient: 'auto', markerUnits: 'userSpaceOnUse',
       });
       marker.appendChild(createSvgElement('line', {
         x1: cx, y1: 0, x2: cx, y2: h, stroke: color, 'stroke-width': 2 * s,
@@ -213,8 +219,8 @@ function buildImageElement(el: BoardElement, ox: number, oy: number): HTMLElemen
     const mime = el.source?.embeddedMime || 'image/png';
     img.src = embedded
       ? `data:${mime};base64,${embedded}`
-      : `/api/image?path=${encodeURIComponent(path)}`;
-    img.style.cssText = 'width: 100%; height: 100%; object-fit: fill; display: block;';
+      : `${new URL('api/image', document.baseURI).pathname}?path=${encodeURIComponent(path)}`;
+    img.style.cssText = `width:100%;height:100%;object-fit:${style.fitMode === 'contain' ? 'contain' : style.fitMode === 'cover' ? 'cover' : 'fill'};display:block;`;
     img.draggable = false;
     wrapper.appendChild(img);
   }
@@ -264,7 +270,7 @@ function buildPlotElement(el: BoardElement, ox: number, oy: number): HTMLElement
     // making identically-sized panels look completely different).
     const img = document.createElement('img');
     img.src = `data:image/png;base64,${lastOutput}`;
-    img.style.cssText = 'width: 100%; height: 100%; object-fit: fill; display: block;';
+    img.style.cssText = `width:100%;height:100%;object-fit:${style.fitMode === 'contain' ? 'contain' : style.fitMode === 'cover' ? 'cover' : 'fill'};display:block;`;
     img.draggable = false;
     wrapper.appendChild(img);
   }
@@ -421,7 +427,7 @@ function buildArrowOverlay(
     let endMarker = (meta.endMarker as string) ?? (meta.arrowHead !== false ? 'arrow' : 'none');
     if ('endMarker' in meta) endMarker = meta.endMarker as string;
 
-    const hasCurve = ['quadratic', 'cubic', 'arc', 'smooth'].includes(lineType);
+    const hasCurve = ['quadratic', 'cubic', 'arc', 'smooth', 'return'].includes(lineType);
     // Heal holes from a prior buggy save (idx=1 written before idx=0) by
     // filling missing slots with the auto-defaults — otherwise the .map
     // below would crash on the undefined entry.
@@ -433,9 +439,21 @@ function buildArrowOverlay(
     // Convert to absolute coordinates relative to container
     const absP0 = { x: el.x - ox + pts[0].x, y: el.y - oy + pts[0].y };
     const absP1 = { x: el.x - ox + pts[1].x, y: el.y - oy + pts[1].y };
+    if (meta.arrowBody === 'filled' && ['straight','step'].includes(lineType)) {
+      const path = createSvgElement('path', {
+        d: filledArrowPath(absP0, absP1, meta), fill: style.fill || '#dce9ef',
+        stroke: style.strokeColor || '#333333', 'stroke-width': style.strokeWidth ?? 2,
+        opacity: style.opacity ?? 1,
+      });
+      if (style.strokeStyle === 'dashed') path.setAttribute('stroke-dasharray','8,4');
+      if (style.strokeStyle === 'dotted') path.setAttribute('stroke-dasharray','2,4');
+      svg.appendChild(path);
+      continue;
+    }
     const absCtrl = effectiveCtrl.map(c => ({ x: el.x - ox + c.x, y: el.y - oy + c.y }));
 
-    const pathD = buildPath(absP0, absP1, lineType, absCtrl, (meta.stepRadius as number) || 20);
+    const pathD = buildPath(absP0, absP1, lineType, absCtrl, (meta.stepRadius as number) || 20,
+      (meta.returnDirection as string) || 'down');
 
     const strokeColor = style.strokeColor || '#333333';
     const strokeWidth = style.strokeWidth ?? 2;
@@ -443,7 +461,7 @@ function buildArrowOverlay(
 
     // Marker defs for this arrow
     const markerId = `export-${el.id}`;
-    const markerDefs = buildMarkerDefs(markerId, startMarker, endMarker, strokeColor, headSize);
+    const markerDefs = buildMarkerDefs(markerId, startMarker, endMarker, strokeColor, headSize, strokeWidth);
     if (markerDefs) {
       while (markerDefs.firstChild) defs.appendChild(markerDefs.firstChild);
     }
@@ -453,107 +471,56 @@ function buildArrowOverlay(
     g.style.opacity = String(style.opacity ?? 1);
 
     const path = createSvgElement('path', {
-      d: pathD,
+      d: trimArrowPath(pathD, markerInset(startMarker, strokeWidth, headSize), markerInset(endMarker, strokeWidth, headSize)),
       fill: 'none',
       stroke: strokeColor,
       'stroke-width': strokeWidth,
     });
     if (dashArray) path.setAttribute('stroke-dasharray', dashArray);
-    if (startMarker !== 'none') path.setAttribute('marker-start', `url(#${markerId}-start)`);
-    if (endMarker !== 'none') path.setAttribute('marker-end', `url(#${markerId}-end)`);
     g.appendChild(path);
+    const markerPath = createSvgElement('path', { d: pathD, fill: 'none', stroke: 'none', 'stroke-width': strokeWidth });
+    if (startMarker !== 'none') markerPath.setAttribute('marker-start', `url(#${markerId}-start)`);
+    if (endMarker !== 'none') markerPath.setAttribute('marker-end', `url(#${markerId}-end)`);
+    g.appendChild(markerPath);
     svg.appendChild(g);
   }
 
   return svg;
 }
 
-function buildTextElement(el: BoardElement, ox: number, oy: number, katexModule?: any): HTMLElement {
+async function buildTextElement(el: BoardElement, ox: number, oy: number): Promise<HTMLElement> {
   const style = el.style || {};
-  const text = el.text || '';
-  const fontFamily = style.fontFamily || 'Inter, sans-serif';
-  const padding = style.padding ?? 4;
-
-  // On the live canvas TextNode renders:
-  //   outer div: w-full h-full, background, padding, border: 1px solid transparent
-  //   inner div: w-full h-full, text styles
-  // The 1px transparent border exists only to prevent layout shift on selection
-  // and must NOT be in the export — it causes html2canvas to offset text by ~1px.
-  // Instead we account for the border space by adding 1px to the padding.
+  const layout = await api.textLayout({text: el.text || '', width: el.width, height: el.height, style});
   const wrapper = document.createElement('div');
   wrapper.setAttribute('data-text-element', 'true');
-  wrapper.style.cssText = `
-    position: absolute;
-    left: ${el.x - ox}px; top: ${el.y - oy}px;
-    width: ${el.width}px; height: ${el.height}px;
-    z-index: ${el.z_index};
-    box-sizing: border-box;
-    background-color: ${(style.background && style.background !== 'transparent') ? style.background : 'transparent'};
-    padding: ${padding + 1}px;
-    opacity: ${style.opacity ?? 1};
-  `;
-  if (el.rotation) {
-    wrapper.style.transform = `rotate(${el.rotation}deg)`;
-  }
-
-  const textDiv = document.createElement('div');
-  textDiv.style.cssText = `
-    width: 100%; height: 100%;
-    box-sizing: border-box;
-    font-size: ${style.fontSize ?? 14}px;
-    font-weight: ${style.fontWeight ?? 400};
-    font-family: ${fontFamily};
-    color: ${style.color || '#111111'};
-    text-align: ${style.textAlign || 'left'};
-    line-height: ${style.lineHeight ?? 1.4};
-    font-style: ${style.italic ? 'italic' : 'normal'};
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow: visible;
-  `;
-
-  // Render KaTeX math if text contains $ delimiters
-  const hasMath = /\$/.test(text);
-  if (hasMath && katexModule) {
-    try {
-      const html = renderMathHtml(text, katexModule);
-      textDiv.innerHTML = html;
-    } catch {
-      textDiv.textContent = text;
-    }
+  wrapper.style.cssText = `position:absolute;left:${el.x-ox}px;top:${el.y-oy}px;
+    width:${el.width}px;height:${el.height}px;z-index:${el.z_index};
+    background:${style.background || 'transparent'};opacity:${style.opacity ?? 1};`;
+  if (el.rotation) wrapper.style.transform = `rotate(${el.rotation}deg)`;
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', '100%'); svg.setAttribute('height', '100%');
+  svg.style.overflow = 'visible'; svg.style.display = 'block';
+  if (layout.formula) {
+    const image = document.createElementNS(ns, 'image');
+    for (const [key, value] of Object.entries(layout.formula)) image.setAttribute(key, String(value));
+    svg.appendChild(image);
   } else {
-    textDiv.textContent = text;
-  }
-
-  wrapper.appendChild(textDiv);
-  return wrapper;
-}
-
-function renderMathHtml(text: string, katex: any): string {
-  let html = '';
-  const regex = /(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g;
-  let lastIndex = 0;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      html += escapeHtml(text.slice(lastIndex, match.index));
+    const text = document.createElementNS(ns, 'text');
+    for (const [key, value] of Object.entries({
+      'font-family': layout.fontFamily, 'font-size': layout.fontSize, 'font-weight': layout.fontWeight,
+      'font-style': layout.italic ? 'italic' : 'normal', fill: layout.color, 'text-anchor': layout.anchor,
+    })) text.setAttribute(key, String(value));
+    text.style.whiteSpace = 'pre';
+    for (const line of layout.lines) {
+      const span = document.createElementNS(ns, 'tspan');
+      span.setAttribute('x', String(line.x)); span.setAttribute('y', String(line.y));
+      span.textContent = line.text; text.appendChild(span);
     }
-    const mathStr = match[0];
-    const isDisplay = mathStr.startsWith('$$');
-    const tex = isDisplay ? mathStr.slice(2, -2) : mathStr.slice(1, -1);
-    html += katex.renderToString(tex, {
-      displayMode: isDisplay, throwOnError: false, output: 'html',
-    });
-    lastIndex = match.index + mathStr.length;
+    svg.appendChild(text);
   }
-  if (lastIndex < text.length) {
-    html += escapeHtml(text.slice(lastIndex));
-  }
-  return html;
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  wrapper.appendChild(svg);
+  return wrapper;
 }
 
 /** Compute polygon points for export shapes (same logic as RectangleNode) */
@@ -562,6 +529,8 @@ function getExportShapePoints(shape: string, sw: number, hl: number): string {
   const h = Math.max(0.05, Math.min(0.95, hl));
   const top = 50 - s * 50, bot = 50 + s * 50, neck = 100 - h * 100;
   switch (shape) {
+    case 'encoder': return '0,0 100,18 100,82 0,100';
+    case 'decoder': return '0,18 100,0 100,100 0,82';
     case 'arrow-right': return `0,${top} ${neck},${top} ${neck},0 100,50 ${neck},100 ${neck},${bot} 0,${bot}`;
     case 'arrow-left': return `0,50 ${h*100},0 ${h*100},${top} 100,${top} 100,${bot} ${h*100},${bot} ${h*100},100`;
     case 'arrow-up': return `50,0 100,${h*100} ${bot},${h*100} ${bot},100 ${top},100 ${top},${h*100} 0,${h*100}`;
@@ -702,12 +671,6 @@ export async function captureOffscreen(
   document.body.appendChild(container);
 
   try {
-    // Import KaTeX for math rendering in text elements
-    let katexModule: any = null;
-    try {
-      katexModule = (await import('katex')).default;
-    } catch { /* KaTeX not available — math will render as raw text */ }
-
     // Inject ALL page stylesheets into the off-screen container so
     // html2canvas renders text with the same CSS as the live page
     // (Tailwind preflight, KaTeX fonts, font-face rules, etc.)
@@ -738,7 +701,7 @@ export async function captureOffscreen(
           domEl = buildRectangleElement(el, ox, oy);
           break;
         case 'text':
-          domEl = buildTextElement(el, ox, oy, katexModule);
+          domEl = await buildTextElement(el, ox, oy);
           break;
         // arrows and pen strokes handled below as SVG overlays
       }
@@ -890,3 +853,4 @@ export async function captureOffscreen(
     document.body.removeChild(container);
   }
 }
+import { filledArrowPath } from './filledArrow';

@@ -37,7 +37,7 @@ function isPassThrough(element: BoardElement): boolean {
   const shape = element.metadata?.shape as string | undefined;
   const isFilled = !!element.style.fill && element.style.fill !== 'transparent';
   const isNonRectShape = element.type === 'rectangle'
-    && !!shape && shape !== 'rectangle' && !isFilled;
+    && !!shape && shape !== 'rectangle' && (!isFilled || shape === 'rounded-junction');
   return isArrow || isPen || isNonRectShape;
 }
 
@@ -284,7 +284,10 @@ function SnapHighlight({ elementId }: { elementId: string }) {
   );
 }
 
-export function Canvas() {
+export function Canvas({gridVisible}: {gridVisible?: boolean}) {
+  // The report overlay uses a faint display grid; board coordinates and snap
+  // spacing remain unchanged. The full editor retains its native appearance.
+  const reportGrid = gridVisible !== undefined;
   const board = useBoardStore(s => s.board);
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
@@ -1317,21 +1320,21 @@ export function Canvas() {
         className="bg-canvas-bg"
         proOptions={{ hideAttribution: true }}
       >
-        {board.canvas.grid_enabled && (
+        {(gridVisible ?? board.canvas.grid_enabled) && (
           <>
             <Background
               id="grid-minor"
               variant={BackgroundVariant.Dots}
-              gap={board.canvas.grid_size}
-              size={3}
-              color={isDark ? '#3f4147' : '#d1d5db'}
+              gap={reportGrid ? Math.max(20, board.canvas.grid_size) : board.canvas.grid_size}
+              size={reportGrid ? 1 : 3}
+              color={reportGrid ? (isDark ? '#454850' : '#c8cfd7') : (isDark ? '#3f4147' : '#d1d5db')}
             />
             <Background
               id="grid-major"
               variant={BackgroundVariant.Dots}
-              gap={board.canvas.grid_size * 5}
-              size={5}
-              color={isDark ? '#565960' : '#9ca3af'}
+              gap={(reportGrid ? Math.max(20, board.canvas.grid_size) : board.canvas.grid_size) * 5}
+              size={reportGrid ? 1.5 : 5}
+              color={reportGrid ? (isDark ? '#5a5f69' : '#aeb8c4') : (isDark ? '#565960' : '#9ca3af')}
             />
           </>
         )}

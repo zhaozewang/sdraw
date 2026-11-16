@@ -1,3 +1,5 @@
+import { ARROW_LENGTH, ARROW_HALF_WIDTH, markerInset, trimArrowPath, returnArrowPath } from '@/utils/arrowGeometry';
+import { filledArrowPath } from '@/utils/filledArrow';
 import { memo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { NodeProps } from '@xyflow/react';
@@ -17,7 +19,7 @@ const BASE_STROKE_W = 2;
 const BASE_CTRL_STROKE = 1.5;
 const BASE_GUIDE_W = 1;
 
-export type LineType = 'straight' | 'quadratic' | 'cubic' | 'arc' | 'step' | 'step-rounded' | 'smooth';
+export type LineType = 'straight' | 'quadratic' | 'cubic' | 'arc' | 'step' | 'step-rounded' | 'smooth' | 'return';
 export type MarkerType = 'none' | 'arrow' | 'arrow-open' | 'dot' | 'diamond' | 'bar';
 
 /* ------------------------------------------------------------------ */
@@ -39,6 +41,7 @@ function defaultControlPoints(
   const offY = (dx / len) * len * 0.3;
 
   switch (lineType) {
+    case 'return': return [{ x: mx, y: Math.max(p0.y, p1.y) + 50 }];
     case 'quadratic':
     case 'arc':
       return [{ x: mx + offX, y: my + offY }];
@@ -61,9 +64,12 @@ function buildPath(
   p1: { x: number; y: number },
   lineType: LineType,
   ctrl: Array<{ x: number; y: number }>,
-  opts?: { stepRadius?: number },
+  opts?: { stepRadius?: number; returnDirection?: string },
 ): string {
   switch (lineType) {
+    case 'return': {
+      return returnArrowPath(p0,p1,ctrl[0],opts?.returnDirection);
+    }
     case 'quadratic':
     case 'arc': {
       const c = ctrl[0] || { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
@@ -120,14 +126,14 @@ function buildPath(
 /*  SVG marker definitions                                             */
 /* ------------------------------------------------------------------ */
 
-function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
-  id: string; color: string; startMarker: MarkerType; endMarker: MarkerType; headSize?: number;
+function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1, strokeWidth }: {
+  id: string; color: string; startMarker: MarkerType; endMarker: MarkerType; headSize?: number; strokeWidth: number;
 }) {
   const markers: React.ReactNode[] = [];
-  const s = headSize; // scale factor
+  const s = headSize * strokeWidth; // explicit canvas units; independent of marker stroke inheritance
 
   const addArrow = (key: string, isStart: boolean) => {
-    const w = 10 * s, h = 8 * s, mid = 4 * s;
+    const w = ARROW_LENGTH * s, h = 2 * ARROW_HALF_WIDTH * s, mid = ARROW_HALF_WIDTH * s;
     // refX exactly at the tip — arrowhead is precisely at the endpoint
     markers.push(
       <marker
@@ -138,7 +144,7 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
         refX={isStart ? 0 : w}
         refY={mid}
         orient="auto"
-        markerUnits="strokeWidth"
+        markerUnits="userSpaceOnUse"
       >
         <polygon
           points={isStart ? `${w} 0, 0 ${mid}, ${w} ${h}` : `0 0, ${w} ${mid}, 0 ${h}`}
@@ -149,7 +155,7 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
   };
 
   const addArrowOpen = (key: string, isStart: boolean) => {
-    const w = 10 * s, h = 8 * s, mid = 4 * s;
+    const w = ARROW_LENGTH * s, h = 2 * ARROW_HALF_WIDTH * s, mid = ARROW_HALF_WIDTH * s;
     markers.push(
       <marker
         key={key}
@@ -159,7 +165,7 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
         refX={isStart ? 0 : w}
         refY={mid}
         orient="auto"
-        markerUnits="strokeWidth"
+        markerUnits="userSpaceOnUse"
       >
         <polyline
           points={isStart ? `${w} 0, 0 ${mid}, ${w} ${h}` : `0 0, ${w} ${mid}, 0 ${h}`}
@@ -182,7 +188,7 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
         refX={c}
         refY={c}
         orient="auto"
-        markerUnits="strokeWidth"
+        markerUnits="userSpaceOnUse"
       >
         <circle cx={c} cy={c} r={r} fill={color} />
       </marker>
@@ -200,7 +206,7 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
         refX={mid}
         refY={mid}
         orient="auto"
-        markerUnits="strokeWidth"
+        markerUnits="userSpaceOnUse"
       >
         <polygon points={`${mid} 0, ${d} ${mid}, ${mid} ${d}, 0 ${mid}`} fill={color} />
       </marker>
@@ -218,7 +224,7 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1 }: {
         refX={cx}
         refY={h / 2}
         orient="auto"
-        markerUnits="strokeWidth"
+        markerUnits="userSpaceOnUse"
       >
         <line x1={cx} y1="0" x2={cx} y2={h} stroke={color} strokeWidth={2 * s} />
       </marker>
@@ -417,7 +423,7 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
       : [{ x: 0, y: el.height / 2 }, { x: el.width, y: el.height / 2 }];
     const storedCtrl = (el.metadata?.controlPoints as Array<{ x: number; y: number }> | undefined) || [];
     const lt = (el.metadata?.lineType as LineType) || 'straight';
-    const needsAutoCtrl = (lt === 'quadratic' || lt === 'cubic' || lt === 'arc' || lt === 'smooth')
+    const needsAutoCtrl = (lt === 'quadratic' || lt === 'cubic' || lt === 'arc' || lt === 'smooth' || lt === 'return')
       && storedCtrl.length === 0;
     const baselineCtrl = needsAutoCtrl
       ? defaultControlPoints(baselinePts[0], baselinePts[1], lt)
@@ -451,6 +457,47 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
     document.addEventListener('pointerup', onUp);
   }, [elementId, updateElement, pushHistory, getCanvasCoords, recalcBBox]);
 
+  const handleBendDown = useCallback((e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const el = useBoardStore.getState().board?.elements.find(item => item.id === elementId);
+    if (!el || el.locked || !el.points || el.points.length < 2) return;
+    const axis = el.metadata?.bendAxis === 'vertical' ? 'y' : 'x';
+    const [start,end] = el.points;
+    const span = end[axis]-start[axis];
+    if (Math.abs(span) < 1e-6) return;
+    const original = el.metadata?.bendPosition;
+    const matrix = (e.currentTarget as SVGGraphicsElement).getScreenCTM();
+    if (!matrix) return;
+    const inverse = matrix.inverse();
+    const anchor = new DOMPoint(e.clientX,e.clientY).matrixTransform(inverse);
+    const initialFraction = (original as number) ?? .5;
+    let changed = false;
+    const oldCursor = document.body.style.cursor;
+    const onMove = (ev: PointerEvent) => {
+      const position = new DOMPoint(ev.clientX,ev.clientY).matrixTransform(inverse);
+      const current = useBoardStore.getState().board?.elements.find(item => item.id === elementId);
+      if (!current) return;
+      const bendPosition = Math.max(.1,Math.min(.9,initialFraction+(position[axis]-anchor[axis])/span));
+      changed = true;
+      updateElement(elementId,{metadata:{...current.metadata,bendPosition}});
+    };
+    const finish = (ev: PointerEvent) => {
+      document.removeEventListener('pointermove',onMove);
+      document.removeEventListener('pointerup',finish);
+      document.removeEventListener('pointercancel',finish);
+      document.body.style.cursor = oldCursor;
+      if (ev.type === 'pointercancel') {
+        const current = useBoardStore.getState().board?.elements.find(item => item.id === elementId);
+        if (current) updateElement(elementId,{metadata:{...current.metadata,bendPosition:original}});
+      } else if (changed) pushHistory('Move middle segment');
+    };
+    document.body.style.cursor = axis === 'y' ? 'ns-resize' : 'ew-resize';
+    document.addEventListener('pointermove',onMove);
+    document.addEventListener('pointerup',finish);
+    document.addEventListener('pointercancel',finish);
+  },[elementId,updateElement,pushHistory]);
+
   if (!element || element.type !== 'arrow') return null;
 
   const { style, metadata } = element;
@@ -470,7 +517,7 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
     : [{ x: 0, y: element.height / 2 }, { x: element.width, y: element.height / 2 }];
 
   const ctrlRaw: Array<{ x: number; y: number } | undefined> = (metadata?.controlPoints as any) || [];
-  const hasCurveCtrl = lineType === 'quadratic' || lineType === 'cubic' || lineType === 'arc' || lineType === 'smooth';
+  const hasCurveCtrl = lineType === 'quadratic' || lineType === 'cubic' || lineType === 'arc' || lineType === 'smooth' || lineType === 'return';
   // Heal any holes left by a prior buggy session (idx=1 written before idx=0)
   // by filling missing slots with the auto-defaults — otherwise the .map
   // calls below would crash on the undefined entry.
@@ -481,7 +528,10 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const effectiveCtrl = ctrl;
 
   const stepRadius = (metadata?.stepRadius as number) || 20;
-  const pathD = buildPath(pts[0], pts[1], lineType, effectiveCtrl, { stepRadius });
+  const pathD = buildPath(pts[0], pts[1], lineType, effectiveCtrl,
+    { stepRadius, returnDirection: metadata?.returnDirection as string });
+  const filled = metadata?.arrowBody === 'filled' && ['straight','step'].includes(lineType);
+  const filledPath = filled ? filledArrowPath(pts[0],pts[1],metadata) : '';
 
   const mStart = startMarker !== 'none' ? `url(#${elementId}-start)` : undefined;
   const mEnd = endMarker !== 'none' ? `url(#${elementId}-end)` : undefined;
@@ -500,13 +550,14 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
           startMarker={startMarker}
           endMarker={endMarker}
           headSize={(metadata?.arrowHeadSize as number) || 1}
+          strokeWidth={strokeWidth}
         />
 
         {/* Invisible thick path for easier clicking — this is the only hit area */}
         <path
-          d={pathD} fill="none" stroke="transparent"
+          d={filled ? filledPath : pathD} fill={filled ? 'transparent' : 'none'} stroke="transparent"
           strokeWidth={Math.max(14, strokeWidth + 10)}
-          style={{ pointerEvents: 'stroke', cursor: element.locked ? 'default' : 'pointer' }}
+          style={{ pointerEvents: filled ? 'all' : 'stroke', cursor: element.locked ? 'default' : 'pointer' }}
           onPointerDown={(e) => {
             e.stopPropagation();
             // Select: Shift or Cmd/Ctrl toggles membership in the existing
@@ -566,17 +617,22 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
           }}
         />
 
-        {/* Visible path with stroke and markers */}
-        <path
-          d={pathD}
+        {/* Shorten only the shaft; markers and interaction retain exact endpoints. */}
+        {filled ? <path d={filledPath} fill={style.fill || '#dce9ef'} stroke={strokeColor}
+          strokeWidth={strokeWidth} strokeDasharray={dashArray} /> : <><path
+          d={trimArrowPath(pathD,
+            markerInset(startMarker, strokeWidth, (metadata?.arrowHeadSize as number) || 1),
+            markerInset(endMarker, strokeWidth, (metadata?.arrowHeadSize as number) || 1))}
           fill="none"
           stroke={strokeColor}
           strokeWidth={strokeWidth}
           strokeDasharray={dashArray}
-          markerStart={mStart}
-          markerEnd={mEnd}
+        />
+        <path d={pathD} fill="none" stroke="none" strokeWidth={strokeWidth}
+          markerStart={mStart} markerEnd={mEnd}
           style={{ pointerEvents: 'none' }}
         />
+        </>}
 
       </svg>
 
@@ -616,6 +672,22 @@ function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
               />
             ))}
             {/* Start endpoint */}
+            {filled && lineType === 'step' && pts[0].x !== pts[1].x && pts[0].y !== pts[1].y && (() => {
+              const vertical = metadata?.bendAxis === 'vertical';
+              const fraction = Math.max(.1,Math.min(.9,(metadata?.bendPosition as number) ?? .5));
+              const x = ax+pts[0].x+(pts[1].x-pts[0].x)*(vertical ? .5 : fraction);
+              const y = ay+pts[0].y+(pts[1].y-pts[0].y)*(vertical ? fraction : .5);
+              const cursor = vertical ? 'ns-resize' : 'ew-resize';
+              return <g data-testid="arrow-bend-handle" data-element-id={elementId}>
+                <title>Drag middle segment</title>
+                <line x1={vertical ? ax+pts[0].x : x} y1={vertical ? y : ay+pts[0].y}
+                  x2={vertical ? ax+pts[1].x : x} y2={vertical ? y : ay+pts[1].y}
+                  stroke="transparent" strokeWidth={Math.max(18*iz,((metadata?.bodyWidth as number) ?? 10)+6*iz)}
+                  style={{pointerEvents:'stroke',cursor}} onPointerDown={handleBendDown} />
+                <circle cx={x} cy={y} r={5*iz} fill="#f59e0b" stroke="white" strokeWidth={cs}
+                  style={{pointerEvents:'auto',cursor}} onPointerDown={handleBendDown} />
+              </g>;
+            })()}
             <circle
               cx={ax + pts[0].x} cy={ay + pts[0].y} r={hr}
               fill="white" stroke="#3b82f6" strokeWidth={hs}

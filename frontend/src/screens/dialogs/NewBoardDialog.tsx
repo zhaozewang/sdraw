@@ -9,6 +9,7 @@ export function NewBoardDialog({
   onClose: () => void;
   onCreate: (name: string, filePath: string, width: number, height: number, infinite: boolean) => void;
 }) {
+  const [format, setFormat] = useState('.html');
   const [boardName, setBoardName] = useState('');
   const [canvasWidth, setCanvasWidth] = useState(2400);
   const [canvasHeight, setCanvasHeight] = useState(1600);
@@ -16,8 +17,8 @@ export function NewBoardDialog({
 
   const safeFileName = useMemo(() => {
     const name = boardName.trim() || 'Untitled Board';
-    return name.replace(/[^a-zA-Z0-9_\- ]/g, '_') + '.sdraw';
-  }, [boardName]);
+    return name.replace(/[^a-zA-Z0-9_\- ]/g, '_') + format;
+  }, [boardName, format]);
 
   const handleSubmit = () => {
     const name = boardName.trim() || 'Untitled Board';
@@ -44,8 +45,11 @@ export function NewBoardDialog({
                 className="flex-1 min-w-0 px-3 py-2 text-sm border border-gray-200 dark:border-border dark:bg-surface-tertiary dark:text-on-surface-primary rounded-l-md focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
                 autoFocus
               />
-              <span className="px-2.5 py-2 text-sm text-gray-400 dark:text-on-surface-muted bg-gray-50 dark:bg-surface-secondary border border-l-0 border-gray-200 dark:border-border rounded-r-md select-none">.sdraw</span>
+              <span className="px-2.5 py-2 text-sm text-gray-400 dark:text-on-surface-muted bg-gray-50 dark:bg-surface-secondary border border-l-0 border-gray-200 dark:border-border rounded-r-md select-none">{format}</span>
             </div>
+            <select aria-label="Board format" value={format} onChange={e => setFormat(e.target.value)}>
+              <option value=".html">HTML</option><option value=".json">JSON</option><option value=".sdraw">Legacy sdraw</option>
+            </select>
             <div className="mt-1 text-2xs text-gray-400 truncate">
               {folderPath}/{safeFileName}
             </div>

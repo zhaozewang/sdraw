@@ -133,7 +133,7 @@ let _cachedHome: string | null = null;
 export async function fetchUserHome(): Promise<string> {
   if (_cachedHome) return _cachedHome;
   try {
-    const res = await fetch('/api/path/home');
+    const res = await fetch(new URL('api/path/home', document.baseURI).pathname);
     if (res.ok) {
       const data = await res.json();
       _cachedHome = data.path;

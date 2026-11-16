@@ -1,0 +1,97 @@
+{
+  "schema_version": 3,
+  "id": "rsi-synthetic-example",
+  "canvas": {
+    "width": 900,
+    "height": 520,
+    "background": "#f8fafc",
+    "infinite": false,
+    "grid_enabled": true,
+    "grid_size": 20,
+    "snap_enabled": true,
+    "snap_size": 10
+  },
+  "setup": {
+    "code": "",
+    "timeout": 120
+  },
+  "plotCodes": {},
+  "elements": [
+    {
+      "id": "title",
+      "type": "text",
+      "x": 50,
+      "y": 40,
+      "width": 700,
+      "height": 100,
+      "rotation": 0,
+      "z_index": 1,
+      "visible": true,
+      "locked": false,
+      "text": "Research figure example",
+      "style": {
+        "fontSize": 30,
+        "color": "#172554",
+        "fontFamily": "sans-serif"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "left",
+      "type": "text",
+      "x": 70,
+      "y": 150,
+      "width": 320,
+      "height": 100,
+      "rotation": 0,
+      "z_index": 1,
+      "visible": true,
+      "locked": false,
+      "text": "Experiment A\nSynthetic baseline",
+      "style": {
+        "fontSize": 22,
+        "color": "#172554",
+        "fontFamily": "sans-serif"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "right",
+      "type": "text",
+      "x": 470,
+      "y": 150,
+      "width": 320,
+      "height": 100,
+      "rotation": 0,
+      "z_index": 1,
+      "visible": true,
+      "locked": false,
+      "text": "Experiment B\nSynthetic comparison",
+      "style": {
+        "fontSize": 22,
+        "color": "#172554",
+        "fontFamily": "sans-serif"
+      },
+      "metadata": {}
+    },
+    {
+      "id": "note",
+      "type": "text",
+      "x": 50,
+      "y": 390,
+      "width": 700,
+      "height": 100,
+      "rotation": 0,
+      "z_index": 1,
+      "visible": true,
+      "locked": false,
+      "text": "Edit this text in HTML or drag it in sdraw.",
+      "style": {
+        "fontSize": 18,
+        "color": "#172554",
+        "fontFamily": "sans-serif"
+      },
+      "metadata": {}
+    }
+  ]
+}

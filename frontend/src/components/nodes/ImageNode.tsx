@@ -62,6 +62,16 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
   const invZoom = 1 / Math.max(zoom, 0.1);
 
   const rotation = element.rotation || 0;
+  const subcanvas = element.metadata?.subcanvasPath;
+  const quick = new URLSearchParams(window.location.search).get('mode') === 'figure';
+  const openSubcanvas = (event: React.MouseEvent) => {
+    if (typeof subcanvas !== 'string') return;
+    event.preventDefault(); event.stopPropagation();
+    if (quick) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('mode'); url.searchParams.set('board', subcanvas);
+    window.open(url.href, '_blank', 'noopener');
+  };
 
   // When we're serving from the board's embedded base64 copy there's
   // nothing to wait for — the bytes are already in memory. Suppressing
@@ -86,6 +96,8 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
       />
       <div
         className="w-full h-full relative overflow-hidden"
+        onDoubleClick={openSubcanvas}
+        title={typeof subcanvas === 'string' ? (quick ? 'Sub-canvas · open the full editor to edit contents' : 'Double-click to open sub-canvas in a new tab') : undefined}
         style={{
           borderColor: style.borderColor || '#d0d0d0',
           borderWidth: style.borderWidth ?? 0,
@@ -108,7 +120,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
             src={`data:${source!.embeddedMime || 'image/png'};base64,${source!.embeddedData}`}
             alt=""
             className="w-full h-full"
-            style={{ objectFit: 'fill' as const }}
+            style={{ objectFit: style.fitMode === 'contain' ? 'contain' : style.fitMode === 'cover' ? 'cover' : 'fill' }}
             draggable={false}
           />
         ) : imgUrl && !imgError ? (
@@ -116,7 +128,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
             src={imgUrl}
             alt=""
             className="w-full h-full"
-            style={{ objectFit: 'fill' as const }}
+            style={{ objectFit: style.fitMode === 'contain' ? 'contain' : style.fitMode === 'cover' ? 'cover' : 'fill' }}
             onLoad={e => {
               setLoading(false);
               // When a live-refreshed image loads (version > 0 means file
@@ -125,7 +137,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
               // height to match the new ratio while keeping width and
               // top-left position stable. This avoids a stretched/squished
               // image when the source's dimensions change between runs.
-              if (imageVersion > 0) {
+              if (imageVersion > 0 && element.metadata?.contentPolicy !== 'layout-only') {
                 const img = e.currentTarget;
                 const nw = img.naturalWidth;
                 const nh = img.naturalHeight;
@@ -151,7 +163,7 @@ function ImageNodeComponent({ id, data, selected }: NodeProps) {
             src={`data:${source.embeddedMime || 'image/png'};base64,${source.embeddedData}`}
             alt=""
             className="w-full h-full"
-            style={{ objectFit: 'fill' as const }}
+            style={{ objectFit: style.fitMode === 'contain' ? 'contain' : style.fitMode === 'cover' ? 'cover' : 'fill' }}
             draggable={false}
           />
         ) : (

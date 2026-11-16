@@ -1,60 +1,46 @@
-import { memo, useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { memo, useState, useCallback, useRef, useEffect } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
 import { Resizer } from './Resizer';
-import katex from 'katex';
-import 'katex/dist/katex.min.css';
+import { api, type TextLayout } from '@/api/client';
 
 interface TextNodeData {
   elementId: string;
   [key: string]: unknown;
 }
 
-/** Parse text with $...$ (inline) and $$...$$ (display) math delimiters.
- *  fontSize is passed so we can force KaTeX to render at matching size. */
-function renderMathText(text: string, color: string, fontSize: number): React.ReactNode[] {
-  const parts: React.ReactNode[] = [];
-  const regex = /(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g;
-  let lastIndex = 0;
-  let match;
 
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
+const layouts = new Map<string, Promise<TextLayout>>();
+
+/** Use the export typesetter, including formula glyphs; zoom never changes layout. */
+function TextPreview({source}: {source: string}) {
+  const [result, setResult] = useState<{source: string; layout: TextLayout} | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setError(false);
+    let pending = layouts.get(source);
+    if (!pending) {
+      pending = api.textLayout(JSON.parse(source));
+      if (layouts.size >= 512) layouts.delete(layouts.keys().next().value!);
+      layouts.set(source, pending);
     }
-    const mathStr = match[0];
-    const isDisplay = mathStr.startsWith('$$');
-    const tex = isDisplay ? mathStr.slice(2, -2) : mathStr.slice(1, -1);
-    try {
-      const html = katex.renderToString(tex, {
-        displayMode: isDisplay,
-        throwOnError: false,
-        output: 'html',
-      });
-      // Force the KaTeX container to render at the parent font size.
-      // KaTeX's CSS `font: normal 1.21em ...` resets font-size; we
-      // override it with an explicit px value via inline style on the
-      // .katex element wrapper.
-      parts.push(
-        <span
-          key={match.index}
-          dangerouslySetInnerHTML={{ __html: html }}
-          className="katex-override"
-          style={{ color, display: 'inline-block', willChange: 'transform', fontSize: `${fontSize}px` }}
-        />
-      );
-    } catch {
-      parts.push(mathStr);
-    }
-    lastIndex = match.index + mathStr.length;
-  }
-
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-
-  return parts;
+    pending.then(layout => { if (active) setResult({source, layout}); })
+      .catch(() => { layouts.delete(source); if (active) setError(true); });
+    return () => { active = false; };
+  }, [source]);
+  if (error) return <span title="Text preview unavailable; double-click to edit">Preview unavailable</span>;
+  if (result?.source !== source) return null;
+  const layout = result.layout;
+  return <svg width="100%" height="100%" style={{overflow:'visible', display:'block'}} aria-hidden="true">
+    {layout.formula ? <image {...layout.formula} /> :
+      <text fontFamily={layout.fontFamily} fontSize={layout.fontSize} fontWeight={layout.fontWeight}
+        fill={layout.color} fontStyle={layout.italic ? 'italic' : 'normal'}
+        textAnchor={layout.anchor} xmlSpace="preserve" style={{whiteSpace:'pre'}}>
+        {layout.lines.map((line, index) => <tspan key={index} x={line.x} y={line.y}>{line.text}</tspan>)}
+      </text>}
+  </svg>;
 }
 
 function TextNodeComponent({ id, data, selected }: NodeProps) {
@@ -152,13 +138,7 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
 
   const text = element?.type === 'text' ? element.text : undefined;
   const style = element?.type === 'text' ? element.style : undefined;
-  const hasMath = text ? /\$/.test(text) : false;
   const fontFamily = style?.fontFamily || 'Inter, sans-serif';
-
-  const renderedContent = useMemo(() => {
-    if (!text || !hasMath) return null;
-    return renderMathText(text, style?.color || '#111111', style?.fontSize ?? 14);
-  }, [text, hasMath, style?.color, style?.fontSize]);
 
   if (!element || element.type !== 'text') return null;
 
@@ -172,8 +152,8 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
     textAlign: (style!.textAlign as any) || 'left',
     lineHeight: style!.lineHeight ?? 1.4,
     fontStyle: style!.italic ? 'italic' : 'normal',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
+    whiteSpace: 'pre',
+    wordBreak: 'normal',
   };
 
   return (
@@ -196,10 +176,8 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
         style={{
           backgroundColor: style!.background || 'transparent',
           opacity: style!.opacity ?? 1,
-          border: (selected || isSelectedInStore)
-            ? '1px dashed #3b82f6'
-            : '1px solid transparent',
-          overflow: 'hidden',
+          outline: (selected || isSelectedInStore) ? '1px dashed #3b82f6' : 'none',
+          overflow: 'visible',
         }}
         onDoubleClick={handleDoubleClick}
       >
@@ -208,12 +186,12 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
         <div style={{
           width: '100%',
           height: '100%',
-          padding: style!.padding ?? 4,
+          padding: editing ? (style!.padding ?? 4) : 0,
           display: 'flex',
           flexDirection: 'column',
           justifyContent: style!.verticalAlign === 'center' ? 'center'
             : style!.verticalAlign === 'bottom' ? 'flex-end' : 'flex-start',
-          overflow: editing ? 'visible' : 'hidden',
+          overflow: 'visible',
         }}>
           {editing ? (
             <textarea
@@ -223,26 +201,20 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
               onKeyDown={handleKeyDown}
               onInput={autosizeTextarea}
               rows={1}
+              wrap="off"
               className="w-full outline-none resize-none border-none bg-transparent p-0 m-0 block"
               style={{
                 ...textStyles,
                 cursor: 'text',
                 userSelect: 'text',
                 height: 'auto',
-                overflow: 'hidden',
+                overflowX: 'auto',
+                overflowY: 'hidden',
               }}
             />
           ) : (
-            <div
-              className="w-full"
-              style={{
-                ...textStyles,
-                cursor: 'default',
-                userSelect: 'none',
-              }}
-            >
-              {renderedContent || text || ''}
-            </div>
+            <TextPreview source={JSON.stringify({text: text || '', width: element.width,
+              height: element.height, style})} />
           )}
         </div>
       </div>
