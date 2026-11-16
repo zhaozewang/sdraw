@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useRef, useEffect } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { useBoardElement, useIsExporting } from '@/store/exportContext';
 import { Resizer } from './Resizer';
 import { api, type TextLayout } from '@/api/client';
 
@@ -30,10 +31,10 @@ function TextPreview({source}: {source: string}) {
       .catch(() => { layouts.delete(source); if (active) setError(true); });
     return () => { active = false; };
   }, [source]);
-  if (error) return <span title="Text preview unavailable; double-click to edit">Preview unavailable</span>;
+  if (error) return <span data-layout-error title="Text preview unavailable; double-click to edit">Preview unavailable</span>;
   if (result?.source !== source) return null;
   const layout = result.layout;
-  return <svg width="100%" height="100%" style={{overflow:'visible', display:'block'}} aria-hidden="true">
+  return <svg data-layout-ready width="100%" height="100%" style={{overflow:'visible', display:'block'}} aria-hidden="true">
     {layout.formula ? <image {...layout.formula} /> :
       <text fontFamily={layout.fontFamily} fontSize={layout.fontSize} fontWeight={layout.fontWeight}
         fill={layout.color} fontStyle={layout.italic ? 'italic' : 'normal'}
@@ -45,14 +46,16 @@ function TextPreview({source}: {source: string}) {
 
 function TextNodeComponent({ id, data, selected }: NodeProps) {
   const elementId = (data as TextNodeData).elementId;
-  const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
+  const element = useBoardElement(elementId);
+  const isExporting = useIsExporting();
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const [editing, setEditing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const hasAutoEdited = useRef(false);
   const selectAllOnEdit = useRef(false);
-  const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStoreLive = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStore = isExporting ? false : isSelectedInStoreLive;
 
   // Auto-enter edit mode for newly created text boxes
   useEffect(() => {
@@ -202,7 +205,7 @@ function TextNodeComponent({ id, data, selected }: NodeProps) {
               onInput={autosizeTextarea}
               rows={1}
               wrap="off"
-              className="w-full outline-none resize-none border-none bg-transparent p-0 m-0 block"
+              className="w-full outline-none resize-none border-none bg-transparent p-0 m-0 block nodrag"
               style={{
                 ...textStyles,
                 cursor: 'text',

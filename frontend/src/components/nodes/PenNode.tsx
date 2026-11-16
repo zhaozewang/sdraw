@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { useBoardElement, useIsExporting } from '@/store/exportContext';
 
 interface PenNodeData {
   elementId: string;
@@ -10,10 +11,12 @@ interface PenNodeData {
 
 function PenNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const elementId = (data as PenNodeData).elementId;
-  const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
+  const element = useBoardElement(elementId);
+  const isExporting = useIsExporting();
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
-  const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStoreLive = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStore = isExporting ? false : isSelectedInStoreLive;
   const selected = rfSelected || isSelectedInStore;
   const zoom = useUIStore(s => s.zoom);
 

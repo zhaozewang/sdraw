@@ -1,48 +1,11 @@
+import { roundedJunctionPath } from '@/utils/arrowGeometry';
 import { memo, useCallback } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { useBoardElement, useIsExporting } from '@/store/exportContext';
 import { Resizer } from './Resizer';
-import { roundedJunctionPath } from '@/utils/arrowGeometry';
-
-/** Compute polygon points (in 0-100 viewBox) for a shape with adjustable params.
- *  sw = shaft width (0-1), hl = head length (0-1) */
-function getShapePoints(shape: string, sw: number, hl: number): string {
-  // For arrow shapes: sw controls body thickness, hl controls head size
-  const s = Math.max(0.05, Math.min(0.95, sw)); // shaft width fraction
-  const h = Math.max(0.05, Math.min(0.95, hl)); // head length fraction
-  const top = 50 - s * 50;   // shaft top edge
-  const bot = 50 + s * 50;   // shaft bottom edge
-  const neck = 100 - h * 100; // where head meets shaft (main axis)
-
-  switch (shape) {
-    case 'encoder': return '0,0 100,18 100,82 0,100';
-    case 'decoder': return '0,18 100,0 100,100 0,82';
-    case 'arrow-right':
-      return `0,${top} ${neck},${top} ${neck},0 100,50 ${neck},100 ${neck},${bot} 0,${bot}`;
-    case 'arrow-left':
-      return `0,50 ${h * 100},0 ${h * 100},${top} 100,${top} 100,${bot} ${h * 100},${bot} ${h * 100},100`;
-    case 'arrow-up':
-      return `50,0 100,${h * 100} ${bot},${h * 100} ${bot},100 ${top},100 ${top},${h * 100} 0,${h * 100}`;
-    case 'arrow-down':
-      return `${top},0 ${bot},0 ${bot},${neck} 100,${neck} 50,100 0,${neck} ${top},${neck}`;
-    case 'arrow-double':
-      return `0,50 ${h * 50},0 ${h * 50},${top} ${100 - h * 50},${top} ${100 - h * 50},0 100,50 ${100 - h * 50},100 ${100 - h * 50},${bot} ${h * 50},${bot} ${h * 50},100`;
-    case 'chevron': {
-      const indent = h * 100;
-      return `0,0 ${100 - indent},0 100,50 ${100 - indent},100 0,100 ${indent},50`;
-    }
-    case 'diamond':
-      return '50,0 100,50 50,100 0,50';
-    case 'triangle':
-      return '50,0 100,100 0,100';
-    default:
-      return '50,0 100,100 0,100';
-  }
-}
-
-/** Check if a shape supports adjustable shaft/head handles */
-const ADJUSTABLE_SHAPES = new Set(['arrow-right', 'arrow-left', 'arrow-up', 'arrow-down', 'arrow-double', 'chevron']);
+import { getShapePoints, ADJUSTABLE_SHAPES } from '@/utils/shapePoints';
 
 interface RectNodeData {
   elementId: string;
@@ -51,12 +14,14 @@ interface RectNodeData {
 
 function RectangleNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const elementId = (data as RectNodeData).elementId;
-  const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
+  const element = useBoardElement(elementId);
+  const isExporting = useIsExporting();
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const zoom = useUIStore(s => s.zoom);
   // Unfilled shapes may have selectable:false, check UI store directly
-  const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStoreLive = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStore = isExporting ? false : isSelectedInStoreLive;
   const selected = rfSelected || isSelectedInStore;
 
   const onResizeAbsolute = useCallback((x: number, y: number, w: number, h: number) => {

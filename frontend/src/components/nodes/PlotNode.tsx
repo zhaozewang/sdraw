@@ -2,6 +2,7 @@ import { memo, useCallback, useState } from 'react';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore, plotRenderHash } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { useBoardElement, useBoardField, useIsExporting } from '@/store/exportContext';
 import { Code2, Lock, AlertTriangle, X, Play, Loader2 } from 'lucide-react';
 import { Resizer } from './Resizer';
 
@@ -12,7 +13,8 @@ interface PlotNodeData {
 
 function PlotNodeComponent({ id, data, selected }: NodeProps) {
   const elementId = (data as PlotNodeData).elementId;
-  const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
+  const element = useBoardElement(elementId);
+  const isExporting = useIsExporting();
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const runOnePlot = useBoardStore(s => s.runOnePlot);
@@ -20,9 +22,9 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
   // (setup code + the specific plotCodes entry). Selecting primitives keeps
   // unrelated board updates from re-rendering this node.
   const plotCodeId: string | undefined = element?.metadata?.plotCodeId;
-  const setupCode = useBoardStore(s => s.board?.setup?.code ?? '');
-  const currentPlotCode = useBoardStore(s =>
-    plotCodeId ? s.board?.plotCodes?.[plotCodeId]?.code ?? '' : ''
+  const setupCode = useBoardField(b => b?.setup?.code ?? '');
+  const currentPlotCode = useBoardField(b =>
+    plotCodeId ? b?.plotCodes?.[plotCodeId]?.code ?? '' : ''
   );
   const zoom = useUIStore(s => s.zoom);
   const invZoom = 1 / Math.max(zoom, 0.1);
@@ -81,20 +83,23 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
       className="relative"
       style={rotation ? { transform: `rotate(${rotation}deg)`, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}
     >
-      {/* <python> tag — anchored above the panel, always visible, zoom invariant */}
-      <div
-        className="absolute left-0 pointer-events-none font-mono text-white bg-black/70 rounded-t whitespace-nowrap z-10"
-        style={{
-          bottom: '100%',
-          transformOrigin: 'bottom left',
-          transform: `scale(${invZoom})`,
-          fontSize: 10,
-          padding: '1px 6px',
-          lineHeight: 1.4,
-        }}
-      >
-        &lt;python&gt;
-      </div>
+      {/* <python> tag — anchored above the panel, always visible, zoom invariant.
+          Hidden in export so the rendered image shows only the plot output. */}
+      {!isExporting && (
+        <div
+          className="absolute left-0 pointer-events-none font-mono text-white bg-black/70 rounded-t whitespace-nowrap z-10"
+          style={{
+            bottom: '100%',
+            transformOrigin: 'bottom left',
+            transform: `scale(${invZoom})`,
+            fontSize: 10,
+            padding: '1px 6px',
+            lineHeight: 1.4,
+          }}
+        >
+          &lt;python&gt;
+        </div>
+      )}
       <Resizer
         isVisible={selected && !element.locked}
         nodeId={id}
@@ -113,12 +118,16 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
         style={{
           // Red ring for errors, amber dashed ring for stale cache, else
           // the element's own border style. Error wins over stale so a
-          // failed re-run is still obvious from a zoomed-out view.
-          borderColor: lastError ? '#ef4444' : isStale ? '#f59e0b' : (style.borderColor || '#d0d0d0'),
-          borderWidth: lastError || isStale ? 2 : (style.borderWidth ?? 0),
-          borderStyle: lastError
+          // failed re-run is still obvious from a zoomed-out view. In
+          // export mode the staleness/error rings are editor-only chrome,
+          // so fall through to the element's own border style.
+          borderColor: !isExporting && lastError ? '#ef4444'
+            : !isExporting && isStale ? '#f59e0b'
+            : (style.borderColor || '#d0d0d0'),
+          borderWidth: !isExporting && (lastError || isStale) ? 2 : (style.borderWidth ?? 0),
+          borderStyle: !isExporting && lastError
             ? 'solid'
-            : isStale
+            : !isExporting && isStale
             ? 'dashed'
             : (style.borderWidth ?? 0) > 0 ? 'solid' : 'none',
           borderRadius: style.borderRadius ?? 0,
@@ -152,7 +161,8 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
         )}
 
         {/* Status indicators + per-cell Run button. Run is zoom-invariant so
-            it stays clickable when the user is zoomed way out. */}
+            it stays clickable when the user is zoomed way out. Hidden in export. */}
+        {!isExporting && (
         <div
           className="absolute top-1 right-1 flex items-center gap-1"
           style={{
@@ -190,12 +200,13 @@ function PlotNodeComponent({ id, data, selected }: NodeProps) {
             </button>
           )}
         </div>
+        )}
 
         {/* Error log overlay — shows under the image whenever lastError is
             set, so a failed Run All is never silent when a cached image is
             still visible. Collapsed shows the last error line; clicking
-            expands to the full scrollable traceback. */}
-        {lastError && (
+            expands to the full scrollable traceback. Hidden in export. */}
+        {lastError && !isExporting && (
           <div
             className="absolute left-0 right-0 bottom-0 bg-red-600/90 text-white font-mono shadow-[0_-1px_4px_rgba(0,0,0,0.25)]"
             style={{

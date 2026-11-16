@@ -747,15 +747,25 @@ export function Canvas({gridVisible}: {gridVisible?: boolean}) {
   // also select passthrough elements (arrows, triangles, diamonds) that
   // React Flow skips because they have selectable=false.
   const selectionRectRef = useRef<{ x: number; y: number; x2: number; y2: number } | null>(null);
+  // Captured at drag-rect start so we can preserve a Shift-built multi-select
+  // across the drag. Without this the per-frame onSelectionChange replaces
+  // selectedIds with whatever the rect overlaps right now, dropping items
+  // the user picked one-by-one before starting the drag.
+  const dragSelectRef = useRef<{ additive: boolean; baseSelection: string[] } | null>(null);
   const { screenToFlowPosition } = useReactFlow();
 
   const onSelectionStart = useCallback((event: React.MouseEvent) => {
     // Record the starting corner in flow/canvas coordinates
     const pos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
     selectionRectRef.current = { x: pos.x, y: pos.y, x2: pos.x, y2: pos.y };
+    dragSelectRef.current = {
+      additive: modKeyRef.current.shift || modKeyRef.current.mod,
+      baseSelection: [...useUIStore.getState().selectedIds],
+    };
   }, [screenToFlowPosition]);
 
   const onSelectionEnd = useCallback((event: React.MouseEvent) => {
+    dragSelectRef.current = null;
     if (!selectionRectRef.current) return;
     const pos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
     selectionRectRef.current.x2 = pos.x;
@@ -841,137 +851,71 @@ export function Canvas({gridVisible}: {gridVisible?: boolean}) {
       return n.id;
     });
 
-    // Also include passthrough nodes (arrows, triangles, diamonds) that overlap
-    // the selection bounds. React Flow skips them because selectable=false.
-    // Use the tracked drag rectangle when available (covers the full area the
-    // user dragged, not just the bounds of already-selected nodes).
-    const rect = selectionRectRef.current;
-    const hasDragRect = rect && (rect.x !== rect.x2 || rect.y !== rect.y2);
-
-    // Only check passthrough elements when the user actually dragged a
-    // selection rectangle — NOT when clicking on individual nodes (which
-    // would incorrectly select nearby arrows/pens that overlap the node).
-    if (!hasDragRect) {
-      const prevIds = useUIStore.getState().selectedIds;
-      const additive = modKeyRef.current.shift || modKeyRef.current.mod;
-
-      // Prefer the node the user actually pressed on (captured at the
-      // pointerdown capture phase). Resolve group membership so clicking a
-      // child selects its group. Fall back to RF's reported ids when we
-      // don't have a captured click (programmatic changes, keyboard).
-      const rawClicked = clickedNodeIdRef.current;
-      clickedNodeIdRef.current = null;
-      let clickedId: string | null = null;
-      if (rawClicked) {
-        const el = b.elements.find(x => x.id === rawClicked);
-        clickedId = (el?.metadata?.groupId as string | undefined) ?? rawClicked;
+    // Drag-rect in progress: every per-frame onSelectionChange should reflect
+    // (rect contents) ∪ (base selection if Shift/Cmd was held at drag-start).
+    // Without preserving the captured base, a Shift-built multi-select gets
+    // overwritten each frame by whatever the rect currently overlaps — so
+    // items the user picked one-by-one before dragging silently disappear.
+    // Passthrough elements (arrows, pens, unfilled shapes) overlapping the
+    // rect get folded in by onSelectionEnd once the rect coords are final.
+    const drag = dragSelectRef.current;
+    if (drag) {
+      if (drag.additive) {
+        const next = new Set([...drag.baseSelection, ...ids]);
+        setSelectedIds([...next]);
+      } else {
+        setSelectedIds(ids);
       }
-
-      if (clickedId) {
-        if (additive) {
-          // Shift / Cmd / Ctrl + click: toggle the clicked item.
-          if (prevIds.includes(clickedId)) {
-            setSelectedIds(prevIds.filter(id => id !== clickedId));
-          } else {
-            setSelectedIds([...prevIds, clickedId]);
-          }
-          return;
-        }
-        // Plain click on a selected member of a multi-selection: unselect
-        // just that one, keep the rest. Plain click anywhere else collapses
-        // to a single-selection of the clicked item (file-manager default).
-        if (prevIds.length >= 2 && prevIds.includes(clickedId)) {
-          setSelectedIds(prevIds.filter(id => id !== clickedId));
-          return;
-        }
-        setSelectedIds([clickedId]);
-        return;
-      }
-
-      // Programmatic onSelectionChange (no recent click, no drag rect) —
-      // typically fires when setNodes runs in response to a board update.
-      // RF's params.nodes never includes selectable:false elements (arrows,
-      // pens, unfilled shapes), so a naive setSelectedIds(ids) would silently
-      // drop those from the store and break Cmd+X / Cmd+C on multi-selections
-      // that include an arrow. Merge prior passthrough members back in.
-      const passThroughPrev = prevIds.filter(id => {
-        const el = b.elements.find(x => x.id === id);
-        return !!el && isPassThrough(el);
-      });
-      setSelectedIds([...new Set([...ids, ...passThroughPrev])]);
       return;
     }
 
-    const selMinX = Math.min(rect.x, rect.x2);
-    const selMinY = Math.min(rect.y, rect.y2);
-    const selMaxX = Math.max(rect.x, rect.x2);
-    const selMaxY = Math.max(rect.y, rect.y2);
+    const prevIds = useUIStore.getState().selectedIds;
+    const additive = modKeyRef.current.shift || modKeyRef.current.mod;
 
-    for (const el of b.elements) {
-      if (ids.includes(el.id)) continue;
-      if (!el.visible) continue;
-      const isArrow = el.type === 'arrow';
-      const isPenEl = el.type === 'pen';
-      const shape = el.metadata?.shape as string | undefined;
-      const elFilled = !!el.style.fill && el.style.fill !== 'transparent';
-      const isNonRect = el.type === 'rectangle' && !!shape && shape !== 'rectangle' && !elFilled;
-      if (!isArrow && !isPenEl && !isNonRect) continue;
-
-      // For arrows, compute visual bounds including curve control points
-      let eMinX = el.x, eMinY = el.y;
-      let eMaxX = el.x + el.width, eMaxY = el.y + el.height;
-
-      if (isArrow) {
-        const pts = el.points && el.points.length >= 2
-          ? el.points
-          : [{ x: 0, y: el.height / 2 }, { x: el.width, y: el.height / 2 }];
-        const storedCtrl = el.metadata?.controlPoints as Array<{ x: number; y: number }> | undefined;
-        const lineType = (el.metadata?.lineType as string) || 'straight';
-        // Auto-generate control points for curves (same logic as ArrowNode)
-        let ctrl = storedCtrl || [];
-        const hasCurve = lineType === 'quadratic' || lineType === 'cubic' || lineType === 'arc' || lineType === 'smooth';
-        if (ctrl.length === 0 && hasCurve) {
-          const p0 = pts[0], p1 = pts[1];
-          const mx = (p0.x + p1.x) / 2;
-          const my = (p0.y + p1.y) / 2;
-          const dx = p1.x - p0.x;
-          const dy = p1.y - p0.y;
-          const len = Math.sqrt(dx * dx + dy * dy) || 1;
-          const offX = (-dy / len) * len * 0.3;
-          const offY = (dx / len) * len * 0.3;
-          if (lineType === 'quadratic' || lineType === 'arc') {
-            ctrl = [{ x: mx + offX, y: my + offY }];
-          } else if (lineType === 'smooth') {
-            ctrl = [{ x: mx + offX * 0.4, y: my + offY * 0.4 }];
-          } else if (lineType === 'cubic') {
-            ctrl = [
-              { x: p0.x + dx * 0.25 + offX, y: p0.y + dy * 0.25 + offY },
-              { x: p0.x + dx * 0.75 - offX, y: p0.y + dy * 0.75 - offY },
-            ];
-          }
-        }
-        // Expand bounds to include all points and control points
-        for (const p of [...pts, ...ctrl]) {
-          eMinX = Math.min(eMinX, el.x + p.x);
-          eMinY = Math.min(eMinY, el.y + p.y);
-          eMaxX = Math.max(eMaxX, el.x + p.x);
-          eMaxY = Math.max(eMaxY, el.y + p.y);
-        }
-      }
-
-      // AABB overlap check
-      if (eMinX < selMaxX && eMaxX > selMinX && eMinY < selMaxY && eMaxY > selMinY) {
-        ids.push(el.metadata?.groupId ? el.metadata.groupId as string : el.id);
-      }
+    // Prefer the node the user actually pressed on (captured at the
+    // pointerdown capture phase). Resolve group membership so clicking a
+    // child selects its group. Fall back to RF's reported ids when we
+    // don't have a captured click (programmatic changes, keyboard).
+    const rawClicked = clickedNodeIdRef.current;
+    clickedNodeIdRef.current = null;
+    let clickedId: string | null = null;
+    if (rawClicked) {
+      const el = b.elements.find(x => x.id === rawClicked);
+      clickedId = (el?.metadata?.groupId as string | undefined) ?? rawClicked;
     }
 
-    // Shift/Cmd + drag-rectangle: add the dragged-over items to the existing
-    // selection instead of replacing it.
-    const next = new Set(ids);
-    if (modKeyRef.current.shift || modKeyRef.current.mod) {
-      for (const id of useUIStore.getState().selectedIds) next.add(id);
+    if (clickedId) {
+      if (additive) {
+        // Shift / Cmd / Ctrl + click: toggle the clicked item.
+        if (prevIds.includes(clickedId)) {
+          setSelectedIds(prevIds.filter(id => id !== clickedId));
+        } else {
+          setSelectedIds([...prevIds, clickedId]);
+        }
+        return;
+      }
+      // Plain click on a selected member of a multi-selection: unselect
+      // just that one, keep the rest. Plain click anywhere else collapses
+      // to a single-selection of the clicked item (file-manager default).
+      if (prevIds.length >= 2 && prevIds.includes(clickedId)) {
+        setSelectedIds(prevIds.filter(id => id !== clickedId));
+        return;
+      }
+      setSelectedIds([clickedId]);
+      return;
     }
-    setSelectedIds([...next]);
+
+    // Programmatic onSelectionChange (no recent click, no drag rect) —
+    // typically fires when setNodes runs in response to a board update.
+    // RF's params.nodes never includes selectable:false elements (arrows,
+    // pens, unfilled shapes), so a naive setSelectedIds(ids) would silently
+    // drop those from the store and break Cmd+X / Cmd+C on multi-selections
+    // that include an arrow. Merge prior passthrough members back in.
+    const passThroughPrev = prevIds.filter(id => {
+      const el = b.elements.find(x => x.id === id);
+      return !!el && isPassThrough(el);
+    });
+    setSelectedIds([...new Set([...ids, ...passThroughPrev])]);
   }, [setSelectedIds]);
 
   const onPaneClick = useCallback(() => {

@@ -1,11 +1,21 @@
-import { ARROW_LENGTH, ARROW_HALF_WIDTH, markerInset, trimArrowPath, returnArrowPath } from '@/utils/arrowGeometry';
+import { markerInset, trimArrowPath } from '@/utils/arrowGeometry';
 import { filledArrowPath } from '@/utils/filledArrow';
 import { memo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { NodeProps } from '@xyflow/react';
 import { useBoardStore } from '@/store/boardStore';
 import { useUIStore } from '@/store/uiStore';
+import { useBoardElement, useIsExporting } from '@/store/exportContext';
 import { findSnapTarget, toRelativeAnchor } from '@/utils/snapToShape';
+import {
+  defaultControlPoints,
+  buildPath,
+  markerSpec,
+  type LineType,
+  type MarkerType,
+} from '@/utils/arrowGeometry';
+
+export type { LineType, MarkerType };
 
 interface ArrowNodeData {
   elementId: string;
@@ -19,109 +29,6 @@ const BASE_STROKE_W = 2;
 const BASE_CTRL_STROKE = 1.5;
 const BASE_GUIDE_W = 1;
 
-export type LineType = 'straight' | 'quadratic' | 'cubic' | 'arc' | 'step' | 'step-rounded' | 'smooth' | 'return';
-export type MarkerType = 'none' | 'arrow' | 'arrow-open' | 'dot' | 'diamond' | 'bar';
-
-/* ------------------------------------------------------------------ */
-/*  Geometry helpers                                                   */
-/* ------------------------------------------------------------------ */
-
-/** Auto-compute default control points for a curve */
-function defaultControlPoints(
-  p0: { x: number; y: number },
-  p1: { x: number; y: number },
-  lineType: LineType,
-): Array<{ x: number; y: number }> {
-  const mx = (p0.x + p1.x) / 2;
-  const my = (p0.y + p1.y) / 2;
-  const dx = p1.x - p0.x;
-  const dy = p1.y - p0.y;
-  const len = Math.sqrt(dx * dx + dy * dy) || 1;
-  const offX = (-dy / len) * len * 0.3;
-  const offY = (dx / len) * len * 0.3;
-
-  switch (lineType) {
-    case 'return': return [{ x: mx, y: Math.max(p0.y, p1.y) + 50 }];
-    case 'quadratic':
-    case 'arc':
-      return [{ x: mx + offX, y: my + offY }];
-    case 'smooth':
-      // Gentle curve — small perpendicular offset (12%)
-      return [{ x: mx + offX * 0.4, y: my + offY * 0.4 }];
-    case 'cubic':
-      return [
-        { x: p0.x + dx * 0.25 + offX, y: p0.y + dy * 0.25 + offY },
-        { x: p0.x + dx * 0.75 - offX, y: p0.y + dy * 0.75 - offY },
-      ];
-    default:
-      return [];
-  }
-}
-
-/** Build SVG path d-string */
-function buildPath(
-  p0: { x: number; y: number },
-  p1: { x: number; y: number },
-  lineType: LineType,
-  ctrl: Array<{ x: number; y: number }>,
-  opts?: { stepRadius?: number; returnDirection?: string },
-): string {
-  switch (lineType) {
-    case 'return': {
-      return returnArrowPath(p0,p1,ctrl[0],opts?.returnDirection);
-    }
-    case 'quadratic':
-    case 'arc': {
-      const c = ctrl[0] || { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
-      return `M ${p0.x},${p0.y} Q ${c.x},${c.y} ${p1.x},${p1.y}`;
-    }
-    case 'smooth': {
-      // Gentle auto-curve using a cubic bezier that leaves/arrives tangent to the horizontal
-      if (ctrl.length > 0) {
-        const c = ctrl[0];
-        return `M ${p0.x},${p0.y} Q ${c.x},${c.y} ${p1.x},${p1.y}`;
-      }
-      // Auto: smooth cubic with horizontal-ish tangents
-      const dx = p1.x - p0.x;
-      const dy = p1.y - p0.y;
-      const tension = Math.min(Math.abs(dx), Math.abs(dy)) * 0.5 + Math.abs(dx) * 0.25;
-      return `M ${p0.x},${p0.y} C ${p0.x + tension},${p0.y} ${p1.x - tension},${p1.y} ${p1.x},${p1.y}`;
-    }
-    case 'cubic': {
-      const c1 = ctrl[0] || { x: p0.x + (p1.x - p0.x) * 0.25, y: p0.y };
-      const c2 = ctrl[1] || { x: p0.x + (p1.x - p0.x) * 0.75, y: p1.y };
-      return `M ${p0.x},${p0.y} C ${c1.x},${c1.y} ${c2.x},${c2.y} ${p1.x},${p1.y}`;
-    }
-    case 'step': {
-      const mx = (p0.x + p1.x) / 2;
-      return `M ${p0.x},${p0.y} L ${mx},${p0.y} L ${mx},${p1.y} L ${p1.x},${p1.y}`;
-    }
-    case 'step-rounded': {
-      // Orthogonal connector with rounded corners
-      const mx = (p0.x + p1.x) / 2;
-      const dy = p1.y - p0.y;
-      const desiredR = opts?.stepRadius ?? 20;
-      const maxR = Math.min(Math.abs(mx - p0.x), Math.abs(dy) / 2, desiredR);
-      const r = Math.max(maxR, 0);
-      if (r < 1) {
-        // Degenerate: fall back to sharp step
-        return `M ${p0.x},${p0.y} L ${mx},${p0.y} L ${mx},${p1.y} L ${p1.x},${p1.y}`;
-      }
-      const sy = dy > 0 ? 1 : -1;
-      return [
-        `M ${p0.x},${p0.y}`,
-        `L ${mx - r},${p0.y}`,
-        `Q ${mx},${p0.y} ${mx},${p0.y + r * sy}`,
-        `L ${mx},${p1.y - r * sy}`,
-        `Q ${mx},${p1.y} ${mx + r * (p1.x > p0.x ? 1 : -1)},${p1.y}`,
-        `L ${p1.x},${p1.y}`,
-      ].join(' ');
-    }
-    default: // straight
-      return `M ${p0.x},${p0.y} L ${p1.x},${p1.y}`;
-  }
-}
-
 /* ------------------------------------------------------------------ */
 /*  SVG marker definitions                                             */
 /* ------------------------------------------------------------------ */
@@ -130,116 +37,32 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1, strokeWid
   id: string; color: string; startMarker: MarkerType; endMarker: MarkerType; headSize?: number; strokeWidth: number;
 }) {
   const markers: React.ReactNode[] = [];
-  const s = headSize * strokeWidth; // explicit canvas units; independent of marker stroke inheritance
 
-  const addArrow = (key: string, isStart: boolean) => {
-    const w = ARROW_LENGTH * s, h = 2 * ARROW_HALF_WIDTH * s, mid = ARROW_HALF_WIDTH * s;
-    // refX exactly at the tip — arrowhead is precisely at the endpoint
-    markers.push(
-      <marker
-        key={key}
-        id={key}
-        markerWidth={w}
-        markerHeight={h}
-        refX={isStart ? 0 : w}
-        refY={mid}
-        orient="auto"
-        markerUnits="userSpaceOnUse"
-      >
-        <polygon
-          points={isStart ? `${w} 0, 0 ${mid}, ${w} ${h}` : `0 0, ${w} ${mid}, 0 ${h}`}
-          fill={color}
-        />
-      </marker>
-    );
-  };
-
-  const addArrowOpen = (key: string, isStart: boolean) => {
-    const w = ARROW_LENGTH * s, h = 2 * ARROW_HALF_WIDTH * s, mid = ARROW_HALF_WIDTH * s;
-    markers.push(
-      <marker
-        key={key}
-        id={key}
-        markerWidth={w}
-        markerHeight={h}
-        refX={isStart ? 0 : w}
-        refY={mid}
-        orient="auto"
-        markerUnits="userSpaceOnUse"
-      >
-        <polyline
-          points={isStart ? `${w} 0, 0 ${mid}, ${w} ${h}` : `0 0, ${w} ${mid}, 0 ${h}`}
-          fill="none"
-          stroke={color}
-          strokeWidth={1.5 * s}
-        />
-      </marker>
-    );
-  };
-
-  const addDot = (key: string) => {
-    const d = 6 * s, c = 3 * s, r = 2.5 * s;
-    markers.push(
-      <marker
-        key={key}
-        id={key}
-        markerWidth={d}
-        markerHeight={d}
-        refX={c}
-        refY={c}
-        orient="auto"
-        markerUnits="userSpaceOnUse"
-      >
-        <circle cx={c} cy={c} r={r} fill={color} />
-      </marker>
-    );
-  };
-
-  const addDiamond = (key: string) => {
-    const d = 8 * s, mid = 4 * s;
-    markers.push(
-      <marker
-        key={key}
-        id={key}
-        markerWidth={d}
-        markerHeight={d}
-        refX={mid}
-        refY={mid}
-        orient="auto"
-        markerUnits="userSpaceOnUse"
-      >
-        <polygon points={`${mid} 0, ${d} ${mid}, ${mid} ${d}, 0 ${mid}`} fill={color} />
-      </marker>
-    );
-  };
-
-  const addBar = (key: string) => {
-    const w = 2 * s, h = 8 * s, cx = 1 * s;
-    markers.push(
-      <marker
-        key={key}
-        id={key}
-        markerWidth={w}
-        markerHeight={h}
-        refX={cx}
-        refY={h / 2}
-        orient="auto"
-        markerUnits="userSpaceOnUse"
-      >
-        <line x1={cx} y1="0" x2={cx} y2={h} stroke={color} strokeWidth={2 * s} />
-      </marker>
-    );
+  const renderShape = (spec: ReturnType<typeof markerSpec>) => {
+    if (!spec) return null;
+    const sh = spec.shape;
+    switch (sh.kind) {
+      case 'polygon': return <polygon points={sh.points} fill={sh.fill} />;
+      case 'polyline': return <polyline points={sh.points} fill="none" stroke={sh.stroke} strokeWidth={sh.strokeWidth} />;
+      case 'circle': return <circle cx={sh.cx} cy={sh.cy} r={sh.r} fill={sh.fill} />;
+      case 'line': return <line x1={sh.x1} y1={sh.y1} x2={sh.x2} y2={sh.y2} stroke={sh.stroke} strokeWidth={sh.strokeWidth} />;
+    }
   };
 
   const addMarker = (type: MarkerType, suffix: string, isStart: boolean) => {
+    const spec = markerSpec(type, isStart, color, headSize * strokeWidth);
+    if (!spec) return;
     const key = `${id}-${suffix}`;
-    switch (type) {
-      case 'arrow': addArrow(key, isStart); break;
-      case 'arrow-open': addArrowOpen(key, isStart); break;
-      case 'dot': addDot(key); break;
-      case 'diamond': addDiamond(key); break;
-      case 'bar': addBar(key); break;
-    }
+    markers.push(
+      <marker
+        key={key} id={key}
+        markerWidth={spec.width} markerHeight={spec.height}
+        refX={spec.refX} refY={spec.refY}
+        orient="auto" markerUnits="userSpaceOnUse"
+      >
+        {renderShape(spec)}
+      </marker>
+    );
   };
 
   if (startMarker !== 'none') addMarker(startMarker, 'start', true);
@@ -255,12 +78,14 @@ function MarkerDefs({ id, color, startMarker, endMarker, headSize = 1, strokeWid
 
 function ArrowNodeComponent({ id, data, selected: rfSelected }: NodeProps) {
   const elementId = (data as ArrowNodeData).elementId;
-  const element = useBoardStore(s => s.board?.elements.find(el => el.id === elementId));
+  const element = useBoardElement(elementId);
+  const isExporting = useIsExporting();
   const updateElement = useBoardStore(s => s.updateElement);
   const pushHistory = useBoardStore(s => s.pushHistory);
   const zoom = useUIStore(s => s.zoom);
   // Arrow nodes have selectable:false on the wrapper, so check UI store directly
-  const isSelectedInStore = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStoreLive = useUIStore(s => s.selectedIds.includes(elementId));
+  const isSelectedInStore = isExporting ? false : isSelectedInStoreLive;
   const selected = rfSelected || isSelectedInStore;
   const draggingRef = useRef<string | null>(null);
   const anchorAbsRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });

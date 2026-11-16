@@ -37,17 +37,37 @@ type HandlePosition = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 const BASE_HANDLE = 8;
 const BASE_BORDER = 1.5;
 
-const handleCursors: Record<HandlePosition, string> = {
-  nw: 'nw-resize', n: 'n-resize', ne: 'ne-resize', e: 'e-resize',
-  se: 'se-resize', s: 's-resize', sw: 'sw-resize', w: 'w-resize',
-};
-
 const handleFracs: Record<HandlePosition, [number, number]> = {
   nw: [0, 0], n: [0.5, 0], ne: [1, 0],
   w: [0, 0.5],              e: [1, 0.5],
   sw: [0, 1], s: [0.5, 1], se: [1, 1],
 };
 
+// Direction each handle resizes along, expressed as a clockwise screen-space
+// angle (0° = east, 90° = south). Used to pick a cursor that visually matches
+// the handle after the element is rotated.
+const handleAngles: Record<HandlePosition, number> = {
+  e: 0, se: 45, s: 90, sw: 135, w: 180, nw: 225, n: 270, ne: 315,
+};
+
+const cursorByOctant = [
+  'e-resize', 'se-resize', 's-resize', 'sw-resize',
+  'w-resize', 'nw-resize', 'n-resize', 'ne-resize',
+];
+
+function rotatedCursor(pos: HandlePosition, rotationDeg: number): string {
+  const angle = (((handleAngles[pos] + rotationDeg) % 360) + 360) % 360;
+  return cursorByOctant[Math.round(angle / 45) % 8];
+}
+
+/** Compute the new rect for a resize drag.
+ *
+ *  Pointer deltas (totalDx, totalDy) are in canvas/screen-aligned coords.
+ *  When the element is rotated, those deltas are unrotated into the element's
+ *  local frame to drive width/height changes, and the *opposite* handle —
+ *  evaluated in world coords — is held fixed so the box doesn't jump on the
+ *  first pointer move.
+ */
 function computeRect(
   pos: HandlePosition,
   orig: { x: number; y: number; width: number; height: number },
@@ -55,68 +75,62 @@ function computeRect(
   totalDy: number,
   minW: number,
   minH: number,
+  rotationDeg: number,
   ratio?: number,
 ): { x: number; y: number; width: number; height: number } {
-  let { x, y, width: w, height: h } = orig;
-  const right = x + w;
-  const bottom = y + h;
+  const theta = (rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
 
-  if (ratio && (pos === 'nw' || pos === 'ne' || pos === 'sw' || pos === 'se')) {
-    // Aspect-ratio-locked corner resize
-    // Use the axis with the larger absolute delta to drive the resize
-    const absDx = Math.abs(totalDx);
-    const absDy = Math.abs(totalDy);
-    let newW: number, newH: number;
+  // Unrotate the screen-space delta into the element's local frame.
+  const du = totalDx * cos + totalDy * sin;
+  const dv = -totalDx * sin + totalDy * cos;
 
-    if (absDx / ratio > absDy) {
-      // Width-driven
-      if (pos === 'ne' || pos === 'se') {
-        newW = Math.max(minW, orig.width + totalDx);
-      } else {
-        newW = Math.max(minW, orig.width - totalDx);
-      }
+  const [fx, fy] = handleFracs[pos];
+  const sx = fx === 0 ? -1 : fx === 1 ? 1 : 0;
+  const sy = fy === 0 ? -1 : fy === 1 ? 1 : 0;
+
+  let newW: number;
+  let newH: number;
+
+  if (ratio && sx !== 0 && sy !== 0) {
+    // Aspect-locked corner resize — drive by larger local-frame delta.
+    if (Math.abs(du) / ratio > Math.abs(dv)) {
+      newW = Math.max(minW, orig.width + sx * du);
       newH = newW / ratio;
     } else {
-      // Height-driven
-      if (pos === 'se' || pos === 'sw') {
-        newH = Math.max(minH, orig.height + totalDy);
-      } else {
-        newH = Math.max(minH, orig.height - totalDy);
-      }
+      newH = Math.max(minH, orig.height + sy * dv);
       newW = newH * ratio;
     }
-
     newW = Math.max(minW, newW);
     newH = Math.max(minH, newH);
-
-    // Anchor the opposite corner
-    if (pos === 'se') { /* top-left anchored */ }
-    else if (pos === 'sw') { x = right - newW; }
-    else if (pos === 'ne') { y = bottom - newH; }
-    else if (pos === 'nw') { x = right - newW; y = bottom - newH; }
-
-    return { x, y, width: newW, height: newH };
+  } else {
+    newW = sx === 0 ? orig.width : Math.max(minW, orig.width + sx * du);
+    newH = sy === 0 ? orig.height : Math.max(minH, orig.height + sy * dv);
   }
 
-  // Standard free resize
-  if (pos === 'e' || pos === 'ne' || pos === 'se') {
-    w = Math.max(minW, orig.width + totalDx);
-  }
-  if (pos === 'w' || pos === 'nw' || pos === 'sw') {
-    const newLeft = Math.min(right - minW, orig.x + totalDx);
-    w = right - newLeft;
-    x = newLeft;
-  }
-  if (pos === 's' || pos === 'se' || pos === 'sw') {
-    h = Math.max(minH, orig.height + totalDy);
-  }
-  if (pos === 'n' || pos === 'nw' || pos === 'ne') {
-    const newTop = Math.min(bottom - minH, orig.y + totalDy);
-    h = bottom - newTop;
-    y = newTop;
-  }
+  // Anchor the opposite corner / edge midpoint in world coords. The anchor's
+  // local offset from center is (-sx*w/2, -sy*h/2); rotate that into world
+  // space, hold it fixed, then place the new center so the new anchor lands
+  // on the same world point.
+  const cx = orig.x + orig.width / 2;
+  const cy = orig.y + orig.height / 2;
+  const ax = -sx * orig.width / 2;
+  const ay = -sy * orig.height / 2;
+  const axWorld = cx + ax * cos - ay * sin;
+  const ayWorld = cy + ax * sin + ay * cos;
 
-  return { x, y, width: w, height: h };
+  const axNew = -sx * newW / 2;
+  const ayNew = -sy * newH / 2;
+  const newCx = axWorld - (axNew * cos - ayNew * sin);
+  const newCy = ayWorld - (axNew * sin + ayNew * cos);
+
+  return {
+    x: newCx - newW / 2,
+    y: newCy - newH / 2,
+    width: newW,
+    height: newH,
+  };
 }
 
 const CORNER_HANDLES: HandlePosition[] = ['nw', 'ne', 'sw', 'se'];
@@ -148,6 +162,8 @@ function ResizerComponent({
   onRotateEndRef.current = onRotateEnd;
   const lockAspectRef = useRef(lockAspect);
   lockAspectRef.current = lockAspect;
+  const rotationRef = useRef(rotation);
+  rotationRef.current = rotation;
 
   const handleRotateDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation();
@@ -223,20 +239,26 @@ function ResizerComponent({
 
     let lastRect = origRect;
 
+    const rotationDeg = rotationRef.current ?? 0;
+
     const onMove = (ev: PointerEvent) => {
       const totalDx = (ev.clientX - startX) / scale;
       const totalDy = (ev.clientY - startY) / scale;
-      lastRect = computeRect(pos, origRect, totalDx, totalDy, minWidth, minHeight, ratio);
+      lastRect = computeRect(pos, origRect, totalDx, totalDy, minWidth, minHeight, rotationDeg, ratio);
 
-      // Compute alignment guides during resize
-      const board = useBoardStore.getState().board;
-      if (board) {
-        const draggingRect: Rect = { id: nodeIdRef.current, x: lastRect.x, y: lastRect.y, width: lastRect.width, height: lastRect.height };
-        const otherRects = board.elements
-          .filter(e => e.id !== nodeIdRef.current && e.visible)
-          .map(e => ({ id: e.id, x: e.x, y: e.y, width: e.width, height: e.height }));
-        const result = computeAlignmentGuides(draggingRect, otherRects);
-        useUIStore.getState().setResizeGuides(result.guides as any, result.spacing as any);
+      // Alignment guides operate on axis-aligned bounding rects, which don't
+      // match what the user sees for a rotated element. Skip them in that
+      // case — drawing guides against the unrotated rect would be misleading.
+      if (rotationDeg === 0) {
+        const board = useBoardStore.getState().board;
+        if (board) {
+          const draggingRect: Rect = { id: nodeIdRef.current, x: lastRect.x, y: lastRect.y, width: lastRect.width, height: lastRect.height };
+          const otherRects = board.elements
+            .filter(e => e.id !== nodeIdRef.current && e.visible)
+            .map(e => ({ id: e.id, x: e.x, y: e.y, width: e.width, height: e.height }));
+          const result = computeAlignmentGuides(draggingRect, otherRects);
+          useUIStore.getState().setResizeGuides(result.guides as any, result.spacing as any);
+        }
       }
 
       // Notify parent
@@ -273,7 +295,7 @@ function ResizerComponent({
       onResizeEndRef.current();
     };
 
-    document.body.style.cursor = handleCursors[pos];
+    document.body.style.cursor = rotatedCursor(pos, rotationDeg);
     document.body.style.userSelect = 'none';
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onPointerUp);
@@ -305,7 +327,7 @@ function ResizerComponent({
               backgroundColor: 'white',
               border: `${handleBorder}px solid #3b82f6`,
               borderRadius: 1,
-              cursor: handleCursors[pos],
+              cursor: rotatedCursor(pos, rotation),
               zIndex: 10,
               pointerEvents: 'auto',
               left: `${fx * 100}%`,
